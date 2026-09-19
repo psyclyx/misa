@@ -32,7 +32,13 @@ pub trait Resolver: Send + Sync {
     fn resolve(&self, context: &CallContext, scope: &Scope) -> Result<Arc<dyn Owner>, Fault>;
     /// An authenticated daemon connection, independent of any selected scope.
     /// Client names are display metadata, never authority.
-    fn connected(&self, _context: &CallContext, _client: &misa_proto::ClientInfo) -> Result<(), Fault> { Ok(()) }
+    fn connected(
+        &self,
+        _context: &CallContext,
+        _client: &misa_proto::ClientInfo,
+    ) -> Result<(), Fault> {
+        Ok(())
+    }
     fn disconnected(&self, _context: &CallContext) {}
 }
 struct Active {
@@ -260,7 +266,8 @@ mod tests {
         fn command(&self, context: &CallContext, _: &str) -> Option<Command> {
             assert_eq!(context.principal, "trusted");
             Some(Command {
-                preparation: Default::default(), id: "run".into(),
+                preparation: Default::default(),
+                id: "run".into(),
                 input: Schema::Bool,
                 result: Schema::Bool,
             })

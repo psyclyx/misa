@@ -37,7 +37,7 @@ impl Drop for Entry {
 
 struct State {
     connections: BTreeMap<u64, Value>,
-    archive: Result<Value,Fault>,
+    archive: Result<Value, Fault>,
     archive_installed: bool,
     entries: BTreeMap<String, Entry>,
     position: u64,
@@ -87,17 +87,56 @@ pub struct Directory {
 }
 
 impl Directory {
-    pub async fn install_archive(self:&Arc<Self>,store:Arc<crate::archive::Store>)->Result<(),Fault> {
+    pub async fn install_archive(
+        self: &Arc<Self>,
+        store: Arc<crate::archive::Store>,
+    ) -> Result<(), Fault> {
         use misa_kernel::Store as _;
-        {let mut state=self.state.lock().unwrap();if state.archive_installed{return Err(Fault::new("composition","Archive store already installed"));}state.archive_installed=true;}
-        let mut changes=store.watch();let mut lifecycle=self.watch_work();let weak=Arc::downgrade(self);
-        let initial=store.clone();let result=tokio::task::spawn_blocking(move||initial.conversations()).await.map_err(|error|Fault::new("archive",error.to_string()))?.map(|rows|Value::list(rows.iter().map(misa_kernel::Conversation::to_value))).map_err(|message|Fault::new("archive",message));
-        {let mut state=self.state.lock().unwrap();state.archive=result;publish(&mut state);}
-        let task=tokio::spawn(async move {loop {
-            tokio::select! {changed=changes.changed()=>if changed.is_err(){return;},changed=lifecycle.changed()=>{if changed.is_err() || weak.upgrade().is_none_or(|directory|directory.is_closed()){return;}continue;}}
-            let source=store.clone();let result=tokio::task::spawn_blocking(move||source.conversations()).await.map_err(|error|Fault::new("archive",error.to_string())).and_then(|value|value.map_err(|message|Fault::new("archive",message))).map(|rows|Value::list(rows.iter().map(misa_kernel::Conversation::to_value)));
-            let Some(directory)=weak.upgrade() else{return;};if directory.is_closed(){return;}let mut state=directory.state.lock().unwrap();if state.archive!=result {state.archive=result;publish(&mut state);}
-        }});self.supervisors.lock().unwrap().push(task);Ok(())
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.archive_installed {
+                return Err(Fault::new("composition", "Archive store already installed"));
+            }
+            state.archive_installed = true;
+        }
+        let mut changes = store.watch();
+        let mut lifecycle = self.watch_work();
+        let weak = Arc::downgrade(self);
+        let initial = store.clone();
+        let result = tokio::task::spawn_blocking(move || initial.conversations())
+            .await
+            .map_err(|error| Fault::new("archive", error.to_string()))?
+            .map(|rows| Value::list(rows.iter().map(misa_kernel::Conversation::to_value)))
+            .map_err(|message| Fault::new("archive", message));
+        {
+            let mut state = self.state.lock().unwrap();
+            state.archive = result;
+            publish(&mut state);
+        }
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {changed=changes.changed()=>if changed.is_err(){return;},changed=lifecycle.changed()=>{if changed.is_err() || weak.upgrade().is_none_or(|directory|directory.is_closed()){return;}continue;}}
+                let source = store.clone();
+                let result = tokio::task::spawn_blocking(move || source.conversations())
+                    .await
+                    .map_err(|error| Fault::new("archive", error.to_string()))
+                    .and_then(|value| value.map_err(|message| Fault::new("archive", message)))
+                    .map(|rows| Value::list(rows.iter().map(misa_kernel::Conversation::to_value)));
+                let Some(directory) = weak.upgrade() else {
+                    return;
+                };
+                if directory.is_closed() {
+                    return;
+                }
+                let mut state = directory.state.lock().unwrap();
+                if state.archive != result {
+                    state.archive = result;
+                    publish(&mut state);
+                }
+            }
+        });
+        self.supervisors.lock().unwrap().push(task);
+        Ok(())
     }
     pub fn fresh() -> Result<Arc<Self>, Fault> {
         let mut bytes = [0u8; 16];
@@ -133,7 +172,7 @@ impl Directory {
             state: Mutex::new(State {
                 connections: BTreeMap::new(),
                 archive: Err(Fault::unsupported("Archive store is not installed")),
-                archive_installed:false,
+                archive_installed: false,
                 entries: BTreeMap::new(),
                 position: 0,
                 value: Value::list([]),
@@ -387,8 +426,17 @@ impl Directory {
         definitions.push(connections_definition());
         definitions
     }
-    fn member(&self, state: &State, member: &Member) -> Result<Content,Fault> {
-        if matches!(member.query.id.as_str(),"daemon.conversations"|"completion.catalog"|"completion.search") {return match crate::archive::read(&state.archive,&member.query) {Ok(value)=>Ok(Content::Value(value)),Err(fault) if member.optional=>Ok(Content::Unavailable(fault)),Err(fault)=>Err(fault)};}
+    fn member(&self, state: &State, member: &Member) -> Result<Content, Fault> {
+        if matches!(
+            member.query.id.as_str(),
+            "daemon.conversations" | "completion.catalog" | "completion.search"
+        ) {
+            return match crate::archive::read(&state.archive, &member.query) {
+                Ok(value) => Ok(Content::Value(value)),
+                Err(fault) if member.optional => Ok(Content::Unavailable(fault)),
+                Err(fault) => Err(fault),
+            };
+        }
         Ok(Content::Value(match member.query.id.as_str() {
             "daemon.connections" => Value::list(state.connections.values().cloned()),
             misa_proto::invocation::CATALOG => {
@@ -658,7 +706,7 @@ impl Owner for Directory {
                 .members
                 .iter()
                 .map(|(name, member)| Ok((name.clone(), self.member(&state, member)?)))
-                .collect::<Result<_,Fault>>()?,
+                .collect::<Result<_, Fault>>()?,
         })
     }
     fn observe(
@@ -693,7 +741,7 @@ impl Owner for Directory {
                 .members
                 .iter()
                 .map(|(name, member)| Ok((name.clone(), self.member(&state, member)?)))
-                .collect::<Result<_,Fault>>()?,
+                .collect::<Result<_, Fault>>()?,
         };
         drop(state);
         let position = snapshot.position;
@@ -738,7 +786,10 @@ impl misa_protocol::owner::Observation for Observed {
         };
         if std::mem::take(&mut self.faulted) {
             self.position = snapshot.position;
-            return Some(Publication::Snapshot { handle: self.handle, snapshot });
+            return Some(Publication::Snapshot {
+                handle: self.handle,
+                snapshot,
+            });
         }
         if snapshot.position == self.position {
             return None;
@@ -764,26 +815,41 @@ impl misa_protocol::owner::Observation for Observed {
 /// Every lookup still binds the full scope incarnation, never just its label.
 pub struct Routes(pub Arc<Directory>);
 impl Resolver for Routes {
-    fn connected(&self, context: &CallContext, client: &misa_proto::ClientInfo) -> Result<(), Fault> {
+    fn connected(
+        &self,
+        context: &CallContext,
+        client: &misa_proto::ClientInfo,
+    ) -> Result<(), Fault> {
         if client.name.len() > 256 || client.version.len() > 256 {
             return Err(Fault::protocol("Client display metadata is too long"));
         }
         let mut state = self.0.state.lock().unwrap();
-        if self.0.is_closed() { return Err(Fault::new("closed_scope", "Daemon is shutting down")); }
-        if state.connections.len() >= 256 { return Err(Fault::new("busy", "Daemon connection limit reached")); }
-        if state.connections.contains_key(&context.connection) { return Err(Fault::protocol("Connection identity reused")); }
-        state.connections.insert(context.connection, Value::map([
-            ("connection", Value::str(context.connection.to_string())),
-            ("principal", Value::str(&context.principal)),
-            ("name", Value::str(&client.name)),
-            ("version", Value::str(&client.version)),
-        ]));
+        if self.0.is_closed() {
+            return Err(Fault::new("closed_scope", "Daemon is shutting down"));
+        }
+        if state.connections.len() >= 256 {
+            return Err(Fault::new("busy", "Daemon connection limit reached"));
+        }
+        if state.connections.contains_key(&context.connection) {
+            return Err(Fault::protocol("Connection identity reused"));
+        }
+        state.connections.insert(
+            context.connection,
+            Value::map([
+                ("connection", Value::str(context.connection.to_string())),
+                ("principal", Value::str(&context.principal)),
+                ("name", Value::str(&client.name)),
+                ("version", Value::str(&client.version)),
+            ]),
+        );
         publish(&mut state);
         Ok(())
     }
     fn disconnected(&self, context: &CallContext) {
         let mut state = self.0.state.lock().unwrap();
-        if state.connections.remove(&context.connection).is_some() { publish(&mut state); }
+        if state.connections.remove(&context.connection).is_some() {
+            publish(&mut state);
+        }
     }
     fn resolve(&self, _: &CallContext, scope: &Scope) -> Result<Arc<dyn Owner>, Fault> {
         if *scope == self.0.scope {
@@ -798,13 +864,33 @@ impl Resolver for Routes {
 
 /// Authenticated transport connections, not clients attached to individual sessions.
 pub fn connections_definition() -> misa_proto::query::Definition {
-    use misa_proto::{query::{Definition, ResultContract}, schema::{Schema, Field}};
+    use misa_proto::{
+        query::{Definition, ResultContract},
+        schema::{Field, Schema},
+    };
     Definition {
-        id: "daemon.connections".into(), contract: "daemon.connections@1".into(), arguments: vec![],
-        result: ResultContract::Data { schema: Schema::List { items: Box::new(Schema::Record {
-            fields: ["connection", "principal", "name", "version"].into_iter().map(|name| (name.into(), Field { schema: Schema::String, optional: false })).collect(),
-            allow_unknown: false,
-        }) } },
+        id: "daemon.connections".into(),
+        contract: "daemon.connections@1".into(),
+        arguments: vec![],
+        result: ResultContract::Data {
+            schema: Schema::List {
+                items: Box::new(Schema::Record {
+                    fields: ["connection", "principal", "name", "version"]
+                        .into_iter()
+                        .map(|name| {
+                            (
+                                name.into(),
+                                Field {
+                                    schema: Schema::String,
+                                    optional: false,
+                                },
+                            )
+                        })
+                        .collect(),
+                    allow_unknown: false,
+                }),
+            },
+        },
     }
 }
 
@@ -872,10 +958,20 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(matches!(first.execute(&context(), Invocation {
-            id: 1, scope: first.scope(), command: "session.prompt".into(),
-            input: Value::map([("text", Value::str("start"))]),
-        }).await, misa_proto::invocation::Outcome::Accepted { .. }));
+        assert!(matches!(
+            first
+                .execute(
+                    &context(),
+                    Invocation {
+                        id: 1,
+                        scope: first.scope(),
+                        command: "session.prompt".into(),
+                        input: Value::map([("text", Value::str("start"))]),
+                    }
+                )
+                .await,
+            misa_proto::invocation::Outcome::Accepted { .. }
+        ));
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
             observed.changed().changed(),
@@ -945,18 +1041,57 @@ mod tests {
         assert!(directory.insert(runtime("new")).is_err());
     }
 }
-#[cfg(test)] mod archive_fault_tests {
- use super::*;
- #[tokio::test] async fn archive_failure_recovers_with_a_complete_coherent_snapshot(){
-  let directory=Directory::new("archive-recovery").unwrap();
-  let archive=crate::archive::Store::new(Arc::new(misa_kernel::MemoryStore::default()));directory.install_archive(archive).await.unwrap();
-  let definition=crate::archive::definitions().into_iter().find(|definition|definition.id=="daemon.conversations").unwrap();
-  let selection=Selection{scope:directory.scope(),members:BTreeMap::from([("archive".into(),definition.member(vec![Value::str(""),Value::Int(10)]).unwrap())])};
-  let (mut watch,_)=directory.clone().observe(CallContext{principal:"test".into(),connection:1},Handle{id:1,generation:1},selection,None).unwrap();
-  {let mut state=directory.state.lock().unwrap();state.archive=Err(Fault::new("storage","Temporarily unavailable"));publish(&mut state);}
-  assert!(matches!(watch.poll(),Some(Publication::Fault{..})));
-  {let mut state=directory.state.lock().unwrap();state.archive=Ok(Value::list([]));publish(&mut state);}
-  assert!(matches!(watch.poll(),Some(Publication::Snapshot{..})),"recovery cannot resume sparse updates over failed required data");
-  directory.shutdown_complete().await;
- }
+#[cfg(test)]
+mod archive_fault_tests {
+    use super::*;
+    #[tokio::test]
+    async fn archive_failure_recovers_with_a_complete_coherent_snapshot() {
+        let directory = Directory::new("archive-recovery").unwrap();
+        let archive = crate::archive::Store::new(Arc::new(misa_kernel::MemoryStore::default()));
+        directory.install_archive(archive).await.unwrap();
+        let definition = crate::archive::definitions()
+            .into_iter()
+            .find(|definition| definition.id == "daemon.conversations")
+            .unwrap();
+        let selection = Selection {
+            scope: directory.scope(),
+            members: BTreeMap::from([(
+                "archive".into(),
+                definition
+                    .member(vec![Value::str(""), Value::Int(10)])
+                    .unwrap(),
+            )]),
+        };
+        let (mut watch, _) = directory
+            .clone()
+            .observe(
+                CallContext {
+                    principal: "test".into(),
+                    connection: 1,
+                },
+                Handle {
+                    id: 1,
+                    generation: 1,
+                },
+                selection,
+                None,
+            )
+            .unwrap();
+        {
+            let mut state = directory.state.lock().unwrap();
+            state.archive = Err(Fault::new("storage", "Temporarily unavailable"));
+            publish(&mut state);
+        }
+        assert!(matches!(watch.poll(), Some(Publication::Fault { .. })));
+        {
+            let mut state = directory.state.lock().unwrap();
+            state.archive = Ok(Value::list([]));
+            publish(&mut state);
+        }
+        assert!(
+            matches!(watch.poll(), Some(Publication::Snapshot { .. })),
+            "recovery cannot resume sparse updates over failed required data"
+        );
+        directory.shutdown_complete().await;
+    }
 }

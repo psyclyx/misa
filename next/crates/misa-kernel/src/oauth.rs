@@ -84,7 +84,10 @@ pub struct Prompt {
 
 /// Milliseconds since the epoch, which is the unit a deadline is stored in.
 pub fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Whether an access token that expires at `expires_ms` is spent.
@@ -132,19 +135,28 @@ async fn post_json(url: &str, body: &serde_json::Value) -> Result<(u16, String),
 }
 
 fn json(body: &str) -> Result<serde_json::Value, String> {
-    serde_json::from_str(body).map_err(|err| format!("the service answered something that is not json: {err}"))
+    serde_json::from_str(body)
+        .map_err(|err| format!("the service answered something that is not json: {err}"))
 }
 
 fn string_at(value: &serde_json::Value, key: &str) -> Option<String> {
-    value.get(key).and_then(|value| value.as_str()).filter(|text| !text.is_empty()).map(str::to_string)
+    value
+        .get(key)
+        .and_then(|value| value.as_str())
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
 }
 
 /// An access token and its deadline, from a token endpoint's answer.
 fn token_from(body: &str) -> Result<Token, String> {
     let parsed = json(body)?;
-    let access = string_at(&parsed, "access_token").ok_or("the token response has no access_token")?;
+    let access =
+        string_at(&parsed, "access_token").ok_or("the token response has no access_token")?;
     let refresh = string_at(&parsed, "refresh_token").unwrap_or_default();
-    let expires_in = parsed.get("expires_in").and_then(|value| value.as_i64()).unwrap_or(3_600);
+    let expires_in = parsed
+        .get("expires_in")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(3_600);
     Ok(Token {
         access,
         refresh,
@@ -199,13 +211,19 @@ fn base64_url(text: &str) -> Result<Vec<u8>, String> {
 pub async fn start(flow: &Flow) -> Result<Device, String> {
     match flow.kind {
         Kind::Rfc8628 => {
-            let (status, body) = post_form(flow.authorization_url, &[("client_id", flow.client_id)]).await?;
+            let (status, body) =
+                post_form(flow.authorization_url, &[("client_id", flow.client_id)]).await?;
             if !(200..300).contains(&status) {
-                return Err(format!("the device authorization was refused ({status}): {}", brief(&body)));
+                return Err(format!(
+                    "the device authorization was refused ({status}): {}",
+                    brief(&body)
+                ));
             }
             let parsed = json(&body)?;
-            let device_code = string_at(&parsed, "device_code").ok_or("no device_code in the response")?;
-            let user_code = string_at(&parsed, "user_code").ok_or("no user_code in the response")?;
+            let device_code =
+                string_at(&parsed, "device_code").ok_or("no device_code in the response")?;
+            let user_code =
+                string_at(&parsed, "user_code").ok_or("no user_code in the response")?;
             let verification_uri = string_at(&parsed, "verification_uri_complete")
                 .or_else(|| string_at(&parsed, "verification_uri"))
                 .unwrap_or_else(|| flow.verification_url.to_string());
@@ -213,23 +231,47 @@ pub async fn start(flow: &Flow) -> Result<Device, String> {
                 device_code,
                 user_code,
                 verification_uri,
-                interval_ms: parsed.get("interval").and_then(|value| value.as_i64()).unwrap_or(5).max(1) * 1_000,
-                expires_ms: parsed.get("expires_in").and_then(|value| value.as_i64()).unwrap_or(900).max(60) * 1_000,
+                interval_ms: parsed
+                    .get("interval")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(5)
+                    .max(1)
+                    * 1_000,
+                expires_ms: parsed
+                    .get("expires_in")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(900)
+                    .max(60)
+                    * 1_000,
             })
         }
         Kind::OpenAi => {
-            let (status, body) = post_json(flow.authorization_url, &serde_json::json!({"client_id": flow.client_id})).await?;
+            let (status, body) = post_json(
+                flow.authorization_url,
+                &serde_json::json!({"client_id": flow.client_id}),
+            )
+            .await?;
             if !(200..300).contains(&status) {
-                return Err(format!("the device authorization was refused ({status}): {}", brief(&body)));
+                return Err(format!(
+                    "the device authorization was refused ({status}): {}",
+                    brief(&body)
+                ));
             }
             let parsed = json(&body)?;
-            let device_code = string_at(&parsed, "device_auth_id").ok_or("no device_auth_id in the response")?;
-            let user_code = string_at(&parsed, "user_code").ok_or("no user_code in the response")?;
+            let device_code =
+                string_at(&parsed, "device_auth_id").ok_or("no device_auth_id in the response")?;
+            let user_code =
+                string_at(&parsed, "user_code").ok_or("no user_code in the response")?;
             Ok(Device {
                 device_code,
                 user_code,
                 verification_uri: flow.verification_url.to_string(),
-                interval_ms: parsed.get("interval").and_then(|value| value.as_i64()).unwrap_or(5).max(1) * 1_000,
+                interval_ms: parsed
+                    .get("interval")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(5)
+                    .max(1)
+                    * 1_000,
                 expires_ms: 900_000,
             })
         }
@@ -256,7 +298,10 @@ pub async fn poll(flow: &Flow, device: &Device) -> Result<Option<Token>, String>
             match string_at(&parsed, "error").as_deref() {
                 Some("authorization_pending") | Some("slow_down") => Ok(None),
                 Some(other) => Err(format!("the authorization was refused: {other}")),
-                None => Err(format!("the token endpoint answered {status}: {}", brief(&body))),
+                None => Err(format!(
+                    "the token endpoint answered {status}: {}",
+                    brief(&body)
+                )),
             }
         }
         Kind::OpenAi => {
@@ -271,7 +316,10 @@ pub async fn poll(flow: &Flow, device: &Device) -> Result<Option<Token>, String>
                 return Ok(None);
             }
             if !(200..300).contains(&status) {
-                return Err(format!("the device authorization was refused ({status}): {}", brief(&body)));
+                return Err(format!(
+                    "the device authorization was refused ({status}): {}",
+                    brief(&body)
+                ));
             }
             let parsed = json(&body)?;
             let code = string_at(&parsed, "authorization_code").ok_or("no authorization_code")?;
@@ -287,12 +335,18 @@ pub async fn poll(flow: &Flow, device: &Device) -> Result<Option<Token>, String>
                     ("client_id", flow.client_id),
                     ("code", code.as_str()),
                     ("code_verifier", verifier.as_str()),
-                    ("redirect_uri", "https://auth.openai.com/deviceauth/callback"),
+                    (
+                        "redirect_uri",
+                        "https://auth.openai.com/deviceauth/callback",
+                    ),
                 ],
             )
             .await?;
             if !(200..300).contains(&status) {
-                return Err(format!("the token exchange failed ({status}): {}", brief(&body)));
+                return Err(format!(
+                    "the token exchange failed ({status}): {}",
+                    brief(&body)
+                ));
             }
             token_from(&body).map(Some)
         }
@@ -316,7 +370,10 @@ where
     C: FnMut() -> bool,
 {
     let device = start(flow).await?;
-    prompt(Prompt { url: device.verification_uri.clone(), code: device.user_code.clone() });
+    prompt(Prompt {
+        url: device.verification_uri.clone(),
+        code: device.user_code.clone(),
+    });
     let deadline = now_ms() + device.expires_ms;
     while now_ms() < deadline {
         if cancel() {
@@ -335,14 +392,25 @@ where
 /// The only request a client makes with a secret it did not just receive, which
 /// is why it is its own function: the failure here is the one that means
 /// "somebody has to log in again", and everything else is a fault.
-pub async fn refresh(token_url: &str, client_id: &str, refresh_token: &str) -> Result<Token, String> {
+pub async fn refresh(
+    token_url: &str,
+    client_id: &str,
+    refresh_token: &str,
+) -> Result<Token, String> {
     let (status, body) = post_form(
         token_url,
-        &[("grant_type", "refresh_token"), ("client_id", client_id), ("refresh_token", refresh_token)],
+        &[
+            ("grant_type", "refresh_token"),
+            ("client_id", client_id),
+            ("refresh_token", refresh_token),
+        ],
     )
     .await?;
     if !(200..300).contains(&status) {
-        return Err(format!("the refresh was refused ({status}): {}", brief(&body)));
+        return Err(format!(
+            "the refresh was refused ({status}): {}",
+            brief(&body)
+        ));
     }
     let mut token = token_from(&body)?;
     // A service that does not rotate its refresh token sends the same one back
@@ -445,9 +513,15 @@ mod tests {
             (200, r#"{"access_token":"an-access","refresh_token":"a-refresh","expires_in":3600}"#.into()),
         ])
         .await;
-        let flow = Flow { authorization_url: Box::leak(format!("{base}/device").into_boxed_str()), token_url: Box::leak(format!("{base}/token").into_boxed_str()), ..KIMI };
+        let flow = Flow {
+            authorization_url: Box::leak(format!("{base}/device").into_boxed_str()),
+            token_url: Box::leak(format!("{base}/token").into_boxed_str()),
+            ..KIMI
+        };
         let mut prompted: Option<Prompt> = None;
-        let token = login(&flow, |prompt| prompted = Some(prompt), || false).await.expect("a token");
+        let token = login(&flow, |prompt| prompted = Some(prompt), || false)
+            .await
+            .expect("a token");
         assert_eq!(token.access, "an-access");
         assert_eq!(token.refresh, "a-refresh");
         assert!(token.expires_ms > now_ms());
@@ -463,7 +537,11 @@ mod tests {
             (400, r#"{"error":"access_denied"}"#.into()),
         ])
         .await;
-        let flow = Flow { authorization_url: Box::leak(format!("{base}/device").into_boxed_str()), token_url: Box::leak(format!("{base}/token").into_boxed_str()), ..KIMI };
+        let flow = Flow {
+            authorization_url: Box::leak(format!("{base}/device").into_boxed_str()),
+            token_url: Box::leak(format!("{base}/token").into_boxed_str()),
+            ..KIMI
+        };
         let error = login(&flow, |_| {}, || false).await.unwrap_err();
         assert!(error.contains("access_denied"), "{error}");
     }
@@ -472,9 +550,10 @@ mod tests {
     async fn openai_polls_json_until_it_is_approved_and_then_exchanges() {
         // The OpenAI flow: a JSON start, a `403` while pending, an authorization
         // code, and a *different* endpoint to trade it for a token.
-        let base = script(vec![
-            (200, r#"{"device_auth_id":"dev","user_code":"CODE","interval":1}"#.into()),
-        ])
+        let base = script(vec![(
+            200,
+            r#"{"device_auth_id":"dev","user_code":"CODE","interval":1}"#.into(),
+        )])
         .await;
         let flow = Flow {
             kind: Kind::OpenAi,
@@ -490,8 +569,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_refresh_replaces_the_access_token_and_keeps_the_refresh_token() {
-        let base = script(vec![(200, r#"{"access_token":"new-access","expires_in":3600}"#.into())]).await;
-        let token = refresh(&format!("{base}/token"), "a-client", "old-refresh").await.expect("a token");
+        let base = script(vec![(
+            200,
+            r#"{"access_token":"new-access","expires_in":3600}"#.into(),
+        )])
+        .await;
+        let token = refresh(&format!("{base}/token"), "a-client", "old-refresh")
+            .await
+            .expect("a token");
         assert_eq!(token.access, "new-access");
         // The service did not rotate it, so the same one is kept: losing it here
         // would log somebody out on their next request.
@@ -501,9 +586,15 @@ mod tests {
     #[test]
     fn an_expired_token_is_refreshed_a_minute_early() {
         let now = 1_000_000;
-        assert!(expired(now + 1_000, now), "a token that expires in a second is spent");
+        assert!(
+            expired(now + 1_000, now),
+            "a token that expires in a second is spent"
+        );
         assert!(expired(now - 1, now));
-        assert!(expired(now + 59_000, now), "a token that expires mid-request is spent");
+        assert!(
+            expired(now + 59_000, now),
+            "a token that expires mid-request is spent"
+        );
         assert!(!expired(now + 3_600_000, now));
     }
 

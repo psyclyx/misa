@@ -129,18 +129,41 @@ mod transport_tests {
             misa_value::Value::Null,
         );
         use misa_protocol::invocation::{CallContext, CommandOwner};
-        let outcome = runtime.execute(&CallContext { principal: "save-test".into(), connection: 1 }, misa_proto::invocation::Invocation {
-            id: 1, scope: runtime.scope(), command: "session.prompt".into(),
-            input: misa_value::Value::map([
-                ("text", misa_value::Value::str("file")),
-                ("attachments", misa_value::Value::list([misa_value::Value::map([
-                    ("hash", misa_value::Value::str(&stored.hash)),
-                    ("len", misa_value::Value::Int(stored.len as i64)),
-                    ("media", stored.media.as_deref().map(misa_value::Value::str).unwrap_or(misa_value::Value::Null)),
-                ])])),
-            ]),
-        }).await;
-        assert!(matches!(outcome, misa_proto::invocation::Outcome::Accepted { .. }));
+        let outcome = runtime
+            .execute(
+                &CallContext {
+                    principal: "save-test".into(),
+                    connection: 1,
+                },
+                misa_proto::invocation::Invocation {
+                    id: 1,
+                    scope: runtime.scope(),
+                    command: "session.prompt".into(),
+                    input: misa_value::Value::map([
+                        ("text", misa_value::Value::str("file")),
+                        (
+                            "attachments",
+                            misa_value::Value::list([misa_value::Value::map([
+                                ("hash", misa_value::Value::str(&stored.hash)),
+                                ("len", misa_value::Value::Int(stored.len as i64)),
+                                (
+                                    "media",
+                                    stored
+                                        .media
+                                        .as_deref()
+                                        .map(misa_value::Value::str)
+                                        .unwrap_or(misa_value::Value::Null),
+                                ),
+                            ])]),
+                        ),
+                    ]),
+                },
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            misa_proto::invocation::Outcome::Accepted { .. }
+        ));
         let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
         let directory = misa_daemon::directory::Directory::new("save-daemon").unwrap();
         directory.insert(runtime).unwrap();
@@ -187,8 +210,19 @@ mod transport_tests {
             .unwrap();
         let view = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if let Some(crate::Presentation::Documents(documents)) = client.next_presentation().await.unwrap() {
-                    if let Some(tree)=documents.into_iter().find_map(|(id,update)|match update{misa_client::document::Update::Reset(document) if id.is_empty()=>Some(document.tree),_=>None}) {break tree;}
+                if let Some(crate::Presentation::Documents(documents)) =
+                    client.next_presentation().await.unwrap()
+                {
+                    if let Some(tree) =
+                        documents.into_iter().find_map(|(id, update)| match update {
+                            misa_client::document::Update::Reset(document) if id.is_empty() => {
+                                Some(document.tree)
+                            }
+                            _ => None,
+                        })
+                    {
+                        break tree;
+                    }
                 }
             }
         })

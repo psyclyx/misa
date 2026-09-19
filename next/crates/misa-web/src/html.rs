@@ -1,7 +1,9 @@
 //! Semantic document rendering, independent of connections and HTTP lifetimes.
 use misa_proto::view::{ActionOn, FieldKind, Kind, Node, Span, SpanKind, State as NodeState};
 
-pub fn render_main(view: &Node) -> String { render_scoped(view, "") }
+pub fn render_main(view: &Node) -> String {
+    render_scoped(view, "")
+}
 pub(crate) fn render_scoped(view: &Node, prefix: &str) -> String {
     let mut out = String::new();
     render_node(view, prefix, &mut out);
@@ -28,7 +30,10 @@ fn render_node(node: &Node, prefix: &str, out: &mut String) {
     // A node that offers a submit action is a form, and its fields are its inputs.
     // That is the only reason a view node ever becomes a form, and it is enough for
     // every dialog the shipped session has.
-    let submit = node.actions.iter().find(|action| action.on == ActionOn::Submit);
+    let submit = node
+        .actions
+        .iter()
+        .find(|action| action.on == ActionOn::Submit);
     if let Some(action) = submit {
         out.push_str(&format!(
             "<form class=\"n-{role}\"{id}{state} method=\"post\" action=\"./intent\">\
@@ -58,7 +63,11 @@ fn render_node(node: &Node, prefix: &str, out: &mut String) {
         // this match, as a void element, so nothing goes inside it here.
         Kind::Quote => {}
         Kind::Rule => {}
-        Kind::Code { lang, text, captures } => {
+        Kind::Code {
+            lang,
+            text,
+            captures,
+        } => {
             out.push_str("<pre><code");
             if let Some(lang) = lang {
                 out.push_str(&format!(" data-lang=\"{}\"", escape(lang)));
@@ -220,7 +229,11 @@ fn render_node(node: &Node, prefix: &str, out: &mut String) {
     }
     if submit.is_some() {
         out.push_str("<button type=\"submit\">");
-        out.push_str(&escape(submit.and_then(|action| action.label.as_deref()).unwrap_or("Send")));
+        out.push_str(&escape(
+            submit
+                .and_then(|action| action.label.as_deref())
+                .unwrap_or("Send"),
+        ));
         out.push_str("</button></form>");
     } else {
         let element = element_for(node);
@@ -337,4 +350,3 @@ pub fn escape(text: &str) -> String {
     }
     out
 }
-

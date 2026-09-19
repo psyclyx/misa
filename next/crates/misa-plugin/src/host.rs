@@ -2,13 +2,13 @@
 
 use std::sync::{Arc, Mutex};
 
+pub use misa_proto::query::ResultContract as QueryResultContract;
 use misa_proto::view::Node;
+use misa_proto::{Query, schema::Schema};
 use misa_reframe::{Effect, Event, Interpreter, Subscription};
 use misa_value::{Op, Value};
-use misa_proto::{Query, schema::Schema};
-pub use misa_proto::query::ResultContract as QueryResultContract;
-use wasmtime::component::{Component, Linker};
 use wasmtime::Store;
+use wasmtime::component::{Component, Linker};
 
 // The world a policy plugin implements, generated from the design file.
 //
@@ -22,8 +22,8 @@ wasmtime::component::bindgen!({
 });
 
 use exports::misa::policy::policy_api::{
-    Effect as GuestEffect, Event as GuestEvent, Fault as GuestFault,
-    Op as GuestOp, OptionValue, Patch as GuestPatch, QueryRequest,
+    Effect as GuestEffect, Event as GuestEvent, Fault as GuestFault, Op as GuestOp, OptionValue,
+    Patch as GuestPatch, QueryRequest,
 };
 
 /// The engine every plugin in this process shares.
@@ -48,7 +48,9 @@ fn engine() -> &'static wasmtime::Engine {
 /// set traps on the *first* instruction, which is how a host that forgot once would look like a
 /// plugin that cannot answer `describe`.
 fn fuelled(store: &mut Store<()>) -> Result<(), PluginFault> {
-    store.set_fuel(CALL_FUEL).map_err(|error| PluginFault::host(error.to_string()))
+    store
+        .set_fuel(CALL_FUEL)
+        .map_err(|error| PluginFault::host(error.to_string()))
 }
 
 /// Fuel for one call into a plugin.
@@ -83,11 +85,22 @@ pub struct Descriptor {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct CommandDefinition { pub id: String, pub input: Schema, pub event: String, pub request: Option<misa_proto::input::Form> }
+pub struct CommandDefinition {
+    pub id: String,
+    pub input: Schema,
+    pub event: String,
+    pub request: Option<misa_proto::input::Form>,
+}
 impl CommandDefinition {
     pub fn export(&self) -> misa_proto::invocation::Command {
-        misa_proto::invocation::Command { preparation: Default::default(), id: self.id.clone(), input: self.input.clone(),
-            result: Schema::Choice { values: vec![misa_proto::schema::Literal::Null] } }
+        misa_proto::invocation::Command {
+            preparation: Default::default(),
+            id: self.id.clone(),
+            input: self.input.clone(),
+            result: Schema::Choice {
+                values: vec![misa_proto::schema::Literal::Null],
+            },
+        }
     }
 }
 
@@ -107,64 +120,125 @@ pub enum QuerySource {
 
 impl QueryDefinition {
     pub fn export(&self) -> misa_proto::query::Definition {
-        misa_proto::query::Definition { id: self.id.clone(), contract: self.contract.clone(), arguments: self.arguments.clone(), result: self.result.clone() }
+        misa_proto::query::Definition {
+            id: self.id.clone(),
+            contract: self.contract.clone(),
+            arguments: self.arguments.clone(),
+            result: self.result.clone(),
+        }
     }
 }
 pub use misa_proto::presentation::{Presentation, Variant as PresentationVariant};
 
 fn result_contract(text: &str) -> Result<QueryResultContract, PluginFault> {
-    let contract: QueryResultContract = serde_json::from_str(text).map_err(|error| PluginFault::refused(format!("invalid result contract: {error}")))?;
-    if let QueryResultContract::Data { schema } = &contract { schema.check().map_err(|error| PluginFault::refused(error.to_string()))?; }
+    let contract: QueryResultContract = serde_json::from_str(text)
+        .map_err(|error| PluginFault::refused(format!("invalid result contract: {error}")))?;
+    if let QueryResultContract::Data { schema } = &contract {
+        schema
+            .check()
+            .map_err(|error| PluginFault::refused(error.to_string()))?;
+    }
     Ok(contract)
 }
 
 fn schema(text: &str) -> Result<Schema, PluginFault> {
-    let schema: Schema = serde_json::from_str(text).map_err(|error| PluginFault::refused(format!("invalid query schema: {error}")))?;
-    schema.check().map_err(|error| PluginFault::refused(error.to_string()))?;
+    let schema: Schema = serde_json::from_str(text)
+        .map_err(|error| PluginFault::refused(format!("invalid query schema: {error}")))?;
+    schema
+        .check()
+        .map_err(|error| PluginFault::refused(error.to_string()))?;
     Ok(schema)
 }
 
-fn query_definition(definition: exports::misa::policy::policy_api::QueryDefinition) -> Result<QueryDefinition, PluginFault> {
+fn query_definition(
+    definition: exports::misa::policy::policy_api::QueryDefinition,
+) -> Result<QueryDefinition, PluginFault> {
     use exports::misa::policy::policy_api::QuerySource as Source;
     Ok(QueryDefinition {
         id: definition.id,
         contract: definition.contract,
-        arguments: definition.arguments.iter().map(|text| schema(text)).collect::<Result<_, _>>()?,
+        arguments: definition
+            .arguments
+            .iter()
+            .map(|text| schema(text))
+            .collect::<Result<_, _>>()?,
         result: result_contract(&definition.output)?,
         source: match definition.source {
-            Source::Read(contract) => QuerySource::Read { roots: contract.roots, schema: schema(&contract.schema)? },
-            Source::Derived(inputs) => QuerySource::Derived { inputs: inputs.into_iter().map(|query| Ok(Query {
-                id: query.id, args: query.args.iter().map(|arg| from_json(arg, "query dependency argument")).collect::<Result<_, _>>()?,
-            })).collect::<Result<_, PluginFault>>()? },
+            Source::Read(contract) => QuerySource::Read {
+                roots: contract.roots,
+                schema: schema(&contract.schema)?,
+            },
+            Source::Derived(inputs) => QuerySource::Derived {
+                inputs: inputs
+                    .into_iter()
+                    .map(|query| {
+                        Ok(Query {
+                            id: query.id,
+                            args: query
+                                .args
+                                .iter()
+                                .map(|arg| from_json(arg, "query dependency argument"))
+                                .collect::<Result<_, _>>()?,
+                        })
+                    })
+                    .collect::<Result<_, PluginFault>>()?,
+            },
         },
     })
 }
 
 fn validate_arguments(definition: &QueryDefinition, args: &[Value]) -> Result<(), PluginFault> {
     if definition.arguments.len() != args.len() {
-        return Err(PluginFault::refused(format!("`{}` expects {} arguments", definition.id, definition.arguments.len())));
+        return Err(PluginFault::refused(format!(
+            "`{}` expects {} arguments",
+            definition.id,
+            definition.arguments.len()
+        )));
     }
     for (schema, value) in definition.arguments.iter().zip(args) {
-        schema.validate(value).map_err(|error| PluginFault::refused(error.to_string()))?;
+        schema
+            .validate(value)
+            .map_err(|error| PluginFault::refused(error.to_string()))?;
     }
     Ok(())
 }
 
 fn validate_local_graph(queries: &[QueryDefinition]) -> Result<(), PluginFault> {
-    fn visit(id: &str, queries: &[QueryDefinition], active: &mut Vec<String>, done: &mut std::collections::BTreeSet<String>) -> Result<(), PluginFault> {
-        if active.iter().any(|entry| entry == id) { return Err(PluginFault::refused(format!("query dependency cycle at `{id}`"))); }
-        if done.contains(id) { return Ok(()); }
+    fn visit(
+        id: &str,
+        queries: &[QueryDefinition],
+        active: &mut Vec<String>,
+        done: &mut std::collections::BTreeSet<String>,
+    ) -> Result<(), PluginFault> {
+        if active.iter().any(|entry| entry == id) {
+            return Err(PluginFault::refused(format!(
+                "query dependency cycle at `{id}`"
+            )));
+        }
+        if done.contains(id) {
+            return Ok(());
+        }
         // External dependencies are resolved by the complete owner registry.
-        let Some(query) = queries.iter().find(|query| query.id == id) else { return Ok(()); };
-        if active.len() >= 64 { return Err(PluginFault::refused("query dependencies too deep")); }
+        let Some(query) = queries.iter().find(|query| query.id == id) else {
+            return Ok(());
+        };
+        if active.len() >= 64 {
+            return Err(PluginFault::refused("query dependencies too deep"));
+        }
         active.push(id.into());
         if let QuerySource::Derived { inputs } = &query.source {
-            for input in inputs { visit(&input.id, queries, active, done)?; }
+            for input in inputs {
+                visit(&input.id, queries, active, done)?;
+            }
         }
-        active.pop(); done.insert(id.into()); Ok(())
+        active.pop();
+        done.insert(id.into());
+        Ok(())
     }
     let mut done = std::collections::BTreeSet::new();
-    for query in queries { visit(&query.id, queries, &mut vec![], &mut done)?; }
+    for query in queries {
+        visit(&query.id, queries, &mut vec![], &mut done)?;
+    }
     Ok(())
 }
 
@@ -189,11 +263,17 @@ pub struct PluginFault {
 
 impl PluginFault {
     fn host(message: impl Into<String>) -> PluginFault {
-        PluginFault { code: "plugin.host".into(), message: message.into() }
+        PluginFault {
+            code: "plugin.host".into(),
+            message: message.into(),
+        }
     }
 
     fn refused(message: impl Into<String>) -> PluginFault {
-        PluginFault { code: "plugin.refused".into(), message: message.into() }
+        PluginFault {
+            code: "plugin.refused".into(),
+            message: message.into(),
+        }
     }
 
     fn guest(fault: &GuestFault) -> PluginFault {
@@ -202,7 +282,11 @@ impl PluginFault {
             None => String::new(),
         };
         PluginFault {
-            code: if fault.code.is_empty() { "plugin.fault".into() } else { fault.code.clone() },
+            code: if fault.code.is_empty() {
+                "plugin.fault".into()
+            } else {
+                fault.code.clone()
+            },
             message: format!("{}{where_}", fault.message),
         }
     }
@@ -254,7 +338,9 @@ impl Plugin {
     pub fn load(bytes: &[u8]) -> Result<Plugin, PluginFault> {
         let engine = engine();
         let component = Component::new(engine, bytes).map_err(|error| {
-            PluginFault::host(format!("this is not a component this engine can run: {error}"))
+            PluginFault::host(format!(
+                "this is not a component this engine can run: {error}"
+            ))
         })?;
         let linker: Linker<()> = Linker::new(engine);
         let mut store = Store::new(engine, ());
@@ -268,31 +354,102 @@ impl Plugin {
             .interface0
             .call_describe(&mut store)
             .map_err(|error| PluginFault::host(format!("`describe` did not answer: {error}")))?;
-        let queries: Vec<QueryDefinition> = declared.queries.into_iter().map(query_definition).collect::<Result<_, _>>()?;
+        let queries: Vec<QueryDefinition> = declared
+            .queries
+            .into_iter()
+            .map(query_definition)
+            .collect::<Result<_, _>>()?;
         let descriptor = Descriptor {
-            tools: declared.tools.into_iter().map(|tool|misa_proto::tool::Binding{name:tool.name,description:tool.description,command:tool.command}).collect(),
-            commands: declared.commands.into_iter().map(|command| Ok(CommandDefinition {
-                id: command.id, input: schema(&command.input)?, event: command.event,
-                request: command.request.map(|request| serde_json::from_str(&request).map_err(|_| PluginFault::refused("Invalid command input form"))).transpose()?,
-            })).collect::<Result<_, PluginFault>>()?,
-            bindings: declared.bindings.into_iter().map(|binding| Ok(misa_proto::invocation::Binding {
-                id: binding.id, binding: misa_proto::invocation::ActionBinding {
-                    command: binding.command,
-                    bound: serde_json::from_str(&binding.bound).map_err(|error| PluginFault::refused(format!("invalid bound arguments: {error}")))?,
-                    inputs: serde_json::from_str(&binding.inputs).map_err(|error| PluginFault::refused(format!("invalid binding inputs: {error}")))?,
-                },
-            })).collect::<Result<_, PluginFault>>()?,
-            presentations: declared.presentations.into_iter().map(|presentation| Ok(Presentation {
-                id: format!("plugin.{}.{}", declared.id, presentation.id), title: presentation.title,
-                variants: presentation.variants.into_iter().map(|variant| Ok(PresentationVariant {
-                    id: variant.id, requirements: variant.requirements,
-                    member: misa_proto::observation::Member {
-                        contract: queries.iter().find(|query| query.id == variant.query.id).ok_or_else(|| PluginFault::refused("presentation names undeclared query"))?.contract.clone(),
-                        query: Query { id: variant.query.id, args: variant.query.args.iter().map(|arg| from_json(arg, "presentation query argument")).collect::<Result<_, _>>()? },
-                        encoding: misa_proto::observation::Encoding::Document, optional: false,
-                    },
-                })).collect::<Result<_, PluginFault>>()?,
-            })).collect::<Result<_, PluginFault>>()?,
+            tools: declared
+                .tools
+                .into_iter()
+                .map(|tool| misa_proto::tool::Binding {
+                    name: tool.name,
+                    description: tool.description,
+                    command: tool.command,
+                })
+                .collect(),
+            commands: declared
+                .commands
+                .into_iter()
+                .map(|command| {
+                    Ok(CommandDefinition {
+                        id: command.id,
+                        input: schema(&command.input)?,
+                        event: command.event,
+                        request: command
+                            .request
+                            .map(|request| {
+                                serde_json::from_str(&request)
+                                    .map_err(|_| PluginFault::refused("Invalid command input form"))
+                            })
+                            .transpose()?,
+                    })
+                })
+                .collect::<Result<_, PluginFault>>()?,
+            bindings: declared
+                .bindings
+                .into_iter()
+                .map(|binding| {
+                    Ok(misa_proto::invocation::Binding {
+                        id: binding.id,
+                        binding: misa_proto::invocation::ActionBinding {
+                            command: binding.command,
+                            bound: serde_json::from_str(&binding.bound).map_err(|error| {
+                                PluginFault::refused(format!("invalid bound arguments: {error}"))
+                            })?,
+                            inputs: serde_json::from_str(&binding.inputs).map_err(|error| {
+                                PluginFault::refused(format!("invalid binding inputs: {error}"))
+                            })?,
+                        },
+                    })
+                })
+                .collect::<Result<_, PluginFault>>()?,
+            presentations: declared
+                .presentations
+                .into_iter()
+                .map(|presentation| {
+                    Ok(Presentation {
+                        id: format!("plugin.{}.{}", declared.id, presentation.id),
+                        title: presentation.title,
+                        variants: presentation
+                            .variants
+                            .into_iter()
+                            .map(|variant| {
+                                Ok(PresentationVariant {
+                                    id: variant.id,
+                                    requirements: variant.requirements,
+                                    member: misa_proto::observation::Member {
+                                        contract: queries
+                                            .iter()
+                                            .find(|query| query.id == variant.query.id)
+                                            .ok_or_else(|| {
+                                                PluginFault::refused(
+                                                    "presentation names undeclared query",
+                                                )
+                                            })?
+                                            .contract
+                                            .clone(),
+                                        query: Query {
+                                            id: variant.query.id,
+                                            args: variant
+                                                .query
+                                                .args
+                                                .iter()
+                                                .map(|arg| {
+                                                    from_json(arg, "presentation query argument")
+                                                })
+                                                .collect::<Result<_, _>>()?,
+                                        },
+                                        encoding: misa_proto::observation::Encoding::Document,
+                                        optional: false,
+                                    },
+                                })
+                            })
+                            .collect::<Result<_, PluginFault>>()?,
+                    })
+                })
+                .collect::<Result<_, PluginFault>>()?,
             id: declared.id,
             version: declared.version,
             events: declared.events,
@@ -306,7 +463,10 @@ impl Plugin {
                 descriptor.id
             )));
         }
-        Ok(Plugin { inner: Mutex::new(Guest { store, bindings }), descriptor })
+        Ok(Plugin {
+            inner: Mutex::new(Guest { store, bindings }),
+            descriptor,
+        })
     }
 
     pub fn descriptor(&self) -> &Descriptor {
@@ -325,7 +485,10 @@ impl Plugin {
     pub fn configure(&self, options: &[(String, String)]) -> Result<(), PluginFault> {
         let options = options
             .iter()
-            .map(|(key, value)| OptionValue { key: key.clone(), value: value.clone() })
+            .map(|(key, value)| OptionValue {
+                key: key.clone(),
+                value: value.clone(),
+            })
             .collect::<Vec<_>>();
         let mut inner = self.lock()?;
         let Guest { store, bindings } = &mut *inner;
@@ -345,7 +508,10 @@ impl Plugin {
     pub fn validate(&self, interpreter: &dyn Interpreter) -> Result<(), PluginFault> {
         for kind in &self.descriptor.effects {
             if let Some(why) = not_a_plugin_effect(kind) {
-                return Err(PluginFault::refused(format!("`{}`: {why}", self.descriptor.id)));
+                return Err(PluginFault::refused(format!(
+                    "`{}`: {why}",
+                    self.descriptor.id
+                )));
             }
             interpreter.accepts(&Effect::new(kind.clone())).map_err(|why| {
                 PluginFault::refused(format!(
@@ -364,17 +530,30 @@ impl Plugin {
         }
         let mut ids = std::collections::BTreeSet::new();
         for query in &self.descriptor.queries {
-            query.export().check().map_err(|fault| PluginFault::refused(fault.message))?;
+            query
+                .export()
+                .check()
+                .map_err(|fault| PluginFault::refused(fault.message))?;
             if !plain_id(&query.id) || !ids.insert(&query.id) {
-                return Err(PluginFault::refused(format!("Invalid or duplicate query `{}`", query.id)));
+                return Err(PluginFault::refused(format!(
+                    "Invalid or duplicate query `{}`",
+                    query.id
+                )));
             }
             if let QuerySource::Read { roots, .. } = &query.source {
                 plain_roots(&query.id, roots)?;
             }
             if let QuerySource::Derived { inputs } = &query.source {
                 for input in inputs {
-                    if !plain_id(&input.id) { return Err(PluginFault::refused("Invalid dependency name")); }
-                    if let Some(target) = self.descriptor.queries.iter().find(|target| target.id == input.id) {
+                    if !plain_id(&input.id) {
+                        return Err(PluginFault::refused("Invalid dependency name"));
+                    }
+                    if let Some(target) = self
+                        .descriptor
+                        .queries
+                        .iter()
+                        .find(|target| target.id == input.id)
+                    {
                         validate_arguments(target, &input.args)?;
                     }
                 }
@@ -385,28 +564,73 @@ impl Plugin {
         let event_prefix = format!("plugin.{}.", self.descriptor.id);
         let mut commands = std::collections::BTreeSet::new();
         for command in &self.descriptor.commands {
-            if !plain_id(&command.id) || !command.id.starts_with(&prefix) || !commands.insert(&command.id)
-                || !command.event.starts_with(&event_prefix) || !self.descriptor.events.contains(&command.event) {
-                return Err(PluginFault::refused("Invalid command or undeclared command event"));
+            if !plain_id(&command.id)
+                || !command.id.starts_with(&prefix)
+                || !commands.insert(&command.id)
+                || !command.event.starts_with(&event_prefix)
+                || !self.descriptor.events.contains(&command.event)
+            {
+                return Err(PluginFault::refused(
+                    "Invalid command or undeclared command event",
+                ));
             }
-            command.export().validate().map_err(|fault| PluginFault::refused(fault.message))?;
-            if let Some(request) = &command.request { request.validate().map_err(|fault| PluginFault::refused(fault.message))?; }
+            command
+                .export()
+                .validate()
+                .map_err(|fault| PluginFault::refused(fault.message))?;
+            if let Some(request) = &command.request {
+                request
+                    .validate()
+                    .map_err(|fault| PluginFault::refused(fault.message))?;
+            }
         }
         let mut bindings = std::collections::BTreeSet::new();
-        let mut tools=std::collections::BTreeSet::new();
+        let mut tools = std::collections::BTreeSet::new();
         for tool in &self.descriptor.tools {
-            if tool.name.len()>64 || !tool.name.starts_with(&format!("{}_",self.descriptor.id.replace('.',"_"))) || !tool.name.bytes().all(|byte|byte.is_ascii_alphanumeric() || b"_-".contains(&byte)) || tool.description.is_empty() || !tools.insert(&tool.name) || !commands.contains(&tool.command) {
-                return Err(PluginFault::refused("Invalid tool or undeclared tool command"));
+            if tool.name.len() > 64
+                || !tool
+                    .name
+                    .starts_with(&format!("{}_", self.descriptor.id.replace('.', "_")))
+                || !tool
+                    .name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+                || tool.description.is_empty()
+                || !tools.insert(&tool.name)
+                || !commands.contains(&tool.command)
+            {
+                return Err(PluginFault::refused(
+                    "Invalid tool or undeclared tool command",
+                ));
             }
         }
         for binding in &self.descriptor.bindings {
-            if !plain_id(&binding.id) || !binding.id.starts_with(&prefix) || !bindings.insert(&binding.id) || !commands.contains(&binding.binding.command) {
-                return Err(PluginFault::refused("Invalid binding or undeclared bound command"));
+            if !plain_id(&binding.id)
+                || !binding.id.starts_with(&prefix)
+                || !bindings.insert(&binding.id)
+                || !commands.contains(&binding.binding.command)
+            {
+                return Err(PluginFault::refused(
+                    "Invalid binding or undeclared bound command",
+                ));
             }
-            let command = self.descriptor.commands.iter().find(|command| command.id == binding.binding.command).expect("declared command was checked");
-            binding.binding.validate_for(&command.export()).map_err(|fault| PluginFault::refused(fault.message))?;
+            let command = self
+                .descriptor
+                .commands
+                .iter()
+                .find(|command| command.id == binding.binding.command)
+                .expect("declared command was checked");
+            binding
+                .binding
+                .validate_for(&command.export())
+                .map_err(|fault| PluginFault::refused(fault.message))?;
         }
-        let exports = self.descriptor.queries.iter().map(|query| (query.id.clone(), query.export())).collect();
+        let exports = self
+            .descriptor
+            .queries
+            .iter()
+            .map(|query| (query.id.clone(), query.export()))
+            .collect();
         misa_proto::presentation::validate_catalog(&self.descriptor.presentations, &exports)
             .map_err(|fault| PluginFault::refused(fault.message))?;
         plain_roots(&self.descriptor.id, &self.descriptor.roots)
@@ -417,7 +641,12 @@ impl Plugin {
         for query in &self.descriptor.queries {
             if let QuerySource::Read { roots, .. } = &query.source {
                 for root in roots {
-                    if !allowed_roots.contains(root) { return Err(PluginFault::refused(format!("query `{}` has no read grant for `{root}`", query.id))); }
+                    if !allowed_roots.contains(root) {
+                        return Err(PluginFault::refused(format!(
+                            "query `{}` has no read grant for `{root}`",
+                            query.id
+                        )));
+                    }
                 }
             }
         }
@@ -453,14 +682,25 @@ impl Plugin {
                 let plugin = self.clone();
                 let query_name = definition.id.clone();
                 let subscription = match &definition.source {
-                    QuerySource::Read { .. } => misa_reframe::try_read_query(move |db, query, previous| {
-                        plugin.query(&query_name, &query.args, &[], Some(db), previous)
-                            .map_err(|fault| misa_reframe::Fault::new(fault.code, fault.message))
-                    }),
-                    QuerySource::Derived { inputs } => misa_reframe::try_derived_query(misa_reframe::Inputs::Fixed(inputs.clone()), move |inputs, query, previous| {
-                        plugin.query(&query_name, &query.args, inputs, None, previous)
-                            .map_err(|fault| misa_reframe::Fault::new(fault.code, fault.message))
-                    }),
+                    QuerySource::Read { .. } => {
+                        misa_reframe::try_read_query(move |db, query, previous| {
+                            plugin
+                                .query(&query_name, &query.args, &[], Some(db), previous)
+                                .map_err(|fault| {
+                                    misa_reframe::Fault::new(fault.code, fault.message)
+                                })
+                        })
+                    }
+                    QuerySource::Derived { inputs } => misa_reframe::try_derived_query(
+                        misa_reframe::Inputs::Fixed(inputs.clone()),
+                        move |inputs, query, previous| {
+                            plugin
+                                .query(&query_name, &query.args, inputs, None, previous)
+                                .map_err(|fault| {
+                                    misa_reframe::Fault::new(fault.code, fault.message)
+                                })
+                        },
+                    ),
                 };
                 (definition.id.clone(), subscription)
             })
@@ -468,7 +708,11 @@ impl Plugin {
     }
 
     /// One event, as the loop's vocabulary sees it, and what the plugin wants done about it.
-    pub fn handle(&self, event: &Event, db: &Value) -> Result<(Vec<Patch>, Vec<Effect>), PluginFault> {
+    pub fn handle(
+        &self,
+        event: &Event,
+        db: &Value,
+    ) -> Result<(Vec<Patch>, Vec<Effect>), PluginFault> {
         let asked = GuestEvent {
             kind: event.kind.clone(),
             data: optional_json(&event.data, "event data")?,
@@ -484,9 +728,19 @@ impl Plugin {
             .map_err(|fault| PluginFault::guest(&fault))?;
         let (patches, effects) = answered;
         let effects = effects_of(&effects)?;
-        for effect in &effects { validate_effect(&self.descriptor.id, &self.descriptor.effects, effect)?; }
-        if !effects.is_empty() && self.descriptor.commands.iter().any(|command| command.event == event.kind) {
-            return Err(PluginFault::refused("A transaction command may return state patches only; asynchronous work requires an operation-aware command"));
+        for effect in &effects {
+            validate_effect(&self.descriptor.id, &self.descriptor.effects, effect)?;
+        }
+        if !effects.is_empty()
+            && self
+                .descriptor
+                .commands
+                .iter()
+                .any(|command| command.event == event.kind)
+        {
+            return Err(PluginFault::refused(
+                "A transaction command may return state patches only; asynchronous work requires an operation-aware command",
+            ));
         }
         Ok((patches_of(&patches)?, effects))
     }
@@ -503,25 +757,48 @@ impl Plugin {
         db: Option<&Value>,
         previous: Option<&Value>,
     ) -> Result<Value, PluginFault> {
-        let definition = self.descriptor.queries.iter().find(|definition| definition.id == id)
+        let definition = self
+            .descriptor
+            .queries
+            .iter()
+            .find(|definition| definition.id == id)
             .ok_or_else(|| PluginFault::refused(format!("undeclared query `{id}`")))?;
         validate_arguments(definition, args)?;
         let read_data = match &definition.source {
             QuerySource::Read { roots, schema } => {
-                if !inputs.is_empty() { return Err(PluginFault::refused("read query cannot receive derived inputs")); }
-                let db = db.ok_or_else(|| PluginFault::refused("read query requires its data contract"))?;
-                let selected = Value::Map(Arc::new(roots.iter().filter_map(|root| db.get(root).map(|value| (root.clone(), value.clone()))).collect()));
-                schema.validate(&selected).map_err(|error| PluginFault::refused(error.to_string()))?;
+                if !inputs.is_empty() {
+                    return Err(PluginFault::refused(
+                        "read query cannot receive derived inputs",
+                    ));
+                }
+                let db = db
+                    .ok_or_else(|| PluginFault::refused("read query requires its data contract"))?;
+                let selected = Value::Map(Arc::new(
+                    roots
+                        .iter()
+                        .filter_map(|root| db.get(root).map(|value| (root.clone(), value.clone())))
+                        .collect(),
+                ));
+                schema
+                    .validate(&selected)
+                    .map_err(|error| PluginFault::refused(error.to_string()))?;
                 Some(to_json(&selected, "declared read data")?)
             }
             QuerySource::Derived { inputs: declared } => {
-                if db.is_some() || inputs.len() != declared.len() { return Err(PluginFault::refused("derived query requires only its declared inputs")); }
+                if db.is_some() || inputs.len() != declared.len() {
+                    return Err(PluginFault::refused(
+                        "derived query requires only its declared inputs",
+                    ));
+                }
                 None
             }
         };
         let request = QueryRequest {
             id: id.to_string(),
-            args: args.iter().map(|arg| to_json(arg, "a query argument")).collect::<Result<Vec<_>, _>>()?,
+            args: args
+                .iter()
+                .map(|arg| to_json(arg, "a query argument"))
+                .collect::<Result<Vec<_>, _>>()?,
         };
         let inputs = inputs
             .iter()
@@ -536,13 +813,23 @@ impl Plugin {
         fuelled(store)?;
         let answered = bindings
             .interface0
-            .call_query(store, &request, &inputs, read_data.as_deref(), previous.as_deref())
+            .call_query(
+                store,
+                &request,
+                &inputs,
+                read_data.as_deref(),
+                previous.as_deref(),
+            )
             .map_err(|error| PluginFault::trap(&self.descriptor.id, error))?
             .map_err(|fault| PluginFault::guest(&fault))?;
         let value = from_json(&answered, "a query answer")?;
         match &definition.result {
-            QueryResultContract::Data { schema } => schema.validate(&value).map_err(|error| PluginFault::refused(format!("query `{id}` result: {error}")))?,
-            QueryResultContract::Document {} => { self.document(&value)?; }
+            QueryResultContract::Data { schema } => schema
+                .validate(&value)
+                .map_err(|error| PluginFault::refused(format!("query `{id}` result: {error}")))?,
+            QueryResultContract::Document {} => {
+                self.document(&value)?;
+            }
         }
         Ok(value)
     }
@@ -556,9 +843,20 @@ impl Plugin {
         let node: Node = serde_json::from_str(&to_json(value, "semantic document")?)
             .map_err(|error| PluginFault::refused(format!("invalid semantic document: {error}")))?;
         named(&node)?;
-        offered(&self.descriptor.id, &node, &self.descriptor.bindings.iter().map(|binding| binding.id.clone()).collect::<Vec<_>>())?;
+        offered(
+            &self.descriptor.id,
+            &node,
+            &self
+                .descriptor
+                .bindings
+                .iter()
+                .map(|binding| binding.id.clone())
+                .collect::<Vec<_>>(),
+        )?;
         misa_proto::view::validate(&node).map_err(|fault| {
-            PluginFault::host(format!("the plugin's view is not one a client may be sent: {fault}"))
+            PluginFault::host(format!(
+                "the plugin's view is not one a client may be sent: {fault}"
+            ))
         })?;
         Ok(node)
     }
@@ -569,7 +867,9 @@ impl Plugin {
     /// — every path to a guest is a `Result` — so this is the one place that would rather
     /// report than unwind.
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Guest>, PluginFault> {
-        self.inner.lock().map_err(|_| PluginFault::host("the plugin is poisoned by a panic"))
+        self.inner
+            .lock()
+            .map_err(|_| PluginFault::host("the plugin is poisoned by a panic"))
     }
 }
 
@@ -659,16 +959,27 @@ fn plain_roots(id: &str, roots: &[String]) -> Result<(), PluginFault> {
 /// told — the same rule that keeps presentation out of the middle layer.
 fn validate_effect(plugin: &str, declared: &[String], effect: &Effect) -> Result<(), PluginFault> {
     if !declared.contains(&effect.kind) || not_a_plugin_effect(&effect.kind).is_some() {
-        return Err(PluginFault::refused("Plugin returned an undeclared or owner-only effect"));
+        return Err(PluginFault::refused(
+            "Plugin returned an undeclared or owner-only effect",
+        ));
     }
-    if effect.kind == "kernel.log.append" && !effect.get("kind").and_then(Value::as_str).is_some_and(|kind| kind.starts_with(&format!("guest.{plugin}."))) {
-        return Err(PluginFault::refused("A plugin may append only its guest journal namespace, never owner facts or checkpoints"));
+    if effect.kind == "kernel.log.append"
+        && !effect
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.starts_with(&format!("guest.{plugin}.")))
+    {
+        return Err(PluginFault::refused(
+            "A plugin may append only its guest journal namespace, never owner facts or checkpoints",
+        ));
     }
     Ok(())
 }
 fn not_a_plugin_effect(kind: &str) -> Option<&'static str> {
     match kind {
-        "owner.input.continue" => Some("input continuation authority is supplied by the owner, never a plugin effect"),
+        "owner.input.continue" => {
+            Some("input continuation authority is supplied by the owner, never a plugin effect")
+        }
         "wire.event" => Some(
             "a wire event carries a `SessionEvent` in the protocol's own encoding, which json \
              cannot express; a plugin reports by patching state and the session decides what to \
@@ -698,8 +1009,9 @@ fn optional_json(value: &Value, what: &str) -> Result<Option<String>, PluginFaul
 
 /// Json text as a value.
 fn from_json(text: &str, what: &str) -> Result<Value, PluginFault> {
-    serde_json::from_str(text)
-        .map_err(|error| PluginFault::host(format!("{what} is not json this host can read: {error}")))
+    serde_json::from_str(text).map_err(|error| {
+        PluginFault::host(format!("{what} is not json this host can read: {error}"))
+    })
 }
 
 fn patches_of(patches: &[GuestPatch]) -> Result<Vec<Patch>, PluginFault> {
@@ -731,7 +1043,10 @@ fn patches_of(patches: &[GuestPatch]) -> Result<Vec<Patch>, PluginFault> {
                     Op::AppendAll(items)
                 }
             };
-            Ok(Patch { path: patch.path.clone(), op })
+            Ok(Patch {
+                path: patch.path.clone(),
+                op,
+            })
         })
         .collect()
 }
@@ -757,10 +1072,17 @@ mod tests {
     #[test]
     fn result_contracts_and_argument_schemas_are_validated() {
         assert!(result_contract(r#"{"kind":"document"}"#).is_ok());
-        assert!(result_contract(r#"{"kind":"data","schema":{"type":"choice","values":[]}}"#).is_err());
+        assert!(
+            result_contract(r#"{"kind":"data","schema":{"type":"choice","values":[]}}"#).is_err()
+        );
         assert!(result_contract(r#"{"kind":"document","schema":{"type":"int"}}"#).is_err());
-        let query = QueryDefinition { id: "test".into(), contract: "test@1".into(), arguments: vec![Schema::Int], result: QueryResultContract::Document {},
-            source: QuerySource::Derived { inputs: vec![] } };
+        let query = QueryDefinition {
+            id: "test".into(),
+            contract: "test@1".into(),
+            arguments: vec![Schema::Int],
+            result: QueryResultContract::Document {},
+            source: QuerySource::Derived { inputs: vec![] },
+        };
         assert!(validate_arguments(&query, &[]).is_err());
         assert!(validate_arguments(&query, &[Value::str("1")]).is_err());
         assert!(validate_arguments(&query, &[Value::Int(1)]).is_ok());
@@ -769,26 +1091,53 @@ mod tests {
     #[test]
     fn presentation_variants_use_declared_preference_order_and_exact_capabilities() {
         let variant = |id: &str, requirements: Vec<String>| PresentationVariant {
-            id: id.into(), requirements, member: misa_proto::observation::Member {
-                query: Query::new(format!("test.{id}")), contract: "test@1".into(), encoding: misa_proto::observation::Encoding::Document, optional: false,
+            id: id.into(),
+            requirements,
+            member: misa_proto::observation::Member {
+                query: Query::new(format!("test.{id}")),
+                contract: "test@1".into(),
+                encoding: misa_proto::observation::Encoding::Document,
+                optional: false,
             },
         };
-        let presentation = Presentation { id: "test".into(), title: "Test".into(), variants: vec![
-            variant("rich", vec!["images@1".into()]), variant("basic", vec![]),
-        ] };
+        let presentation = Presentation {
+            id: "test".into(),
+            title: "Test".into(),
+            variants: vec![
+                variant("rich", vec!["images@1".into()]),
+                variant("basic", vec![]),
+            ],
+        };
         assert_eq!(presentation.select(&[]).unwrap().id, "basic");
-        assert_eq!(presentation.select(&["images@1".into()]).unwrap().id, "rich");
-        assert_eq!(presentation.select(&["images@2".into()]).unwrap().id, "basic");
+        assert_eq!(
+            presentation.select(&["images@1".into()]).unwrap().id,
+            "rich"
+        );
+        assert_eq!(
+            presentation.select(&["images@2".into()]).unwrap().id,
+            "basic"
+        );
     }
 
     #[test]
     fn local_dependency_cycles_fail_before_running_a_guest() {
         let query = |id: &str, dependency: &str| QueryDefinition {
-            id: id.into(), contract: format!("{id}@1"), arguments: vec![],
-            result: QueryResultContract::Data { schema: Schema::Int },
-            source: QuerySource::Derived { inputs: vec![Query::new(dependency)] },
+            id: id.into(),
+            contract: format!("{id}@1"),
+            arguments: vec![],
+            result: QueryResultContract::Data {
+                schema: Schema::Int,
+            },
+            source: QuerySource::Derived {
+                inputs: vec![Query::new(dependency)],
+            },
         };
-        assert!(validate_local_graph(&[query("a", "b"), query("b", "a")]).unwrap_err().message.contains("cycle"));
+        assert!(
+            validate_local_graph(&[query("a", "b"), query("b", "a")])
+                .unwrap_err()
+                .message
+                .contains("cycle")
+        );
         // External names are checked once the installing owner has composed all definitions.
         assert!(validate_local_graph(&[query("a", "external")]).is_ok());
     }
@@ -815,31 +1164,62 @@ mod tests {
     #[test]
     fn every_op_the_world_has_arrives_as_the_loops_own() {
         let patches = patches_of(&[
-            GuestPatch { path: "a".into(), op: GuestOp::Set("\"x\"".into()) },
-            GuestPatch { path: "b".into(), op: GuestOp::Merge(r#"{"k":1}"#.into()) },
-            GuestPatch { path: "c".into(), op: GuestOp::Delete },
-            GuestPatch { path: "d".into(), op: GuestOp::Append("2".into()) },
-            GuestPatch { path: "e".into(), op: GuestOp::AppendAll("[1,2]".into()) },
+            GuestPatch {
+                path: "a".into(),
+                op: GuestOp::Set("\"x\"".into()),
+            },
+            GuestPatch {
+                path: "b".into(),
+                op: GuestOp::Merge(r#"{"k":1}"#.into()),
+            },
+            GuestPatch {
+                path: "c".into(),
+                op: GuestOp::Delete,
+            },
+            GuestPatch {
+                path: "d".into(),
+                op: GuestOp::Append("2".into()),
+            },
+            GuestPatch {
+                path: "e".into(),
+                op: GuestOp::AppendAll("[1,2]".into()),
+            },
         ])
         .unwrap();
         assert_eq!(patches[0].op, Op::Set(Value::str("x")));
         assert_eq!(patches[1].op, Op::Merge(Value::map([("k", Value::Int(1))])));
         assert_eq!(patches[2].op, Op::Delete);
         assert_eq!(patches[3].op, Op::Append(Value::Int(2)));
-        assert_eq!(patches[4].op, Op::AppendAll(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(
+            patches[4].op,
+            Op::AppendAll(vec![Value::Int(1), Value::Int(2)])
+        );
 
         // Append-all is the one op whose shape matters: it grows a list by every element of
         // one, so a single value is not a thing it can be given.
-        let fault = patches_of(&[GuestPatch { path: "e".into(), op: GuestOp::AppendAll("1".into()) }])
-            .unwrap_err();
-        assert!(fault.message.contains("append-all takes a list"), "{}", fault.message);
+        let fault = patches_of(&[GuestPatch {
+            path: "e".into(),
+            op: GuestOp::AppendAll("1".into()),
+        }])
+        .unwrap_err();
+        assert!(
+            fault.message.contains("append-all takes a list"),
+            "{}",
+            fault.message
+        );
     }
 
     #[test]
     fn an_effect_carries_its_data_or_nothing_at_all() {
         let effects = effects_of(&[
-            GuestEffect { kind: "kernel.log.append".into(), data: Some(r#"{"kind":"note"}"#.into()) },
-            GuestEffect { kind: "kernel.log.list".into(), data: None },
+            GuestEffect {
+                kind: "kernel.log.append".into(),
+                data: Some(r#"{"kind":"note"}"#.into()),
+            },
+            GuestEffect {
+                kind: "kernel.log.list".into(),
+                data: None,
+            },
         ])
         .unwrap();
         assert_eq!(effects[0].kind, "kernel.log.append");
@@ -848,7 +1228,13 @@ mod tests {
 
         // Data that is not json is the plugin's mistake, and it is a fault rather than an
         // effect the interpreter would refuse for a reason about the wrong thing.
-        assert!(effects_of(&[GuestEffect { kind: "k".into(), data: Some("nope".into()) }]).is_err());
+        assert!(
+            effects_of(&[GuestEffect {
+                kind: "k".into(),
+                data: Some("nope".into())
+            }])
+            .is_err()
+        );
     }
 
     #[test]
@@ -937,10 +1323,12 @@ mod tests {
         // so the only thing that makes them is the kernel's blob store.
         let bytes = to_json(&Value::Bytes(std::sync::Arc::from(&b"ab"[..])), "bytes").unwrap();
         assert_eq!(bytes, "[97,98]");
-        assert_eq!(from_json(&bytes, "bytes").unwrap(), Value::list([Value::Int(97), Value::Int(98)]));
+        assert_eq!(
+            from_json(&bytes, "bytes").unwrap(),
+            Value::list([Value::Int(97), Value::Int(98)])
+        );
         assert_eq!(optional_json(&Value::Null, "nothing").unwrap(), None);
     }
-
 }
 
 #[cfg(test)]
@@ -948,12 +1336,32 @@ mod authority_tests {
     use super::*;
     #[test]
     fn guest_effects_cannot_forge_owner_checkpoints_or_continuation_authority() {
-        let declared=vec!["kernel.log.append".into(),"owner.input.continue".into()];
-        for kind in ["operations.checkpoint","plugin.patch","message","reset","guest.other.note"] {
-            assert!(validate_effect("test",&declared,&Effect::new("kernel.log.append").with("kind",Value::str(kind))).is_err());
+        let declared = vec!["kernel.log.append".into(), "owner.input.continue".into()];
+        for kind in [
+            "operations.checkpoint",
+            "plugin.patch",
+            "message",
+            "reset",
+            "guest.other.note",
+        ] {
+            assert!(
+                validate_effect(
+                    "test",
+                    &declared,
+                    &Effect::new("kernel.log.append").with("kind", Value::str(kind))
+                )
+                .is_err()
+            );
         }
-        assert!(validate_effect("test",&declared,&Effect::new("kernel.log.append").with("kind",Value::str("guest.test.note"))).is_ok());
-        assert!(validate_effect("test",&declared,&Effect::new("owner.input.continue")).is_err());
-        assert!(validate_effect("test",&[],&Effect::new("kernel.log.list")).is_err());
+        assert!(
+            validate_effect(
+                "test",
+                &declared,
+                &Effect::new("kernel.log.append").with("kind", Value::str("guest.test.note"))
+            )
+            .is_ok()
+        );
+        assert!(validate_effect("test", &declared, &Effect::new("owner.input.continue")).is_err());
+        assert!(validate_effect("test", &[], &Effect::new("kernel.log.list")).is_err());
     }
 }

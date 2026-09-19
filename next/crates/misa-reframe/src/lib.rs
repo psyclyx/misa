@@ -65,7 +65,10 @@ pub struct Event {
 
 impl Event {
     pub fn new(kind: impl Into<String>) -> Self {
-        Event { kind: kind.into(), data: Value::Null }
+        Event {
+            kind: kind.into(),
+            data: Value::Null,
+        }
     }
 
     pub fn with(mut self, key: &'static str, value: impl Into<Value>) -> Self {
@@ -113,7 +116,10 @@ pub struct Effect {
 
 impl Effect {
     pub fn new(kind: impl Into<String>) -> Self {
-        Effect { kind: kind.into(), data: Value::Null }
+        Effect {
+            kind: kind.into(),
+            data: Value::Null,
+        }
     }
 
     pub fn with(mut self, key: &'static str, value: impl Into<Value>) -> Self {
@@ -154,7 +160,13 @@ pub struct Fault {
 
 impl Fault {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Fault { code: code.into(), message: message.into(), event: None, source: None, data: Value::Null }
+        Fault {
+            code: code.into(),
+            message: message.into(),
+            event: None,
+            source: None,
+            data: Value::Null,
+        }
     }
 
     pub fn in_event(mut self, event: impl Into<String>) -> Self {
@@ -184,8 +196,11 @@ impl Fault {
         if let Some(source) = source {
             data.insert("source".to_string(), Value::str(source));
         }
-        Fault::new("argument.required", format!("`/{command}` needs an argument for `{arg}`"))
-            .with_data(Value::Map(Arc::new(data)))
+        Fault::new(
+            "argument.required",
+            format!("`/{command}` needs an argument for `{arg}`"),
+        )
+        .with_data(Value::Map(Arc::new(data)))
     }
 
     /// A handler refused the event, or failed while handling it.
@@ -270,7 +285,10 @@ impl<'a> Tx<'a> {
     /// such handler fight the borrow checker. Reading is rare enough that the
     /// allocation is not worth avoiding.
     pub fn text(&self, path: &str) -> String {
-        self.get(path).and_then(Value::as_str).unwrap_or_default().to_string()
+        self.get(path)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
     }
 
     pub fn flag(&self, path: &str) -> bool {
@@ -358,7 +376,10 @@ pub struct FnHandler<F> {
 
 impl<F> FnHandler<F> {
     pub fn new(id: impl Into<String>, body: F) -> Self {
-        FnHandler { id: id.into(), body }
+        FnHandler {
+            id: id.into(),
+            body,
+        }
     }
 }
 
@@ -377,7 +398,8 @@ where
 
 /// A derived query can access only its declared inputs. The previous result is
 /// an optional immutable optimization hint, never a correctness dependency.
-pub type Compute = Arc<dyn Fn(&[Value], &Query, Option<&Value>) -> Result<Value, Fault> + Send + Sync>;
+pub type Compute =
+    Arc<dyn Fn(&[Value], &Query, Option<&Value>) -> Result<Value, Fault> + Send + Sync>;
 pub type Read = Arc<dyn Fn(&Value, &Query, Option<&Value>) -> Result<Value, Fault> + Send + Sync>;
 
 /// A pure query with declared inputs.
@@ -392,12 +414,18 @@ pub enum Subscription {
 /// The honest declaration when a query is over a whole root: naming every path it
 /// touches would be a lie, so it names the database, and the scope invalidates it
 /// on the database's identity rather than on a list of paths.
-pub fn read_query(compute: impl Fn(&Value, &Query) -> Value + Send + Sync + 'static) -> Subscription {
+pub fn read_query(
+    compute: impl Fn(&Value, &Query) -> Value + Send + Sync + 'static,
+) -> Subscription {
     try_read_query(move |db, query, _previous| Ok(compute(db, query)))
 }
 
-pub fn try_read_query(compute: impl Fn(&Value, &Query, Option<&Value>) -> Result<Value, Fault> + Send + Sync + 'static) -> Subscription {
-    Subscription::Read { read: Arc::new(compute) }
+pub fn try_read_query(
+    compute: impl Fn(&Value, &Query, Option<&Value>) -> Result<Value, Fault> + Send + Sync + 'static,
+) -> Subscription {
+    Subscription::Read {
+        read: Arc::new(compute),
+    }
 }
 
 /// A pure projection of named query results, independent of any consumer.
@@ -411,8 +439,14 @@ pub fn derived_query(
     }
 }
 
-pub fn try_derived_query(inputs: Inputs, compute: impl Fn(&[Value], &Query, Option<&Value>) -> Result<Value, Fault> + Send + Sync + 'static) -> Subscription {
-    Subscription::Derived { inputs, compute: Arc::new(compute) }
+pub fn try_derived_query(
+    inputs: Inputs,
+    compute: impl Fn(&[Value], &Query, Option<&Value>) -> Result<Value, Fault> + Send + Sync + 'static,
+) -> Subscription {
+    Subscription::Derived {
+        inputs,
+        compute: Arc::new(compute),
+    }
 }
 
 /// What a query depends on.
@@ -443,7 +477,10 @@ impl Registry {
     /// or effects. Any failure rolls back the entire dispatch.
     /// Return true after changing patches or effects so the loop rebuilds the
     /// committed changes and validates the final effects before publication.
-    pub fn finalize(mut self, finalize: impl Fn(&Value, &mut Outcome) -> Result<bool, Fault> + Send + Sync + 'static) -> Self {
+    pub fn finalize(
+        mut self,
+        finalize: impl Fn(&Value, &mut Outcome) -> Result<bool, Fault> + Send + Sync + 'static,
+    ) -> Self {
         self.finalizers.push(Arc::new(finalize));
         self
     }
@@ -455,16 +492,31 @@ impl Registry {
     ///
     /// Order is ascending priority, then registration id, so it does not depend on
     /// the order these calls happen to be written in.
-    pub fn on(mut self, event_kind: impl Into<String>, priority: i32, handler: impl Handler + 'static) -> Self {
+    pub fn on(
+        mut self,
+        event_kind: impl Into<String>,
+        priority: i32,
+        handler: impl Handler + 'static,
+    ) -> Self {
         let kind = event_kind.into();
         let entry = self.handlers.entry(kind).or_default();
         entry.push((priority, Arc::new(handler)));
-        entry.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.id().cmp(right.1.id())));
+        entry.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.id().cmp(right.1.id()))
+        });
         self
     }
 
     /// Register a closure handler.
-    pub fn on_fn<F>(self, event_kind: impl Into<String>, priority: i32, id: impl Into<String>, body: F) -> Self
+    pub fn on_fn<F>(
+        self,
+        event_kind: impl Into<String>,
+        priority: i32,
+        id: impl Into<String>,
+        body: F,
+    ) -> Self
     where
         F: Fn(&mut Tx<'_>, &Event) -> Result<(), Fault> + Send + Sync + 'static,
     {
@@ -474,7 +526,9 @@ impl Registry {
     pub fn subscription(mut self, id: impl Into<String>, subscription: Subscription) -> Self {
         let id = id.into();
         if id.is_empty() || self.subscriptions.contains_key(&id) {
-            self.installation_faults.push(Fault::query(format!("invalid or duplicate subscription `{id}`")));
+            self.installation_faults.push(Fault::query(format!(
+                "invalid or duplicate subscription `{id}`"
+            )));
         } else {
             self.subscriptions.insert(id, Arc::new(subscription));
         }
@@ -484,22 +538,47 @@ impl Registry {
     /// Validate the closed composition before its owner starts. Dynamic dependencies
     /// are checked when their query arguments are available.
     pub fn validate(&self) -> Result<(), Fault> {
-        if let Some(fault) = self.installation_faults.first() { return Err(fault.clone()); }
-        fn visit(registry: &Registry, id: &str, active: &mut Vec<String>, done: &mut std::collections::BTreeSet<String>) -> Result<(), Fault> {
-            if active.iter().any(|entry| entry == id) { return Err(Fault::query(format!("subscription dependency cycle at `{id}`"))); }
-            if done.contains(id) { return Ok(()); }
-            let definition = registry.definition(id).ok_or_else(|| Fault::query(format!("no subscription named `{id}`")))?;
-            if active.len() >= scope::DEFAULT_DEPTH { return Err(Fault::query("subscription dependencies are too deep")); }
+        if let Some(fault) = self.installation_faults.first() {
+            return Err(fault.clone());
+        }
+        fn visit(
+            registry: &Registry,
+            id: &str,
+            active: &mut Vec<String>,
+            done: &mut std::collections::BTreeSet<String>,
+        ) -> Result<(), Fault> {
+            if active.iter().any(|entry| entry == id) {
+                return Err(Fault::query(format!(
+                    "subscription dependency cycle at `{id}`"
+                )));
+            }
+            if done.contains(id) {
+                return Ok(());
+            }
+            let definition = registry
+                .definition(id)
+                .ok_or_else(|| Fault::query(format!("no subscription named `{id}`")))?;
+            if active.len() >= scope::DEFAULT_DEPTH {
+                return Err(Fault::query("subscription dependencies are too deep"));
+            }
             active.push(id.into());
-            if let Subscription::Derived { inputs: Inputs::Fixed(inputs), .. } = definition.as_ref() {
-                for query in inputs { visit(registry, &query.id, active, done)?; }
+            if let Subscription::Derived {
+                inputs: Inputs::Fixed(inputs),
+                ..
+            } = definition.as_ref()
+            {
+                for query in inputs {
+                    visit(registry, &query.id, active, done)?;
+                }
             }
             active.pop();
             done.insert(id.into());
             Ok(())
         }
         let mut done = std::collections::BTreeSet::new();
-        for id in self.subscriptions.keys() { visit(self, id, &mut Vec::new(), &mut done)?; }
+        for id in self.subscriptions.keys() {
+            visit(self, id, &mut Vec::new(), &mut done)?;
+        }
         Ok(())
     }
 
@@ -619,7 +698,9 @@ pub struct Loop {
 
 impl Loop {
     pub fn new(registry: Arc<Registry>, interpreter: Arc<dyn Interpreter>, db: Value) -> Self {
-        registry.validate().expect("invalid owner query composition");
+        registry
+            .validate()
+            .expect("invalid owner query composition");
         Loop {
             db,
             registry,
@@ -683,7 +764,11 @@ impl Loop {
     ///
     /// This is what a transport sends: everything that moved, and nothing else.
     pub fn refresh(&mut self) -> Vec<(Query, Value)> {
-        let live: Vec<Query> = self.live.lock().expect("live query set is never poisoned").clone();
+        let live: Vec<Query> = self
+            .live
+            .lock()
+            .expect("live query set is never poisoned")
+            .clone();
         let mut changed = Vec::new();
         for query in live {
             // A query that cannot be answered now may be answerable later, so it
@@ -716,9 +801,16 @@ impl Loop {
 
     /// Reserve owner resources against the final validated transaction before
     /// publishing its state. Refusal rolls back the complete dispatch chain.
-    pub fn dispatch_checked(&mut self, event: Event, admit: impl FnOnce(&Outcome) -> Result<(), Fault>) -> Outcome {
+    pub fn dispatch_checked(
+        &mut self,
+        event: Event,
+        admit: impl FnOnce(&Outcome) -> Result<(), Fault>,
+    ) -> Outcome {
         let before = self.db.clone();
-        let mut outcome = Outcome { rev: self.rev, ..Outcome::default() };
+        let mut outcome = Outcome {
+            rev: self.rev,
+            ..Outcome::default()
+        };
         let mut queue = VecDeque::new();
         queue.push_back(event);
         let mut chain = 0usize;
@@ -738,8 +830,14 @@ impl Loop {
             outcome.handled.push(event.kind.clone());
             match self.dispatch_one(&event) {
                 Ok((effects, next, change, deferred)) => {
-                    outcome.deferred.extend(deferred.into_iter().map(|patch| (outcome.changes.len(), patch)));
-                    if let Some(change) = change { outcome.changes.push(change); }
+                    outcome.deferred.extend(
+                        deferred
+                            .into_iter()
+                            .map(|patch| (outcome.changes.len(), patch)),
+                    );
+                    if let Some(change) = change {
+                        outcome.changes.push(change);
+                    }
                     outcome.effects.extend(effects);
                     queue.extend(next);
                 }
@@ -755,7 +853,10 @@ impl Loop {
             for finalize in &self.registry.finalizers {
                 match finalize(&before, &mut outcome) {
                     Ok(changed) => finalized |= changed,
-                    Err(fault) => { outcome.faults.push(fault); break; }
+                    Err(fault) => {
+                        outcome.faults.push(fault);
+                        break;
+                    }
                 }
             }
             if outcome.committed() && finalized {
@@ -763,23 +864,39 @@ impl Loop {
                 for change in &mut outcome.changes {
                     change.before = working.clone();
                     match misa_value::apply(&working, &change.patches) {
-                        Ok(value) => { working = value; change.after = working.clone(); }
-                        Err(error) => { outcome.faults.push(Fault::patch(error.to_string())); break; }
+                        Ok(value) => {
+                            working = value;
+                            change.after = working.clone();
+                        }
+                        Err(error) => {
+                            outcome.faults.push(Fault::patch(error.to_string()));
+                            break;
+                        }
                     }
                 }
                 if outcome.committed() {
                     for effect in &outcome.effects {
-                        if let Err(error) = self.interpreter.accepts(effect) { outcome.faults.push(Fault::effect(error)); break; }
+                        if let Err(error) = self.interpreter.accepts(effect) {
+                            outcome.faults.push(Fault::effect(error));
+                            break;
+                        }
                     }
                 }
-                if outcome.committed() { self.db = working; }
+                if outcome.committed() {
+                    self.db = working;
+                }
             }
         }
         if outcome.committed() && !outcome.deferred.is_empty() {
-            outcome.faults.push(Fault::new("transaction.unfinalized", "Owner did not finalize deferred writes"));
+            outcome.faults.push(Fault::new(
+                "transaction.unfinalized",
+                "Owner did not finalize deferred writes",
+            ));
         }
         if outcome.committed() {
-            if let Err(fault)=admit(&outcome) {outcome.faults.push(fault);}
+            if let Err(fault) = admit(&outcome) {
+                outcome.faults.push(fault);
+            }
         }
         if outcome.committed() {
             self.rev += 1;
@@ -794,7 +911,10 @@ impl Loop {
     }
 
     /// One event, one transaction, one commit.
-    fn dispatch_one(&mut self, event: &Event) -> Result<(Vec<Effect>, Vec<Event>, Option<Change>, Vec<usize>), Vec<Fault>> {
+    fn dispatch_one(
+        &mut self,
+        event: &Event,
+    ) -> Result<(Vec<Effect>, Vec<Event>, Option<Change>, Vec<usize>), Vec<Fault>> {
         let handlers = self.registry.handlers_for(&event.kind).to_vec();
         if handlers.is_empty() {
             // An event nothing reacts to is not an error: a policy observes what
@@ -866,7 +986,10 @@ impl Loop {
             }
 
             working = applied;
-            deferred.extend(held.into_iter().map(|index| committed_patches.len() + index));
+            deferred.extend(
+                held.into_iter()
+                    .map(|index| committed_patches.len() + index),
+            );
             committed_patches.extend(patches);
             effects.extend(asked);
             dispatches.extend(next);
@@ -877,7 +1000,9 @@ impl Loop {
         }
 
         let change = (!committed_patches.is_empty()).then(|| Change {
-            before: self.db.clone(), after: working.clone(), patches: committed_patches,
+            before: self.db.clone(),
+            after: working.clone(),
+            patches: committed_patches,
         });
         self.db = working;
         Ok((effects, dispatches, change, deferred))
@@ -958,7 +1083,9 @@ mod tests {
                     Ok(())
                 })
                 .on_fn("boom", 0, "boom", |_tx, _| Err(Fault::handler("no")))
-                .on_fn("boom", 10, "after-boom", |tx, _| tx.set("count", Value::Int(99)))
+                .on_fn("boom", 10, "after-boom", |tx, _| {
+                    tx.set("count", Value::Int(99))
+                })
                 .on_fn("emit-impossible", 0, "impossible", |tx, _| {
                     tx.fx(Effect::new("not.a.real.effect"));
                     tx.set("count", Value::Int(7))
@@ -967,12 +1094,16 @@ mod tests {
                     tx.dispatch(Event::new("recursive"));
                     Ok(())
                 })
-                .on_fn("touch.ui", 0, "touch", |tx, _| tx.set("ui.verbose", Value::Bool(true)))
+                .on_fn("touch.ui", 0, "touch", |tx, _| {
+                    tx.set("ui.verbose", Value::Bool(true))
+                })
                 .on_fn("bump", 0, "bump", |tx, _| {
                     let count = tx.int("count");
                     tx.set("count", Value::Int(count + 1))
                 })
-                .on_fn("root", 0, "root", |tx, _| tx.patch("", Op::Set(Value::map([]))))
+                .on_fn("root", 0, "root", |tx, _| {
+                    tx.patch("", Op::Set(Value::map([])))
+                })
                 .subscription(
                     "log",
                     read_query(|db, _query| db.get("log").cloned().unwrap_or(Value::Null)),
@@ -981,9 +1112,13 @@ mod tests {
                     "log.length",
                     Subscription::Derived {
                         inputs: Inputs::Fixed(vec![Query::new("log")]),
-                        compute: Arc::new(|inputs, _query, _previous| Ok({
-                            Value::Int(inputs[0].as_list().map(<[Value]>::len).unwrap_or(0) as i64)
-                        })),
+                        compute: Arc::new(|inputs, _query, _previous| {
+                            Ok({
+                                Value::Int(
+                                    inputs[0].as_list().map(<[Value]>::len).unwrap_or(0) as i64
+                                )
+                            })
+                        }),
                     },
                 ),
         )
@@ -1001,7 +1136,14 @@ mod tests {
         assert_eq!(outcome.effects.len(), 1);
         assert_eq!(outcome.effects[0].kind, "announce");
         assert_eq!(loop_.db().get("count").and_then(Value::as_i64), Some(1));
-        assert_eq!(loop_.db().get("log").and_then(Value::as_list).map(<[Value]>::len), Some(1));
+        assert_eq!(
+            loop_
+                .db()
+                .get("log")
+                .and_then(Value::as_list)
+                .map(<[Value]>::len),
+            Some(1)
+        );
         assert_eq!(outcome.rev, 1);
     }
 
@@ -1010,15 +1152,23 @@ mod tests {
         // A composition builds its handlers somewhere else and hands them over — a plugin's
         // handlers are shared with the plugin that owns the instance — so \`Arc<dyn Handler>\`
         // has to be registrable as it is, and its id has to be the id a diagnostic names.
-        let shared: Arc<dyn Handler> = Arc::new(FnHandler::new("shared", |tx: &mut Tx<'_>, _: &Event| {
-            tx.push("log", Value::str("shared"))?;
-            Ok(())
-        }));
+        let shared: Arc<dyn Handler> =
+            Arc::new(FnHandler::new("shared", |tx: &mut Tx<'_>, _: &Event| {
+                tx.push("log", Value::str("shared"))?;
+                Ok(())
+            }));
         let registry = Registry::new().on("tick", 0, shared);
         let mut loop_ = Loop::new(Arc::new(registry), Arc::new(OnlyAnnounce), base());
         let outcome = loop_.dispatch(Event::new("tick"));
         assert!(outcome.committed(), "{:?}", outcome.faults);
-        assert_eq!(loop_.db().get("log").and_then(Value::as_list).map(<[Value]>::len), Some(1));
+        assert_eq!(
+            loop_
+                .db()
+                .get("log")
+                .and_then(Value::as_list)
+                .map(<[Value]>::len),
+            Some(1)
+        );
         assert!(
             outcome.handled.iter().any(|handled| handled == "tick"),
             "{:?}",
@@ -1036,7 +1186,10 @@ mod tests {
         assert_eq!(outcome.faults[0].code, "handler");
         assert_eq!(outcome.faults[0].event.as_deref(), Some("boom"));
         assert_eq!(outcome.faults[0].source.as_deref(), Some("boom"));
-        assert!(before.same(loop_.db()), "a faulted transaction changed the database");
+        assert!(
+            before.same(loop_.db()),
+            "a faulted transaction changed the database"
+        );
         assert_eq!(outcome.rev, 1, "a faulted dispatch advanced the revision");
     }
 
@@ -1055,7 +1208,10 @@ mod tests {
         assert!(!outcome.committed());
         assert_eq!(outcome.faults[0].code, "effect");
         assert!(outcome.faults[0].message.contains("not.a.real.effect"));
-        assert!(before.same(loop_.db()), "a refused effect still committed state");
+        assert!(
+            before.same(loop_.db()),
+            "a refused effect still committed state"
+        );
         assert!(outcome.effects.is_empty());
     }
 
@@ -1086,7 +1242,10 @@ mod tests {
         assert!(outcome.committed());
         assert_eq!(outcome.handled, vec!["first", "second"]);
         assert_eq!(loop_.db().get("count").and_then(Value::as_i64), Some(11));
-        assert_eq!(outcome.rev, 1, "one dispatch is one revision, however long its chain");
+        assert_eq!(
+            outcome.rev, 1,
+            "one dispatch is one revision, however long its chain"
+        );
         assert_eq!(outcome.changes.len(), 2);
         assert_eq!(outcome.changes[0].after, outcome.changes[1].before);
         assert_eq!(outcome.changes[1].after, *loop_.db());
@@ -1094,14 +1253,18 @@ mod tests {
 
     #[test]
     fn a_later_chained_fault_rolls_back_all_changes_and_effects() {
-        let registry = Arc::new(Registry::new()
-            .on_fn("first", 0, "first", |tx, _| {
-                tx.set("count", Value::Int(9))?;
-                tx.fx(Effect::new("reported"));
-                tx.dispatch(Event::new("second"));
-                Ok(())
-            })
-            .on_fn("second", 0, "second", |_, _| Err(Fault::new("test", "failure"))));
+        let registry = Arc::new(
+            Registry::new()
+                .on_fn("first", 0, "first", |tx, _| {
+                    tx.set("count", Value::Int(9))?;
+                    tx.fx(Effect::new("reported"));
+                    tx.dispatch(Event::new("second"));
+                    Ok(())
+                })
+                .on_fn("second", 0, "second", |_, _| {
+                    Err(Fault::new("test", "failure"))
+                }),
+        );
         let mut loop_ = Loop::new(registry, Arc::new(AcceptsEverything), base());
         let before = loop_.db().clone();
         let outcome = loop_.dispatch(Event::new("first"));
@@ -1139,8 +1302,12 @@ mod tests {
                     let count = tx.int("count");
                     tx.set("count", Value::Int(count + 1))
                 })
-                .on_fn("touch.ui", 0, "touch", |tx, _| tx.set("ui.verbose", Value::Bool(true)))
-                .on_fn("append", 0, "append", |tx, _| tx.push("log", Value::str("x")))
+                .on_fn("touch.ui", 0, "touch", |tx, _| {
+                    tx.set("ui.verbose", Value::Bool(true))
+                })
+                .on_fn("append", 0, "append", |tx, _| {
+                    tx.push("log", Value::str("x"))
+                })
                 .subscription(
                     "log",
                     read_query(|db, _query| db.get("log").cloned().unwrap_or(Value::Null)),
@@ -1149,10 +1316,12 @@ mod tests {
                     "log.length",
                     Subscription::Derived {
                         inputs: Inputs::Fixed(vec![Query::new("log")]),
-                        compute: Arc::new(move |_inputs, _query, _previous| Ok({
-                            counter.fetch_add(1, Ordering::SeqCst);
-                            Value::Int(0)
-                        })),
+                        compute: Arc::new(move |_inputs, _query, _previous| {
+                            Ok({
+                                counter.fetch_add(1, Ordering::SeqCst);
+                                Value::Int(0)
+                            })
+                        }),
                     },
                 ),
         );
@@ -1168,7 +1337,11 @@ mod tests {
         // the dependent query compares.
         loop_.dispatch(Event::new("touch.ui"));
         loop_.refresh();
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "an unrelated write forced a recomputation");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "an unrelated write forced a recomputation"
+        );
         // A write to the readu2019s own branch is.
         loop_.dispatch(Event::new("append"));
         loop_.refresh();
@@ -1179,9 +1352,16 @@ mod tests {
     fn refresh_reports_only_the_queries_that_changed() {
         let mut loop_ = test_loop();
         loop_.watch(Query::new("log.length"));
-        assert_eq!(loop_.refresh().len(), 1, "a new query has a value to report");
+        assert_eq!(
+            loop_.refresh().len(),
+            1,
+            "a new query has a value to report"
+        );
         loop_.dispatch(Event::new("nobody.cares"));
-        assert!(loop_.refresh().is_empty(), "an unchanged query was reported");
+        assert!(
+            loop_.refresh().is_empty(),
+            "an unchanged query was reported"
+        );
         loop_.dispatch(Event::new("tick"));
         let changed = loop_.refresh();
         assert_eq!(changed.len(), 1);
@@ -1216,8 +1396,14 @@ mod tests {
         let outcome = loop_.dispatch(Event::new("emit-impossible"));
         let fault = &outcome.as_faults()[0];
         assert_eq!(fault.code, "effect");
-        assert_eq!(fault.data.get("event").and_then(Value::as_str), Some("emit-impossible"));
-        assert_eq!(fault.data.get("handler").and_then(Value::as_str), Some("impossible"));
+        assert_eq!(
+            fault.data.get("event").and_then(Value::as_str),
+            Some("emit-impossible")
+        );
+        assert_eq!(
+            fault.data.get("handler").and_then(Value::as_str),
+            Some("impossible")
+        );
     }
 
     #[test]
@@ -1246,10 +1432,21 @@ mod tests {
             assert_eq!(tx.patches()[1].0.to_string(), "b.c");
             Ok(())
         });
-        let mut loop_ = Loop::new(Arc::new(registry), Arc::new(AcceptsEverything), Value::map([("a", Value::Null), ("b", Value::map([]))]));
+        let mut loop_ = Loop::new(
+            Arc::new(registry),
+            Arc::new(AcceptsEverything),
+            Value::map([("a", Value::Null), ("b", Value::map([]))]),
+        );
         let outcome = loop_.dispatch(Event::new("tick"));
         assert!(outcome.committed(), "{:?}", outcome.faults);
-        assert_eq!(loop_.db().get("b").and_then(|b| b.get("c")).and_then(Value::as_i64), Some(2));
+        assert_eq!(
+            loop_
+                .db()
+                .get("b")
+                .and_then(|b| b.get("c"))
+                .and_then(Value::as_i64),
+            Some(2)
+        );
     }
 }
 
@@ -1265,7 +1462,11 @@ pub mod fields {
 
     /// A string field, empty when absent or not a string.
     pub fn text(effect: &Effect, key: &str) -> String {
-        effect.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+        effect
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
     }
 
     /// An integer field, zero when absent or not an integer.
@@ -1285,7 +1486,11 @@ pub mod fields {
 
     /// The string an event carries under a key.
     pub fn event_text(event: &Event, key: &str) -> String {
-        event.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+        event
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
     }
 
     /// The integer an event carries under a key.

@@ -122,15 +122,25 @@ pub(super) fn detail(state: &State, id: &str, context: &CallContext) -> Result<V
 pub(super) fn command() -> CommandRegistration {
     CommandRegistration::new(
         Command {
-            preparation: misa_proto::invocation::Preparation::Request, id: "input.resolve".into(),
+            preparation: misa_proto::invocation::Preparation::Request,
+            id: "input.resolve".into(),
             input: {
-                let mut schema = record([
-                ("request", Schema::String),
-                ("generation", Schema::Int),
-                ]);
+                let mut schema = record([("request", Schema::String), ("generation", Schema::Int)]);
                 if let Schema::Record { fields, .. } = &mut schema {
-                    fields.insert("approved".into(), Field { schema: Schema::Bool, optional: true });
-                    fields.insert("value".into(), Field { schema: Schema::Value, optional: true });
+                    fields.insert(
+                        "approved".into(),
+                        Field {
+                            schema: Schema::Bool,
+                            optional: true,
+                        },
+                    );
+                    fields.insert(
+                        "value".into(),
+                        Field {
+                            schema: Schema::Value,
+                            optional: true,
+                        },
+                    );
                 }
                 schema
             },
@@ -142,8 +152,28 @@ pub(super) fn command() -> CommandRegistration {
     )
 }
 fn resolve(runtime: &Runtime, context: &CallContext, invocation: &Invocation) -> Outcome {
-    if runtime.state.lock().unwrap().operations.forms.contains_key(text(&invocation.input, "request")) { return forms::resolve(runtime, context, invocation); }
-    if invocation.input.get("approved").and_then(Value::as_bool).is_none() || invocation.input.get("value").is_some() { return rejected(Fault::new("invalid_input", "Tool approval requires one approved boolean")); }
+    if runtime
+        .state
+        .lock()
+        .unwrap()
+        .operations
+        .forms
+        .contains_key(text(&invocation.input, "request"))
+    {
+        return forms::resolve(runtime, context, invocation);
+    }
+    if invocation
+        .input
+        .get("approved")
+        .and_then(Value::as_bool)
+        .is_none()
+        || invocation.input.get("value").is_some()
+    {
+        return rejected(Fault::new(
+            "invalid_input",
+            "Tool approval requires one approved boolean",
+        ));
+    }
     runtime.operation_transition(None, |store, db| {
         let id = text(&invocation.input, "request");
         let record = store

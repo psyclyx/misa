@@ -128,7 +128,12 @@ impl Node {
 
     /// A run of inline content.
     pub fn text(role: impl Into<String>, spans: impl IntoIterator<Item = Span>) -> Self {
-        Node::new(role, Kind::Text { spans: spans.into_iter().collect() })
+        Node::new(
+            role,
+            Kind::Text {
+                spans: spans.into_iter().collect(),
+            },
+        )
     }
 
     pub fn child_in(&self, id: &str) -> Option<&Node> {
@@ -173,15 +178,26 @@ pub enum Kind {
         captures: Vec<Capture>,
     },
     /// A bullet or numbered list. Each item is a list of nodes.
-    List { ordered: bool, items: Vec<Vec<Node>> },
+    List {
+        ordered: bool,
+        items: Vec<Vec<Node>>,
+    },
     /// A table. Header cells and body cells are inline content.
-    Table { head: Vec<Vec<Span>>, rows: Vec<Vec<Vec<Span>>> },
+    Table {
+        head: Vec<Vec<Span>>,
+        rows: Vec<Vec<Vec<Span>>>,
+    },
     /// Named values: a tool call's arguments, a result's summary, a dialog.
     Fields { fields: Vec<Field> },
     /// A node with a short form and a long form.
     Collapsible { summary: Vec<Span> },
     /// An image, by content hash. A client that cannot draw it shows `alt`.
-    Image { blob: BlobRef, alt: String, width: u32, height: u32 },
+    Image {
+        blob: BlobRef,
+        alt: String,
+        width: u32,
+        height: u32,
+    },
     /// A one-line state statement.
     Status { text: String },
     /// A bounded progress statement, for a budget or a queue depth.
@@ -219,9 +235,13 @@ pub enum SpanKind {
     Emphasis,
     Strikethrough,
     Code,
-    Link { href: String },
+    Link {
+        href: String,
+    },
     /// A syntax capture name from [`Capture::token`], as in `keyword`.
-    Token { name: String },
+    Token {
+        name: String,
+    },
 }
 
 impl SpanKind {
@@ -233,23 +253,38 @@ impl SpanKind {
 /// Constructors for the runs a producer writes most often.
 impl Span {
     pub fn plain(text: impl Into<String>) -> Span {
-        Span { text: text.into(), kind: SpanKind::Plain }
+        Span {
+            text: text.into(),
+            kind: SpanKind::Plain,
+        }
     }
 
     pub fn strong(text: impl Into<String>) -> Span {
-        Span { text: text.into(), kind: SpanKind::Strong }
+        Span {
+            text: text.into(),
+            kind: SpanKind::Strong,
+        }
     }
 
     pub fn code(text: impl Into<String>) -> Span {
-        Span { text: text.into(), kind: SpanKind::Code }
+        Span {
+            text: text.into(),
+            kind: SpanKind::Code,
+        }
     }
 
     pub fn link(text: impl Into<String>, href: impl Into<String>) -> Span {
-        Span { text: text.into(), kind: SpanKind::Link { href: href.into() } }
+        Span {
+            text: text.into(),
+            kind: SpanKind::Link { href: href.into() },
+        }
     }
 
     pub fn token(text: impl Into<String>, name: impl Into<String>) -> Span {
-        Span { text: text.into(), kind: SpanKind::Token { name: name.into() } }
+        Span {
+            text: text.into(),
+            kind: SpanKind::Token { name: name.into() },
+        }
     }
 }
 
@@ -416,7 +451,10 @@ pub fn validate(node: &Node) -> Result<(), ViewFault> {
 }
 
 fn fault(path: &str, reason: impl Into<String>) -> ViewFault {
-    ViewFault { path: path.to_string(), reason: reason.into() }
+    ViewFault {
+        path: path.to_string(),
+        reason: reason.into(),
+    }
 }
 
 fn validate_at(
@@ -431,15 +469,24 @@ fn validate_at(
     if node.role.is_empty() {
         return Err(fault(path, "has no role"));
     }
-    if !node.role.chars().next().is_some_and(|first| first.is_ascii_lowercase()) {
-        return Err(fault(path, format!("role `{}` does not start lowercase", node.role)));
-    }
-    if let Some(offence) = node
+    if !node
         .role
         .chars()
-        .find(|ch| !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '_' | '-')))
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase())
     {
-        return Err(fault(path, format!("role `{}` contains `{offence}`", node.role)));
+        return Err(fault(
+            path,
+            format!("role `{}` does not start lowercase", node.role),
+        ));
+    }
+    if let Some(offence) = node.role.chars().find(|ch| {
+        !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '_' | '-'))
+    }) {
+        return Err(fault(
+            path,
+            format!("role `{}` contains `{offence}`", node.role),
+        ));
     }
     if !node.id.is_empty() && !ids.insert(node.id.clone()) {
         return Err(fault(path, format!("duplicate id `{}`", node.id)));
@@ -451,7 +498,10 @@ fn validate_at(
         if action.id.starts_with("client.") {
             // Reserved: a session may not name an affordance only the client can
             // honour, because that would be a session deciding what a client draws.
-            return Err(fault(path, format!("action `{}` uses the reserved `client.` prefix", action.id)));
+            return Err(fault(
+                path,
+                format!("action `{}` uses the reserved `client.` prefix", action.id),
+            ));
         }
     }
     match &node.kind {
@@ -461,7 +511,10 @@ fn validate_at(
             // A document heading is `h1` through `h6`. A level outside that is a
             // session that decided something no renderer agreed to draw.
             if *level == 0 || *level > 6 {
-                return Err(fault(path, format!("has a heading level of {level}, which is outside 1..=6")));
+                return Err(fault(
+                    path,
+                    format!("has a heading level of {level}, which is outside 1..=6"),
+                ));
             }
             check_spans(spans, path)?;
         }
@@ -473,16 +526,30 @@ fn validate_at(
                     return Err(fault(path, "has a capture with no token"));
                 }
                 if capture.start >= capture.end {
-                    return Err(fault(path, format!("has an empty capture at {}", capture.start)));
+                    return Err(fault(
+                        path,
+                        format!("has an empty capture at {}", capture.start),
+                    ));
                 }
                 if capture.end as usize > text.len() {
-                    return Err(fault(path, format!("capture ends past the text at {}", capture.end)));
+                    return Err(fault(
+                        path,
+                        format!("capture ends past the text at {}", capture.end),
+                    ));
                 }
                 if capture.start < last_end {
                     return Err(fault(path, "has overlapping or unordered captures"));
                 }
-                if !text.is_char_boundary(capture.start as usize) || !text.is_char_boundary(capture.end as usize) {
-                    return Err(fault(path, format!("capture at {} is not on a character boundary", capture.start)));
+                if !text.is_char_boundary(capture.start as usize)
+                    || !text.is_char_boundary(capture.end as usize)
+                {
+                    return Err(fault(
+                        path,
+                        format!(
+                            "capture at {} is not on a character boundary",
+                            capture.start
+                        ),
+                    ));
                 }
                 last_end = capture.end;
             }
@@ -490,7 +557,12 @@ fn validate_at(
         Kind::List { items, .. } => {
             for (index, item) in items.iter().enumerate() {
                 for (position, child) in item.iter().enumerate() {
-                    validate_at(child, ids, &format!("{path}.items[{index}][{position}]"), depth + 1)?;
+                    validate_at(
+                        child,
+                        ids,
+                        &format!("{path}.items[{index}][{position}]"),
+                        depth + 1,
+                    )?;
                 }
             }
         }
@@ -518,7 +590,12 @@ fn validate_at(
         }
         Kind::Collapsible { summary, .. } => check_spans(summary, path)?,
         Kind::Image { blob, alt, .. } => {
-            if blob.hash.len() != 64 || !blob.hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+            if blob.hash.len() != 64
+                || !blob
+                    .hash
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
                 return Err(fault(path, "names a blob that is not a lowercase hex hash"));
             }
             check_text(alt, path)?;
@@ -531,7 +608,10 @@ fn validate_at(
                 other => {
                     return Err(fault(
                         path,
-                        format!("carries a `{}` as a fact, which is not a scalar", other.kind()),
+                        format!(
+                            "carries a `{}` as a fact, which is not a scalar",
+                            other.kind()
+                        ),
                     ));
                 }
             }
@@ -547,7 +627,12 @@ fn validate_at(
         }
     }
     for (position, child) in node.children.iter().enumerate() {
-        validate_at(child, ids, &format!("{path}.children[{position}]"), depth + 1)?;
+        validate_at(
+            child,
+            ids,
+            &format!("{path}.children[{position}]"),
+            depth + 1,
+        )?;
     }
     Ok(())
 }
@@ -578,7 +663,10 @@ fn check_spans(spans: &[Span], path: &str) -> Result<(), ViewFault> {
 /// session that wants one says so with structure.
 fn check_text(text: &str, path: &str) -> Result<(), ViewFault> {
     if let Some(offence) = text.chars().find(|ch| *ch != '\n' && ch.is_control()) {
-        return Err(fault(path, format!("contains the control character {}", offence.escape_debug())));
+        return Err(fault(
+            path,
+            format!("contains the control character {}", offence.escape_debug()),
+        ));
     }
     Ok(())
 }
@@ -628,13 +716,19 @@ mod tests {
             .child(
                 Node::new(
                     "message.assistant",
-                    Kind::Collapsible { summary: vec![Span::plain("thinking")] },
+                    Kind::Collapsible {
+                        summary: vec![Span::plain("thinking")],
+                    },
                 )
                 .id("m2")
                 .state(State::Streaming)
                 .child(Node::new(
                     "message.thinking",
-                    Kind::Code { lang: None, text: "hmm".into(), captures: vec![] },
+                    Kind::Code {
+                        lang: None,
+                        text: "hmm".into(),
+                        captures: vec![],
+                    },
                 )),
             )
     }
@@ -656,13 +750,17 @@ mod tests {
 
     #[test]
     fn ids_must_be_unique() {
-        let bad = Node::section("a").id("same").child(Node::section("b").id("same"));
+        let bad = Node::section("a")
+            .id("same")
+            .child(Node::section("b").id("same"));
         assert!(validate(&bad).unwrap_err().reason.contains("duplicate id"));
     }
 
     #[test]
     fn anonymous_nodes_are_allowed_and_not_tracked() {
-        let tree = Node::section("a").child(Node::section("b")).child(Node::section("c"));
+        let tree = Node::section("a")
+            .child(Node::section("b"))
+            .child(Node::section("c"));
         validate(&tree).unwrap();
     }
 
@@ -680,14 +778,50 @@ mod tests {
 
     #[test]
     fn captures_must_be_ordered_non_empty_and_in_range() {
-        let code = |captures| Node::new("c", Kind::Code { lang: Some("rust".into()), text: "let x".into(), captures });
-        validate(&code(vec![Capture { start: 0, end: 3, token: "keyword".into() }])).unwrap();
-        assert!(validate(&code(vec![Capture { start: 2, end: 2, token: "k".into() }])).is_err());
-        assert!(validate(&code(vec![Capture { start: 0, end: 99, token: "k".into() }])).is_err());
+        let code = |captures| {
+            Node::new(
+                "c",
+                Kind::Code {
+                    lang: Some("rust".into()),
+                    text: "let x".into(),
+                    captures,
+                },
+            )
+        };
+        validate(&code(vec![Capture {
+            start: 0,
+            end: 3,
+            token: "keyword".into(),
+        }]))
+        .unwrap();
+        assert!(
+            validate(&code(vec![Capture {
+                start: 2,
+                end: 2,
+                token: "k".into()
+            }]))
+            .is_err()
+        );
+        assert!(
+            validate(&code(vec![Capture {
+                start: 0,
+                end: 99,
+                token: "k".into()
+            }]))
+            .is_err()
+        );
         assert!(
             validate(&code(vec![
-                Capture { start: 4, end: 5, token: "a".into() },
-                Capture { start: 0, end: 3, token: "b".into() },
+                Capture {
+                    start: 4,
+                    end: 5,
+                    token: "a".into()
+                },
+                Capture {
+                    start: 0,
+                    end: 3,
+                    token: "b".into()
+                },
             ]))
             .is_err()
         );
@@ -706,15 +840,20 @@ mod tests {
 
     #[test]
     fn fields_must_be_addressable() {
-        let bad = Node::new("dialog", Kind::Fields { fields: vec![Field {
-            id: String::new(),
-            label: "Name".into(),
-            value: String::new(),
-            hint: None,
-            read_only: false,
-            secret: false,
-            kind: FieldKind::Inline,
-        }] });
+        let bad = Node::new(
+            "dialog",
+            Kind::Fields {
+                fields: vec![Field {
+                    id: String::new(),
+                    label: "Name".into(),
+                    value: String::new(),
+                    hint: None,
+                    read_only: false,
+                    secret: false,
+                    kind: FieldKind::Inline,
+                }],
+            },
+        );
         assert!(validate(&bad).is_err());
     }
 
@@ -732,7 +871,11 @@ mod tests {
         let mut root = tree();
         assert!(find(&root, "m1").is_some());
         assert!(find(&root, "nope").is_none());
-        assert!(replace(&mut root, "m2", Node::section("message.assistant").id("m2")));
+        assert!(replace(
+            &mut root,
+            "m2",
+            Node::section("message.assistant").id("m2")
+        ));
         assert!(!replace(&mut root, "nope", Node::section("x")));
         validate(&root).unwrap();
     }
@@ -765,13 +908,22 @@ mod tests {
     fn every_shape() -> Vec<Node> {
         vec![
             Node::new("a.section", Kind::Section),
-            Node::new("a.text", Kind::Text { spans: vec![Span::plain("hello"), Span::strong("!")] }),
+            Node::new(
+                "a.text",
+                Kind::Text {
+                    spans: vec![Span::plain("hello"), Span::strong("!")],
+                },
+            ),
             Node::new(
                 "a.code",
                 Kind::Code {
                     lang: Some("rust".into()),
                     text: "let x = 1;".into(),
-                    captures: vec![Capture { start: 0, end: 3, token: "keyword".into() }],
+                    captures: vec![Capture {
+                        start: 0,
+                        end: 3,
+                        token: "keyword".into(),
+                    }],
                 },
             ),
             Node::new(
@@ -798,30 +950,66 @@ mod tests {
                         hint: Some("which one".into()),
                         read_only: false,
                         secret: false,
-                        kind: FieldKind::Choice { options: vec![Choice {
-                            value: "gpt".into(),
-                            label: "GPT".into(),
-                            detail: Some("a model".into()),
-                            metadata: None,
-                        }], selected: Some("gpt".into()) },
+                        kind: FieldKind::Choice {
+                            options: vec![Choice {
+                                value: "gpt".into(),
+                                label: "GPT".into(),
+                                detail: Some("a model".into()),
+                                metadata: None,
+                            }],
+                            selected: Some("gpt".into()),
+                        },
                     }],
                 },
             ),
-            Node::new("a.collapsible", Kind::Collapsible { summary: vec![Span::plain("thinking")] }),
+            Node::new(
+                "a.collapsible",
+                Kind::Collapsible {
+                    summary: vec![Span::plain("thinking")],
+                },
+            ),
             Node::new(
                 "a.image",
                 Kind::Image {
-                    blob: BlobRef { hash: "a".repeat(64), len: 8, media: Some("image/png".into()) },
+                    blob: BlobRef {
+                        hash: "a".repeat(64),
+                        len: 8,
+                        media: Some("image/png".into()),
+                    },
                     alt: "a chart".into(),
                     width: 640,
                     height: 480,
                 },
             ),
-            Node::new("a.status", Kind::Status { text: "idle".into() }),
-            Node::new("a.meter", Kind::Meter { label: "Budget".into(), value: 0.5, max: 1.0 }),
-            Node::new("a.fact", Kind::Fact { value: Value::Int(1) }),
-            Node::new("a.heading", Kind::Heading { level: 2, spans: vec![Span::plain("A heading")] }),
-            Node::new("a.quote", Kind::Quote).child(Node::text("a.quote.text", [Span::plain("quoted")])),
+            Node::new(
+                "a.status",
+                Kind::Status {
+                    text: "idle".into(),
+                },
+            ),
+            Node::new(
+                "a.meter",
+                Kind::Meter {
+                    label: "Budget".into(),
+                    value: 0.5,
+                    max: 1.0,
+                },
+            ),
+            Node::new(
+                "a.fact",
+                Kind::Fact {
+                    value: Value::Int(1),
+                },
+            ),
+            Node::new(
+                "a.heading",
+                Kind::Heading {
+                    level: 2,
+                    spans: vec![Span::plain("A heading")],
+                },
+            ),
+            Node::new("a.quote", Kind::Quote)
+                .child(Node::text("a.quote.text", [Span::plain("quoted")])),
             Node::new("a.rule", Kind::Rule),
         ]
     }
@@ -831,7 +1019,8 @@ mod tests {
         for node in every_shape() {
             // Both with the node's own label and without: the two used to be the same key.
             for node in [node.clone(), node.clone().label("a name")] {
-                validate(&node).unwrap_or_else(|fault| panic!("{:?} does not validate: {fault}", node.kind));
+                validate(&node)
+                    .unwrap_or_else(|fault| panic!("{:?} does not validate: {fault}", node.kind));
                 let mut bytes = Vec::new();
                 ciborium::ser::into_writer(&node, &mut bytes).unwrap();
                 let back: Node = ciborium::de::from_reader(&bytes[..])
@@ -845,11 +1034,14 @@ mod tests {
     fn a_node_keeps_its_own_label_when_its_shape_has_one_too() {
         // The collision, named: a meter's label is the meter's, and a node's label is the
         // node's, and both survive.
-        let node = Node::new("cost.meter", Kind::Meter {
-            label: "Spend".into(),
-            value: 1.25,
-            max: 10.0,
-        })
+        let node = Node::new(
+            "cost.meter",
+            Kind::Meter {
+                label: "Spend".into(),
+                value: 1.25,
+                max: 10.0,
+            },
+        )
         .label("this turn");
         let mut bytes = Vec::new();
         ciborium::ser::into_writer(&node, &mut bytes).unwrap();

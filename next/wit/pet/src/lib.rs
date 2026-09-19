@@ -1,7 +1,7 @@
 //! A real optional plugin: one state, command/tool entry points, portable/rich documents.
 wit_bindgen::generate!({path:"../policy.wit",world:"policy"});
 use exports::misa::policy::policy_api::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 struct Pet;
 fn fault(message: &str) -> Fault {
     Fault {
@@ -44,7 +44,11 @@ impl Guest for Pet {
         }
         let data: Value = serde_json::from_str(event.data.as_deref().unwrap_or("null"))
             .map_err(|_| fault("Invalid event data"))?;
-        let input = if event.kind == "plugin.pet.ask-feed" { &data["input"]["value"] } else { &data["input"] };
+        let input = if event.kind == "plugin.pet.ask-feed" {
+            &data["input"]["value"]
+        } else {
+            &data["input"]
+        };
         let amount = input["amount"]
             .as_i64()
             .filter(|amount| (1..=10).contains(amount))

@@ -179,7 +179,7 @@ impl ScopedRemote {
                         .iter()
                         .map(|variant| variant.id.as_str())
                         .collect::<Vec<_>>()
-                    .join(" · ")
+                        .join(" · ")
                 )),
                 metadata: None,
             })
@@ -557,8 +557,7 @@ impl ScopedRemote {
                 }));
         }
         for (id, generation, awaiting) in requests {
-            if self.request_versions.get(&id) == Some(&(generation, awaiting))
-            {
+            if self.request_versions.get(&id) == Some(&(generation, awaiting)) {
                 continue;
             }
             self.request_versions
@@ -668,13 +667,11 @@ async fn execute(
                     operation: None,
                     kind,
                 }),
-                Outcome::Accepted { operation } => {
-                    Ok(Execution {
-                        reply: None,
-                        operation: Some(operation),
-                        kind,
-                    })
-                }
+                Outcome::Accepted { operation } => Ok(Execution {
+                    reply: None,
+                    operation: Some(operation),
+                    kind,
+                }),
                 Outcome::Rejected { fault } | Outcome::Indeterminate { fault } => {
                     Err(fault.message)
                 }

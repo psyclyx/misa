@@ -1,13 +1,16 @@
 //! Local input preparation refers to exported sources, reads and commands.
-use serde::{Deserialize, Serialize};
 use crate::observation::Member;
 use misa_value::Value;
+use serde::{Deserialize, Serialize};
 
 pub const SOURCES: &str = "completion.catalog";
 pub const SEARCH: &str = "completion.search";
 pub const SHORTCUTS: &str = "commands.shortcuts";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Candidates { pub items: Vec<crate::view::Choice>, pub truncated: bool }
+pub struct Candidates {
+    pub items: Vec<crate::view::Choice>,
+    pub truncated: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Source {
@@ -69,7 +72,6 @@ impl Arg {
     }
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
@@ -101,7 +103,10 @@ pub fn candidates(value: &Value) -> Vec<crate::view::Choice> {
                 .and_then(Value::as_str)
                 .unwrap_or(value)
                 .to_string(),
-            detail: item.get("detail").and_then(Value::as_str).map(str::to_string),
+            detail: item
+                .get("detail")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             metadata: item.get("metadata").and_then(choice_metadata),
         });
     }
@@ -113,20 +118,39 @@ fn choice_metadata(value: &Value) -> Option<crate::view::ChoiceMetadata> {
     let efforts: Vec<String> = value
         .get("efforts")
         .and_then(Value::as_list)
-        .map(|values| values.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     let pricing = value.get("pricing").and_then(choice_pricing);
     let peak = value.get("peak").and_then(choice_peak);
     (context_window.is_some() || !efforts.is_empty() || pricing.is_some() || peak.is_some())
-        .then_some(crate::view::ChoiceMetadata { context_window, efforts, pricing, peak })
+        .then_some(crate::view::ChoiceMetadata {
+            context_window,
+            efforts,
+            pricing,
+            peak,
+        })
 }
 
 fn choice_pricing(value: &Value) -> Option<crate::view::ChoicePricing> {
     let pricing = crate::view::ChoicePricing {
-        input_micros_per_thousand: value.get("input_micros_per_thousand").and_then(Value::as_i64),
-        output_micros_per_thousand: value.get("output_micros_per_thousand").and_then(Value::as_i64),
-        cache_read_micros_per_thousand: value.get("cache_read_micros_per_thousand").and_then(Value::as_i64),
-        cache_write_micros_per_thousand: value.get("cache_write_micros_per_thousand").and_then(Value::as_i64),
+        input_micros_per_thousand: value
+            .get("input_micros_per_thousand")
+            .and_then(Value::as_i64),
+        output_micros_per_thousand: value
+            .get("output_micros_per_thousand")
+            .and_then(Value::as_i64),
+        cache_read_micros_per_thousand: value
+            .get("cache_read_micros_per_thousand")
+            .and_then(Value::as_i64),
+        cache_write_micros_per_thousand: value
+            .get("cache_write_micros_per_thousand")
+            .and_then(Value::as_i64),
         request_micros: value.get("request_micros").and_then(Value::as_i64),
     };
     (pricing.input_micros_per_thousand.is_some()
@@ -134,7 +158,7 @@ fn choice_pricing(value: &Value) -> Option<crate::view::ChoicePricing> {
         || pricing.cache_read_micros_per_thousand.is_some()
         || pricing.cache_write_micros_per_thousand.is_some()
         || pricing.request_micros.is_some())
-        .then_some(pricing)
+    .then_some(pricing)
 }
 
 fn choice_peak(value: &Value) -> Option<crate::view::ChoicePeak> {
@@ -145,10 +169,12 @@ fn choice_peak(value: &Value) -> Option<crate::view::ChoicePeak> {
         .map(|values| {
             values
                 .iter()
-                .filter_map(|window| Some(crate::view::ChoicePeakWindow {
-                    start_hour: window.get("start_hour").and_then(Value::as_i64)?,
-                    end_hour: window.get("end_hour").and_then(Value::as_i64)?,
-                }))
+                .filter_map(|window| {
+                    Some(crate::view::ChoicePeakWindow {
+                        start_hour: window.get("start_hour").and_then(Value::as_i64)?,
+                        end_hour: window.get("end_hour").and_then(Value::as_i64)?,
+                    })
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();

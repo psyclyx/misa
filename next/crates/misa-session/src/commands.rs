@@ -460,15 +460,11 @@ pub fn builtins() -> Vec<CommandRegistration> {
             ],
         ),
     ] {
-        registrations.push(transition_registration(
-            id,
-            record(fields),
-            move |input| {
-                Event::new("intent/command")
-                    .with("name", Value::str(name))
-                    .with("args", input.clone())
-            },
-        ));
+        registrations.push(transition_registration(id, record(fields), move |input| {
+            Event::new("intent/command")
+                .with("name", Value::str(name))
+                .with("args", input.clone())
+        }));
     }
     registrations
 }

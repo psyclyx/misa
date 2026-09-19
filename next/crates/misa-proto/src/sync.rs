@@ -1,7 +1,7 @@
 //! Canonical view revisions and id-addressed, self-contained changes.
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
 use crate::view::Node;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
@@ -12,9 +12,18 @@ pub struct Version {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ViewOp {
-    Insert { parent: String, before: Option<String>, node: Node },
-    Remove { id: String },
-    Replace { id: String, node: Node },
+    Insert {
+        parent: String,
+        before: Option<String>,
+        node: Node,
+    },
+    Remove {
+        id: String,
+    },
+    Replace {
+        id: String,
+        node: Node,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -35,15 +44,31 @@ pub struct Stream {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "update", rename_all = "snake_case")]
 pub enum StreamUpdate {
-    Current { stream: Stream },
-    Append { id: String, offset: usize, text: String },
-    End { id: String },
+    Current {
+        stream: Stream,
+    },
+    Append {
+        id: String,
+        offset: usize,
+        text: String,
+    },
+    End {
+        id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ViewSync {
-    Snapshot { version: Version, view: Node, streams: Vec<Stream> },
-    Changes { version: Version, changes: Vec<Change>, streams: Vec<Stream> },
+    Snapshot {
+        version: Version,
+        view: Node,
+        streams: Vec<Stream>,
+    },
+    Changes {
+        version: Version,
+        changes: Vec<Change>,
+        streams: Vec<Stream>,
+    },
 }
 
 /// An indexed tree with linked siblings: appending and unlinking do not scan a transcript.
@@ -67,19 +92,34 @@ struct Entry {
 impl IndexedTree {
     pub fn new(mut root: Node) -> Self {
         address(&mut root);
-        let mut tree = Self { root: root.id.clone(), nodes: HashMap::new() };
+        let mut tree = Self {
+            root: root.id.clone(),
+            nodes: HashMap::new(),
+        };
         tree.store(root, None, None, None);
         tree
     }
 
-    fn store(&mut self, mut node: Node, parent: Option<String>, previous: Option<String>, next: Option<String>) {
+    fn store(
+        &mut self,
+        mut node: Node,
+        parent: Option<String>,
+        previous: Option<String>,
+        next: Option<String>,
+    ) {
         let children = std::mem::take(&mut node.children);
         let id = node.id.clone();
-        self.nodes.insert(id.clone(), Entry {
-            node, parent, previous, next,
-            first: children.first().map(|child| child.id.clone()),
-            last: children.last().map(|child| child.id.clone()),
-        });
+        self.nodes.insert(
+            id.clone(),
+            Entry {
+                node,
+                parent,
+                previous,
+                next,
+                first: children.first().map(|child| child.id.clone()),
+                last: children.last().map(|child| child.id.clone()),
+            },
+        );
         let mut previous = None;
         let mut children = children.into_iter().peekable();
         while let Some(child) = children.next() {
@@ -90,11 +130,21 @@ impl IndexedTree {
         }
     }
 
-    pub fn contains(&self, id: &str) -> bool { self.nodes.contains_key(id) }
-    pub fn len(&self) -> usize { self.nodes.len() }
-    pub fn is_empty(&self) -> bool { self.nodes.is_empty() }
-    pub fn node(&self, id: &str) -> Option<&Node> { self.nodes.get(id).map(|entry| &entry.node) }
-    pub fn parent(&self, id: &str) -> Option<&str> { self.nodes.get(id)?.parent.as_deref() }
+    pub fn contains(&self, id: &str) -> bool {
+        self.nodes.contains_key(id)
+    }
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+    pub fn node(&self, id: &str) -> Option<&Node> {
+        self.nodes.get(id).map(|entry| &entry.node)
+    }
+    pub fn parent(&self, id: &str) -> Option<&str> {
+        self.nodes.get(id)?.parent.as_deref()
+    }
     pub fn children(&self, id: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut cursor = self.nodes.get(id).and_then(|entry| entry.first.as_deref());
@@ -104,15 +154,23 @@ impl IndexedTree {
         }
         out
     }
-    pub fn snapshot(&self) -> Node { self.subtree(&self.root).expect("indexed root exists") }
+    pub fn snapshot(&self) -> Node {
+        self.subtree(&self.root).expect("indexed root exists")
+    }
     pub fn subtree(&self, id: &str) -> Option<Node> {
         let mut node = self.nodes.get(id)?.node.clone();
-        node.children = self.children(id).iter().filter_map(|child| self.subtree(child)).collect();
+        node.children = self
+            .children(id)
+            .iter()
+            .filter_map(|child| self.subtree(child))
+            .collect();
         Some(node)
     }
 
     fn erase(&mut self, id: &str) {
-        for child in self.children(id) { self.erase(&child); }
+        for child in self.children(id) {
+            self.erase(&child);
+        }
         self.nodes.remove(id);
     }
 
@@ -126,7 +184,9 @@ impl IndexedTree {
         }
         let mut pending = vec![node];
         while let Some(node) = pending.pop() {
-            if node.id.is_empty() { return Err("operation node has no identity".into()); }
+            if node.id.is_empty() {
+                return Err("operation node has no identity".into());
+            }
             if self.contains(&node.id) && !allowed.contains(&node.id) {
                 return Err(format!("duplicate node {}", node.id));
             }
@@ -138,10 +198,15 @@ impl IndexedTree {
     fn check_depth(&self, node: &Node, parent: Option<&str>) -> Result<(), String> {
         let mut depth = 0;
         let mut cursor = parent;
-        while let Some(id) = cursor { depth += 1; cursor = self.parent(id); }
+        while let Some(id) = cursor {
+            depth += 1;
+            cursor = self.parent(id);
+        }
         let mut pending = vec![(node, depth)];
         while let Some((node, depth)) = pending.pop() {
-            if depth > crate::view::MAX_DEPTH { return Err("operation exceeds the document depth bound".into()); }
+            if depth > crate::view::MAX_DEPTH {
+                return Err("operation exceeds the document depth bound".into());
+            }
             pending.extend(node.children.iter().map(|child| (child, depth + 1)));
             if let crate::view::Kind::List { items, .. } = &node.kind {
                 pending.extend(items.iter().flatten().map(|child| (child, depth + 1)));
@@ -153,39 +218,79 @@ impl IndexedTree {
     /// Apply one op. A receiver discards its accumulator and resynchronizes on an invalid op.
     pub fn apply(&mut self, op: &ViewOp) -> Result<(), String> {
         match op {
-            ViewOp::Insert { parent, before, node } => {
+            ViewOp::Insert {
+                parent,
+                before,
+                node,
+            } => {
                 self.check_depth(node, Some(parent))?;
                 self.check_subtree(node, None)?;
-                if self.contains(&node.id) { return Err(format!("duplicate node {}", node.id)); }
-                let owner = self.nodes.get(parent).ok_or_else(|| format!("missing parent {parent}"))?;
+                if self.contains(&node.id) {
+                    return Err(format!("duplicate node {}", node.id));
+                }
+                let owner = self
+                    .nodes
+                    .get(parent)
+                    .ok_or_else(|| format!("missing parent {parent}"))?;
                 let previous = if let Some(before) = before {
-                    let next = self.nodes.get(before).ok_or_else(|| format!("missing sibling {before}"))?;
-                    if next.parent.as_ref() != Some(parent) { return Err("sibling belongs to another parent".into()); }
+                    let next = self
+                        .nodes
+                        .get(before)
+                        .ok_or_else(|| format!("missing sibling {before}"))?;
+                    if next.parent.as_ref() != Some(parent) {
+                        return Err("sibling belongs to another parent".into());
+                    }
                     next.previous.clone()
-                } else { owner.last.clone() };
-                if let Some(previous) = &previous { self.nodes.get_mut(previous).unwrap().next = Some(node.id.clone()); }
-                else { self.nodes.get_mut(parent).unwrap().first = Some(node.id.clone()); }
-                if let Some(next) = before { self.nodes.get_mut(next).unwrap().previous = Some(node.id.clone()); }
-                else { self.nodes.get_mut(parent).unwrap().last = Some(node.id.clone()); }
+                } else {
+                    owner.last.clone()
+                };
+                if let Some(previous) = &previous {
+                    self.nodes.get_mut(previous).unwrap().next = Some(node.id.clone());
+                } else {
+                    self.nodes.get_mut(parent).unwrap().first = Some(node.id.clone());
+                }
+                if let Some(next) = before {
+                    self.nodes.get_mut(next).unwrap().previous = Some(node.id.clone());
+                } else {
+                    self.nodes.get_mut(parent).unwrap().last = Some(node.id.clone());
+                }
                 self.store(node.clone(), Some(parent.clone()), previous, before.clone());
             }
             ViewOp::Remove { id } => {
-                let entry = self.nodes.get(id).ok_or_else(|| format!("missing node {id}"))?;
+                let entry = self
+                    .nodes
+                    .get(id)
+                    .ok_or_else(|| format!("missing node {id}"))?;
                 let parent = entry.parent.clone().ok_or("cannot remove the root")?;
                 let previous = entry.previous.clone();
                 let next = entry.next.clone();
-                if let Some(previous) = &previous { self.nodes.get_mut(previous).unwrap().next = next.clone(); }
-                else { self.nodes.get_mut(&parent).unwrap().first = next.clone(); }
-                if let Some(next) = &next { self.nodes.get_mut(next).unwrap().previous = previous.clone(); }
-                else { self.nodes.get_mut(&parent).unwrap().last = previous.clone(); }
+                if let Some(previous) = &previous {
+                    self.nodes.get_mut(previous).unwrap().next = next.clone();
+                } else {
+                    self.nodes.get_mut(&parent).unwrap().first = next.clone();
+                }
+                if let Some(next) = &next {
+                    self.nodes.get_mut(next).unwrap().previous = previous.clone();
+                } else {
+                    self.nodes.get_mut(&parent).unwrap().last = previous.clone();
+                }
                 self.erase(id);
             }
             ViewOp::Replace { id, node } => {
                 self.check_depth(node, self.parent(id))?;
                 self.check_subtree(node, Some(id))?;
-                if node.id != *id { return Err("replacement changes identity".into()); }
-                let entry = self.nodes.get(id).ok_or_else(|| format!("missing node {id}"))?;
-                let (parent, previous, next) = (entry.parent.clone(), entry.previous.clone(), entry.next.clone());
+                if node.id != *id {
+                    return Err("replacement changes identity".into());
+                }
+                let entry = self
+                    .nodes
+                    .get(id)
+                    .ok_or_else(|| format!("missing node {id}"))?;
+                let (parent, previous, next) = (
+                    entry.parent.clone(),
+                    entry.previous.clone(),
+                    entry.next.clone(),
+                );
                 self.erase(id);
                 self.store(node.clone(), parent, previous, next);
             }
@@ -199,10 +304,25 @@ mod tests {
     use super::*;
     #[test]
     fn indexed_siblings_keep_order_after_insert_remove_and_replace() {
-        let mut tree = IndexedTree::new(Node::section("root").child(Node::section("a").id("a")).child(Node::section("c").id("c")));
-        tree.apply(&ViewOp::Insert { parent: "root".into(), before: Some("c".into()), node: Node::section("b").id("b") }).unwrap();
+        let mut tree = IndexedTree::new(
+            Node::section("root")
+                .child(Node::section("a").id("a"))
+                .child(Node::section("c").id("c")),
+        );
+        tree.apply(&ViewOp::Insert {
+            parent: "root".into(),
+            before: Some("c".into()),
+            node: Node::section("b").id("b"),
+        })
+        .unwrap();
         tree.apply(&ViewOp::Remove { id: "a".into() }).unwrap();
-        tree.apply(&ViewOp::Replace { id: "b".into(), node: Node::section("b").id("b").child(Node::section("inside").id("inside")) }).unwrap();
+        tree.apply(&ViewOp::Replace {
+            id: "b".into(),
+            node: Node::section("b")
+                .id("b")
+                .child(Node::section("inside").id("inside")),
+        })
+        .unwrap();
         assert_eq!(tree.children("root"), vec!["b", "c"]);
         assert_eq!(tree.snapshot().children[0].children[0].id, "inside");
         assert_eq!(tree.len(), 4);
@@ -212,11 +332,15 @@ mod tests {
 /// Give immutable content nodes addresses under their nearest semantic owner.
 /// List members whose position can move must already carry their domain identity.
 pub fn address(node: &mut Node) {
-    if node.id.is_empty() { node.id = node.role.clone(); }
+    if node.id.is_empty() {
+        node.id = node.role.clone();
+    }
     let mut roles = std::collections::BTreeMap::<String, usize>::new();
     for child in &mut node.children {
         let occurrence = roles.entry(child.role.clone()).or_default();
-        if child.id.is_empty() { child.id = format!("{}.{}.{}", node.id, child.role, occurrence); }
+        if child.id.is_empty() {
+            child.id = format!("{}.{}.{}", node.id, child.role, occurrence);
+        }
         *occurrence += 1;
         address(child);
     }
@@ -225,16 +349,36 @@ pub fn address(node: &mut Node) {
 #[cfg(test)]
 mod receiver_tests {
     use super::*;
-    use crate::observation::{Snapshot, Content, Document};
-    fn version(rev: u64) -> Version { Version { epoch: "incarnation".into(), rev } }
-    fn root() -> Node { Node::section("root").id("root").child(Node::section("a").id("a")) }
+    use crate::observation::{Content, Document, Snapshot};
+    fn version(rev: u64) -> Version {
+        Version {
+            epoch: "incarnation".into(),
+            rev,
+        }
+    }
+    fn root() -> Node {
+        Node::section("root")
+            .id("root")
+            .child(Node::section("a").id("a"))
+    }
     #[test]
     fn colliding_descendants_are_rejected_before_tree_mutation() {
         let mut tree = IndexedTree::new(root());
         let before = tree.snapshot();
         for op in [
-            ViewOp::Insert { parent: "root".into(), before: None, node: Node::section("b").id("b").child(Node::section("bad").id("root")) },
-            ViewOp::Replace { id: "a".into(), node: Node::section("a").id("a").child(Node::section("bad").id("root")) },
+            ViewOp::Insert {
+                parent: "root".into(),
+                before: None,
+                node: Node::section("b")
+                    .id("b")
+                    .child(Node::section("bad").id("root")),
+            },
+            ViewOp::Replace {
+                id: "a".into(),
+                node: Node::section("a")
+                    .id("a")
+                    .child(Node::section("bad").id("root")),
+            },
         ] {
             assert!(tree.apply(&op).is_err());
             assert_eq!(tree.snapshot(), before);
@@ -242,7 +386,9 @@ mod receiver_tests {
     }
     #[test]
     fn restore_checks_generated_addresses_as_well_as_explicit_ones() {
-        let root = root().child(Node::section("x")).child(Node::section("explicit").id("root.x.0"));
+        let root = root()
+            .child(Node::section("x"))
+            .child(Node::section("explicit").id("root.x.0"));
         let mut root = root;
         address(&mut root);
         assert!(crate::view::validate(&root).is_err());
@@ -252,32 +398,63 @@ mod receiver_tests {
         let body = "x".repeat(8 * 1024 * 1024 + 1024);
         let view = Node::section("session").id("session").child(
             Node::section("transcript").id("transcript").child(
-                Node::text("message.assistant", [crate::view::Span::plain(&body)]).id("msg.1.text")));
-        let message = Snapshot { position: 1, members: std::collections::BTreeMap::from([("conversation".into(), Content::Document(Document { version: version(1), tree: view.clone(), streams: vec![] }))]) };
+                Node::text("message.assistant", [crate::view::Span::plain(&body)]).id("msg.1.text"),
+            ),
+        );
+        let message = Snapshot {
+            position: 1,
+            members: std::collections::BTreeMap::from([(
+                "conversation".into(),
+                Content::Document(Document {
+                    version: version(1),
+                    tree: view.clone(),
+                    streams: vec![],
+                }),
+            )]),
+        };
         let wire = crate::chunk::encode(&message).unwrap();
         let mut decoder = crate::chunk::Decoder::new();
-        for bytes in wire.chunks(4093) { decoder.push(bytes).unwrap(); }
+        for bytes in wire.chunks(4093) {
+            decoder.push(bytes).unwrap();
+        }
         let received: Snapshot = crate::chunk::decode(&decoder.next().unwrap().unwrap()).unwrap();
         assert_eq!(received, message);
-        let Content::Document(document) = &received.members["conversation"] else { panic!("document") };
+        let Content::Document(document) = &received.members["conversation"] else {
+            panic!("document")
+        };
         crate::view::validate(&document.tree).unwrap();
         assert_eq!(IndexedTree::new(document.tree.clone()).snapshot(), view);
     }
     #[test]
     fn canonical_history_cardinality_is_not_a_protocol_limit() {
         let mut root = Node::section("root").id("root");
-        root.children = (0..200_001).map(|id| Node::section("message").id(format!("msg.{id}"))).collect();
+        root.children = (0..200_001)
+            .map(|id| Node::section("message").id(format!("msg.{id}")))
+            .collect();
         crate::view::validate(&root).unwrap();
     }
     #[test]
     fn operation_depth_includes_its_existing_ancestors() {
         let mut root = Node::section("leaf").id("leaf");
-        for depth in 0..crate::view::MAX_DEPTH { root = Node::section("layer").id(format!("layer.{depth}")).child(root); }
+        for depth in 0..crate::view::MAX_DEPTH {
+            root = Node::section("layer")
+                .id(format!("layer.{depth}"))
+                .child(root);
+        }
         let mut tree = IndexedTree::new(root);
         let before = tree.snapshot();
-        let insert = ViewOp::Insert { parent: "leaf".into(), before: None, node: Node::section("child").id("child") };
+        let insert = ViewOp::Insert {
+            parent: "leaf".into(),
+            before: None,
+            node: Node::section("child").id("child"),
+        };
         assert!(tree.apply(&insert).is_err());
-        let replace = ViewOp::Replace { id: "leaf".into(), node: Node::section("leaf").id("leaf").child(Node::section("child").id("child")) };
+        let replace = ViewOp::Replace {
+            id: "leaf".into(),
+            node: Node::section("leaf")
+                .id("leaf")
+                .child(Node::section("child").id("child")),
+        };
         assert!(tree.apply(&replace).is_err());
         assert_eq!(tree.snapshot(), before);
     }

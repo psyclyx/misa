@@ -17,7 +17,8 @@ use tokio::sync::watch;
 
 use crate::{Runtime, State};
 use misa_protocol::invocation::CallContext;
-pub(crate) type RestrictedQuery = fn(&State, &misa_proto::Query, &CallContext) -> Result<Value, Fault>;
+pub(crate) type RestrictedQuery =
+    fn(&State, &misa_proto::Query, &CallContext) -> Result<Value, Fault>;
 
 #[cfg(test)]
 thread_local! { static DOCUMENT_PARSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
@@ -50,11 +51,59 @@ pub(crate) fn builtins() -> Vec<Definition> {
                         .into_iter()
                         .map(|key| (key.into(), text()))
                         .chain([
-                            ("working".into(), Field { schema: Schema::Bool, optional: false }),
-                            ("attention".into(), Field { schema: Schema::Int, optional: false }),
-                            ("usage".into(),Field{schema:Schema::Record{fields:["input_tokens","output_tokens","cost_micros"].into_iter().map(|key|(key.into(),Field{schema:Schema::Int,optional:false})).collect(),allow_unknown:false},optional:false}),
-                            ("operations".into(), Field { schema: Schema::List { items: Box::new(Schema::Value) }, optional: false }),
-                            ("requests".into(), Field { schema: Schema::List { items: Box::new(Schema::Value) }, optional: false }),
+                            (
+                                "working".into(),
+                                Field {
+                                    schema: Schema::Bool,
+                                    optional: false,
+                                },
+                            ),
+                            (
+                                "attention".into(),
+                                Field {
+                                    schema: Schema::Int,
+                                    optional: false,
+                                },
+                            ),
+                            (
+                                "usage".into(),
+                                Field {
+                                    schema: Schema::Record {
+                                        fields: ["input_tokens", "output_tokens", "cost_micros"]
+                                            .into_iter()
+                                            .map(|key| {
+                                                (
+                                                    key.into(),
+                                                    Field {
+                                                        schema: Schema::Int,
+                                                        optional: false,
+                                                    },
+                                                )
+                                            })
+                                            .collect(),
+                                        allow_unknown: false,
+                                    },
+                                    optional: false,
+                                },
+                            ),
+                            (
+                                "operations".into(),
+                                Field {
+                                    schema: Schema::List {
+                                        items: Box::new(Schema::Value),
+                                    },
+                                    optional: false,
+                                },
+                            ),
+                            (
+                                "requests".into(),
+                                Field {
+                                    schema: Schema::List {
+                                        items: Box::new(Schema::Value),
+                                    },
+                                    optional: false,
+                                },
+                            ),
                         ])
                         .collect(),
                     allow_unknown: false,
@@ -114,8 +163,11 @@ impl Runtime {
     }
 
     pub(crate) fn observe_with_context(
-        self: &Arc<Self>, context: Option<CallContext>, handle: Handle,
-        selection: Selection, resume: Option<Resume>,
+        self: &Arc<Self>,
+        context: Option<CallContext>,
+        handle: Handle,
+        selection: Selection,
+        resume: Option<Resume>,
     ) -> Result<(Observation, Publication), Fault> {
         self.validate_selection(&selection)?;
         if resume
@@ -162,14 +214,20 @@ impl Runtime {
         self.read_selection_with_context(None, selection)
     }
 
-    pub(crate) fn read_selection_with_context(&self, context: Option<&CallContext>, selection: &Selection) -> Result<Snapshot, Fault> {
+    pub(crate) fn read_selection_with_context(
+        &self,
+        context: Option<&CallContext>,
+        selection: &Selection,
+    ) -> Result<Snapshot, Fault> {
         self.validate_selection(selection)?;
         let mut state = self.state.lock().expect("session state is never poisoned");
         snapshot(self, &mut state, selection, context)
     }
 
     fn validate_selection(&self, selection: &Selection) -> Result<(), Fault> {
-        if self.is_closed() { return Err(self.closure_fault()); }
+        if self.is_closed() {
+            return Err(self.closure_fault());
+        }
         selection.validate()?;
         if selection.scope != self.scope() {
             return Err(Fault::query("Owner incarnation does not match"));
@@ -220,10 +278,15 @@ impl Observation {
     }
 
     fn capture(&mut self, opening: bool) -> Option<Publication> {
-        if self.ended { return None; }
+        if self.ended {
+            return None;
+        }
         if self.runtime.is_closed() {
             self.ended = true;
-            return Some(Publication::Closed { handle: self.handle, reason: self.runtime.closure_fault() });
+            return Some(Publication::Closed {
+                handle: self.handle,
+                reason: self.runtime.closure_fault(),
+            });
         }
         let runtime = self.runtime.clone();
         let mut state = runtime
@@ -234,7 +297,10 @@ impl Observation {
         // Never evaluate private state interrupted by shutdown as current data.
         if runtime.is_closed() {
             self.ended = true;
-            return Some(Publication::Closed { handle: self.handle, reason: runtime.closure_fault() });
+            return Some(Publication::Closed {
+                handle: self.handle,
+                reason: runtime.closure_fault(),
+            });
         }
         let position = state.publications.position();
         if !opening && self.examined == Some(position) {
@@ -461,61 +527,65 @@ fn evaluate(
         }
         let mut candidate = None;
         let result = if let Some(project) = runtime.restricted_exports.get(&member.query.id) {
-            context.ok_or_else(|| Fault::query("Query requires an authenticated caller"))
+            context
+                .ok_or_else(|| Fault::query("Query requires an authenticated caller"))
                 .and_then(|context| project(state, &member.query, context))
         } else {
-            state.state.query(&member.query).map_err(|fault| Fault::new(fault.code, fault.message))
+            state
+                .state
+                .query(&member.query)
+                .map_err(|fault| Fault::new(fault.code, fault.message))
         }
-            .and_then(|value| {
-                candidate = Some(value.clone());
-                if let Some(Cached::Unavailable {
-                    fault,
-                    value: Some(old),
-                }) = previous.get(name)
-                {
-                    if old.same(&value) {
-                        return Ok(Evaluated {
-                            cached: Cached::Unavailable {
-                                fault: fault.clone(),
-                                value: Some(value),
-                            },
-                            content: complete.then(|| Content::Unavailable(fault.clone())),
-                        });
-                    }
-                }
-                let cached = Cached::Value(value.clone());
-                if !complete && previous.get(name).is_some_and(|old| old.same(&cached)) {
+        .and_then(|value| {
+            candidate = Some(value.clone());
+            if let Some(Cached::Unavailable {
+                fault,
+                value: Some(old),
+            }) = previous.get(name)
+            {
+                if old.same(&value) {
                     return Ok(Evaluated {
-                        cached,
-                        content: None,
+                        cached: Cached::Unavailable {
+                            fault: fault.clone(),
+                            value: Some(value),
+                        },
+                        content: complete.then(|| Content::Unavailable(fault.clone())),
                     });
                 }
-                let content = match &runtime.exports[&member.query.id].result {
-                    ResultContract::Data { schema } => {
-                        schema
-                            .validate(&value)
-                            .map_err(|error| Fault::query(error.to_string()))?;
-                        Content::Value(value)
-                    }
-                    ResultContract::Document {} => {
-                        #[cfg(test)]
-                        DOCUMENT_PARSES.with(|count| count.set(count.get() + 1));
-                        let tree: misa_proto::Node =
-                            crate::wire::parse(&value).map_err(Fault::query)?;
-                        misa_proto::view::validate(&tree)
-                            .map_err(|error| Fault::query(error.to_string()))?;
-                        Content::Document(Document {
-                            version: state.view.version.clone(),
-                            tree,
-                            streams: vec![],
-                        })
-                    }
-                };
-                Ok(Evaluated {
+            }
+            let cached = Cached::Value(value.clone());
+            if !complete && previous.get(name).is_some_and(|old| old.same(&cached)) {
+                return Ok(Evaluated {
                     cached,
-                    content: Some(content),
-                })
-            });
+                    content: None,
+                });
+            }
+            let content = match &runtime.exports[&member.query.id].result {
+                ResultContract::Data { schema } => {
+                    schema
+                        .validate(&value)
+                        .map_err(|error| Fault::query(error.to_string()))?;
+                    Content::Value(value)
+                }
+                ResultContract::Document {} => {
+                    #[cfg(test)]
+                    DOCUMENT_PARSES.with(|count| count.set(count.get() + 1));
+                    let tree: misa_proto::Node =
+                        crate::wire::parse(&value).map_err(Fault::query)?;
+                    misa_proto::view::validate(&tree)
+                        .map_err(|error| Fault::query(error.to_string()))?;
+                    Content::Document(Document {
+                        version: state.view.version.clone(),
+                        tree,
+                        streams: vec![],
+                    })
+                }
+            };
+            Ok(Evaluated {
+                cached,
+                content: Some(content),
+            })
+        });
         let evaluated = match result {
             Ok(value) => value,
             Err(fault) if member.optional => {
@@ -562,7 +632,9 @@ fn snapshot(
     selection: &Selection,
     context: Option<&CallContext>,
 ) -> Result<Snapshot, Fault> {
-    if runtime.is_closed() { return Err(runtime.closure_fault()); }
+    if runtime.is_closed() {
+        return Err(runtime.closure_fault());
+    }
     let evaluated = evaluate(runtime, state, selection, &BTreeMap::new(), true, context)?;
     let values = evaluated
         .into_iter()
@@ -579,17 +651,36 @@ mod closing_tests {
     use super::*;
     #[tokio::test]
     async fn closure_after_preflight_never_materializes_a_current_snapshot() {
-        let runtime = Runtime::start("closing-read", "Closing", None,
-            Arc::new(misa_kernel::LocalKernel::new(misa_kernel::ScriptedProvider::always("unused"))),
-            "scripted", "test", Value::Null);
-        let definition = runtime.query_exports().into_iter().find(|query| query.id == SUMMARY).unwrap();
-        let selection = Selection { scope: runtime.scope(), members: BTreeMap::from([
-            ("summary".into(), definition.member(vec![]).unwrap())]) };
+        let runtime = Runtime::start(
+            "closing-read",
+            "Closing",
+            None,
+            Arc::new(misa_kernel::LocalKernel::new(
+                misa_kernel::ScriptedProvider::always("unused"),
+            )),
+            "scripted",
+            "test",
+            Value::Null,
+        );
+        let definition = runtime
+            .query_exports()
+            .into_iter()
+            .find(|query| query.id == SUMMARY)
+            .unwrap();
+        let selection = Selection {
+            scope: runtime.scope(),
+            members: BTreeMap::from([("summary".into(), definition.member(vec![]).unwrap())]),
+        };
         runtime.validate_selection(&selection).unwrap();
         // Model a read that passed preflight, then waited behind shutdown's owner
         // transaction. Materialization must recheck while holding that same lock.
         runtime.shutdown_complete().await;
         let mut state = runtime.state.lock().unwrap();
-        assert_eq!(snapshot(&runtime, &mut state, &selection, None).unwrap_err().code, "closed_scope");
+        assert_eq!(
+            snapshot(&runtime, &mut state, &selection, None)
+                .unwrap_err()
+                .code,
+            "closed_scope"
+        );
     }
 }

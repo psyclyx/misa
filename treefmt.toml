@@ -5,6 +5,8 @@ excludes = [
   ".zig-cache/*",
   "docs/catalogs.md",
   "docs/services.md",
+  "next/target/*",
+  "next/wit/guest/target/*",
   "npins/*",
   "zig-out/*",
 ]
@@ -17,6 +19,14 @@ includes = ["*.zig"]
 [formatter.nix]
 command = "nixfmt"
 includes = ["*.nix"]
+
+# `next` is a nested Rust workspace with its own `treefmt.toml`, but the root
+# configuration is the one the pre-commit hook runs. Without this entry a staged
+# `.rs` file was silently skipped rather than checked.
+[formatter.rustfmt]
+command = "rustfmt"
+options = ["--edition", "2024"]
+includes = ["next/**/*.rs"]
 
 [formatter.fennel]
 command = "fnlfmt"

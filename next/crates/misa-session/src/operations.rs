@@ -17,22 +17,39 @@ use std::{collections::BTreeMap, sync::Arc};
 pub const SUMMARY: &str = "operations.summary";
 pub const REQUEST: &str = "operation.request";
 pub(crate) fn outcome_of_result(record: &Value) -> Option<Outcome> {
-    if record.get("terminal").and_then(Value::as_bool) != Some(true) { return None; }
-    if let Some(outcome) = record.get("outcome").and_then(|value| crate::wire::parse(value).ok()) { return Some(outcome); }
+    if record.get("terminal").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    if let Some(outcome) = record
+        .get("outcome")
+        .and_then(|value| crate::wire::parse(value).ok())
+    {
+        return Some(outcome);
+    }
     Some(match record.get("state").and_then(Value::as_str) {
         Some("succeeded") => Outcome::Completed { value: Value::Null },
-        Some("failed" | "cancelled" | "expired") => Outcome::Rejected { fault: Fault::new("operation_failed", "Operation did not complete successfully") },
-        _ => Outcome::Indeterminate { fault: Fault::new("interrupted", "Operation interrupted; reconcile durable state before retrying") },
+        Some("failed" | "cancelled" | "expired") => Outcome::Rejected {
+            fault: Fault::new(
+                "operation_failed",
+                "Operation did not complete successfully",
+            ),
+        },
+        _ => Outcome::Indeterminate {
+            fault: Fault::new(
+                "interrupted",
+                "Operation interrupted; reconcile durable state before retrying",
+            ),
+        },
     })
 }
 const KEY_TTL_MS: i64 = 10 * 60 * 1000;
 const MAX_RECORDS: usize = 64;
 #[path = "approvals.rs"]
 mod approvals;
-#[path = "operation_journal.rs"]
-mod journal;
 #[path = "input_requests.rs"]
 mod forms;
+#[path = "operation_journal.rs"]
+mod journal;
 pub(crate) use approvals::ToolApprovalPolicy;
 pub(crate) use journal::DeferredWork;
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -95,25 +112,37 @@ impl Store {
         approvals::reconcile(self, db);
     }
     fn summary(&self) -> Value {
-        Value::list(self.records.values().map(|record| {
-            Value::map([
-                ("id", Value::str(&record.id)),
-                ("kind", Value::str("credentials.authorize")),
-                ("provider", Value::str(&record.provider)),
-                ("state", Value::str(record.phase.name())),
-                ("terminal", Value::Bool(record.phase.terminal())),
-                ("generation", Value::Int(record.generation)),
-                ("needs_input", Value::Bool(record.phase == Phase::Awaiting)),
-                (
-                    "expires_ms",
-                    record.expires_ms.map(Value::Int).unwrap_or(Value::Null),
-                ),
-            ])
-        }).chain(self.forms.values().map(forms::FormRecord::operation)))
+        Value::list(
+            self.records
+                .values()
+                .map(|record| {
+                    Value::map([
+                        ("id", Value::str(&record.id)),
+                        ("kind", Value::str("credentials.authorize")),
+                        ("provider", Value::str(&record.provider)),
+                        ("state", Value::str(record.phase.name())),
+                        ("terminal", Value::Bool(record.phase.terminal())),
+                        ("generation", Value::Int(record.generation)),
+                        ("needs_input", Value::Bool(record.phase == Phase::Awaiting)),
+                        (
+                            "expires_ms",
+                            record.expires_ms.map(Value::Int).unwrap_or(Value::Null),
+                        ),
+                    ])
+                })
+                .chain(self.forms.values().map(forms::FormRecord::operation)),
+        )
     }
     fn requests(&self) -> Value {
         let approvals = approvals::summaries(self);
-        Value::list(approvals.as_list().unwrap_or(&[]).iter().cloned().chain(self.forms.values().map(forms::FormRecord::summary)))
+        Value::list(
+            approvals
+                .as_list()
+                .unwrap_or(&[])
+                .iter()
+                .cloned()
+                .chain(self.forms.values().map(forms::FormRecord::summary)),
+        )
     }
     pub(crate) fn deadline(&self) -> Option<i64> {
         self.records
@@ -166,7 +195,15 @@ fn record(fields: impl IntoIterator<Item = (&'static str, Schema)>) -> Schema {
     }
 }
 fn with_outcome(mut schema: Schema) -> Schema {
-    if let Schema::Record { fields, .. } = &mut schema { fields.insert("outcome".into(), Field { schema: Schema::Value, optional: true }); }
+    if let Schema::Record { fields, .. } = &mut schema {
+        fields.insert(
+            "outcome".into(),
+            Field {
+                schema: Schema::Value,
+                optional: true,
+            },
+        );
+    }
     schema
 }
 pub(crate) fn definitions() -> Vec<Definition> {
@@ -198,11 +235,25 @@ pub(crate) fn definitions() -> Vec<Definition> {
             result: ResultContract::Document {},
         },
         Definition {
-            id: "operation.output".into(), arguments: vec![Schema::String],
+            id: "operation.output".into(),
+            arguments: vec![Schema::String],
             contract: "operation.output@1".into(),
-            result: ResultContract::Data { schema: Schema::List { items: Box::new(Schema::Value) } },
+            result: ResultContract::Data {
+                schema: Schema::List {
+                    items: Box::new(Schema::Value),
+                },
+            },
         },
-        Definition {id:"operation.usage".into(),arguments:vec![Schema::String],contract:"operation.usage@1".into(),result:ResultContract::Data{schema:Schema::List{items:Box::new(Schema::Value)}}},
+        Definition {
+            id: "operation.usage".into(),
+            arguments: vec![Schema::String],
+            contract: "operation.usage@1".into(),
+            result: ResultContract::Data {
+                schema: Schema::List {
+                    items: Box::new(Schema::Value),
+                },
+            },
+        },
         Definition {
             id: "operation.result".into(),
             arguments: vec![Schema::String],
@@ -282,7 +333,11 @@ pub(crate) fn registry(registry: Registry) -> Registry {
                                 .and_then(Value::as_list)
                                 .unwrap_or(&[]),
                         )
-                        .chain(db.get(crate::command_operations::ROOT).and_then(Value::as_list).unwrap_or(&[]))
+                        .chain(
+                            db.get(crate::command_operations::ROOT)
+                                .and_then(Value::as_list)
+                                .unwrap_or(&[]),
+                        )
                         .cloned(),
                 )
             }),
@@ -291,17 +346,41 @@ pub(crate) fn registry(registry: Registry) -> Registry {
             "operation.output",
             read_query(|db, query| {
                 let id = query.args.first().and_then(Value::as_str);
-                let outputs = db.get("prompt_operations").and_then(Value::as_list).unwrap_or(&[]).iter()
+                let outputs = db
+                    .get("prompt_operations")
+                    .and_then(Value::as_list)
+                    .unwrap_or(&[])
+                    .iter()
                     .find(|record| record.get("id").and_then(Value::as_str) == id)
-                    .and_then(|record| record.get("outputs")).and_then(Value::as_list).unwrap_or(&[]);
-                Value::list(db.get("messages").and_then(Value::as_list).unwrap_or(&[]).iter()
-                    .filter(|message| message.get("seq").is_some_and(|seq| outputs.contains(seq))).cloned())
+                    .and_then(|record| record.get("outputs"))
+                    .and_then(Value::as_list)
+                    .unwrap_or(&[]);
+                Value::list(
+                    db.get("messages")
+                        .and_then(Value::as_list)
+                        .unwrap_or(&[])
+                        .iter()
+                        .filter(|message| {
+                            message.get("seq").is_some_and(|seq| outputs.contains(seq))
+                        })
+                        .cloned(),
+                )
             }),
         )
-        .subscription("operation.usage",read_query(|db,query| {
-            let id=query.args.first().and_then(Value::as_str);
-            Value::list(db.get("attempts").and_then(Value::as_list).unwrap_or(&[]).iter().filter(|attempt|attempt.get("operation").and_then(Value::as_str)==id).cloned())
-        }))
+        .subscription(
+            "operation.usage",
+            read_query(|db, query| {
+                let id = query.args.first().and_then(Value::as_str);
+                Value::list(
+                    db.get("attempts")
+                        .and_then(Value::as_list)
+                        .unwrap_or(&[])
+                        .iter()
+                        .filter(|attempt| attempt.get("operation").and_then(Value::as_str) == id)
+                        .cloned(),
+                )
+            }),
+        )
         .subscription(
             "operation.presentation",
             read_query(|db, query| {
@@ -340,7 +419,15 @@ pub(crate) fn registry(registry: Registry) -> Registry {
             "operation.result",
             read_query(|db, query| {
                 let id = query.args.first().and_then(Value::as_str);
-                if let Some(record) = db.get(crate::command_operations::ROOT).and_then(Value::as_list).unwrap_or(&[]).iter().find(|record| record.get("id").and_then(Value::as_str) == id) { return record.clone(); }
+                if let Some(record) = db
+                    .get(crate::command_operations::ROOT)
+                    .and_then(Value::as_list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .find(|record| record.get("id").and_then(Value::as_str) == id)
+                {
+                    return record.clone();
+                }
                 if let Some(record) = db
                     .get("prompt_operations")
                     .and_then(Value::as_list)
@@ -359,7 +446,9 @@ pub(crate) fn registry(registry: Registry) -> Registry {
                 else {
                     return Value::Null;
                 };
-                if record.get("kind").and_then(Value::as_str) == Some("input") { return record.clone(); }
+                if record.get("kind").and_then(Value::as_str) == Some("input") {
+                    return record.clone();
+                }
                 let phase = record
                     .get("state")
                     .and_then(Value::as_str)
@@ -470,7 +559,9 @@ pub(crate) fn request(state: &State, query: &Query, context: &CallContext) -> Re
     if state.operations.approvals.contains_key(id) {
         return approvals::detail(state, id, context);
     }
-    if state.operations.forms.contains_key(id) { return forms::detail(state, id, context); }
+    if state.operations.forms.contains_key(id) {
+        return forms::detail(state, id, context);
+    }
     let record = state
         .operations
         .records
@@ -542,7 +633,8 @@ pub(crate) fn commands() -> Vec<CommandRegistration> {
         ),
         CommandRegistration::new(
             Command {
-                preparation: misa_proto::invocation::Preparation::Request, id: "credentials.resolve".into(),
+                preparation: misa_proto::invocation::Preparation::Request,
+                id: "credentials.resolve".into(),
                 input: record([
                     ("request", Schema::String),
                     ("generation", Schema::Int),
@@ -554,7 +646,8 @@ pub(crate) fn commands() -> Vec<CommandRegistration> {
         ),
         CommandRegistration::new(
             Command {
-                preparation: Default::default(), id: "operation.cancel".into(),
+                preparation: Default::default(),
+                id: "operation.cancel".into(),
                 input: record([("operation", Schema::String), ("generation", Schema::Int)]),
                 result: null(),
             },
@@ -576,9 +669,7 @@ fn rejected(fault: Fault) -> Outcome {
 }
 fn authorize(runtime: &Runtime, context: &CallContext, invocation: &Invocation) -> Outcome {
     let provider = text(&invocation.input, "provider").to_owned();
-    if context.principal.is_empty()
-        || misa_kernel::presets::preset_for_slot(&provider).is_none()
-    {
+    if context.principal.is_empty() || misa_kernel::presets::preset_for_slot(&provider).is_none() {
         return rejected(Fault::new(
             "provider_unavailable",
             "Provider is unavailable",
@@ -663,8 +754,11 @@ fn resolve(runtime: &Runtime, context: &CallContext, invocation: &Invocation) ->
             text(&invocation.input, "request"),
             generation(&invocation.input),
         )?;
-        if record.oauth || record.phase != Phase::Awaiting
-            || record.expires_ms.is_some_and(|deadline| deadline <= crate::now_ms())
+        if record.oauth
+            || record.phase != Phase::Awaiting
+            || record
+                .expires_ms
+                .is_some_and(|deadline| deadline <= crate::now_ms())
         {
             return Err(Fault::new(
                 "stale_request",
@@ -694,11 +788,25 @@ fn resolve(runtime: &Runtime, context: &CallContext, invocation: &Invocation) ->
     })
 }
 fn cancel(runtime: &Runtime, context: &CallContext, invocation: &Invocation) -> Outcome {
-    if runtime.state.lock().unwrap().operations.forms.contains_key(text(&invocation.input, "operation")) {
+    if runtime
+        .state
+        .lock()
+        .unwrap()
+        .operations
+        .forms
+        .contains_key(text(&invocation.input, "operation"))
+    {
         let mut input = invocation.input.as_map().cloned().unwrap_or_default();
         let request = input.remove("operation").unwrap();
         input.insert("request".into(), request);
-        return forms::cancel(runtime, context, &Invocation { input: Value::Map(Arc::new(input)), ..invocation.clone() });
+        return forms::cancel(
+            runtime,
+            context,
+            &Invocation {
+                input: Value::Map(Arc::new(input)),
+                ..invocation.clone()
+            },
+        );
     }
     let scope = runtime.scope();
     runtime.operation_transition(None, |store, db| {
@@ -782,26 +890,43 @@ fn cancel(runtime: &Runtime, context: &CallContext, invocation: &Invocation) -> 
 }
 impl Runtime {
     /// Logical parent work for host-composed child operations, independent of UI.
-    pub fn work_context(&self) -> (Option<String>,Option<String>) {
+    pub fn work_context(&self) -> (Option<String>, Option<String>) {
         let state = self.state.lock().expect("session state is never poisoned");
         let db = state.state.db();
-        let operation = db.get("session").and_then(|session|session.get("operation")).and_then(Value::as_str);
-        let attempt=operation.and_then(|operation|db.get("attempts")?.as_list()?.iter().rev()
-            .find(|attempt| attempt.get("operation").and_then(Value::as_str)==Some(operation))?
-            .get("name")?.as_str().map(str::to_owned));
-        (operation.map(str::to_owned),attempt)
+        let operation = db
+            .get("session")
+            .and_then(|session| session.get("operation"))
+            .and_then(Value::as_str);
+        let attempt = operation.and_then(|operation| {
+            db.get("attempts")?
+                .as_list()?
+                .iter()
+                .rev()
+                .find(|attempt| {
+                    attempt.get("operation").and_then(Value::as_str) == Some(operation)
+                })?
+                .get("name")?
+                .as_str()
+                .map(str::to_owned)
+        });
+        (operation.map(str::to_owned), attempt)
     }
     fn operation_transition(
-        &self, slots: Option<Value>,
+        &self,
+        slots: Option<Value>,
         change: impl FnOnce(&mut Store, &Value) -> Result<(Outcome, Option<Request>), Fault>,
-    ) -> Outcome { self.operation_transition_as(crate::kernel_queue::Class::Control, slots, change) }
+    ) -> Outcome {
+        self.operation_transition_as(crate::kernel_queue::Class::Control, slots, change)
+    }
     fn operation_transition_as(
         &self,
         class: crate::kernel_queue::Class,
         slots: Option<Value>,
         change: impl FnOnce(&mut Store, &Value) -> Result<(Outcome, Option<Request>), Fault>,
     ) -> Outcome {
-        if self.is_closed() { return rejected(Fault::new("closed_scope", "Session owner is closed")); }
+        if self.is_closed() {
+            return rejected(Fault::new("closed_scope", "Session owner is closed"));
+        }
         let (result, request, outcome, revision) = {
             let mut state = self.state.lock().expect("session state is never poisoned");
             let mut candidate = state.operations.clone();
@@ -987,7 +1112,9 @@ pub(crate) fn start_expiry_loop(runtime: &Arc<Runtime>) -> tokio::task::JoinHand
     let mut revision = runtime.watch_rev();
     tokio::spawn(async move {
         loop {
-            if *closing.borrow_and_update() { return; }
+            if *closing.borrow_and_update() {
+                return;
+            }
             let next = *deadline.borrow_and_update();
             if let Some(at) = next {
                 tokio::select! {
@@ -1025,48 +1152,90 @@ pub(crate) fn start_expiry_loop(runtime: &Arc<Runtime>) -> tokio::task::JoinHand
 mod tests {
     #[tokio::test]
     async fn refused_expiry_waits_for_owner_progress_and_stops_on_shutdown() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use misa_reframe::FnHandler;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let refuse = Arc::new(AtomicBool::new(false));
         let attempts = Arc::new(AtomicUsize::new(0));
         let refusal = refuse.clone();
         let counter = attempts.clone();
-        let contribution = crate::Contribution::new().with_handler("operations/changed", 100,
-            Arc::new(FnHandler::new("expiry-refusal", move |_: &mut misa_reframe::Tx<'_>, _: &Event| {
-                if refusal.load(Ordering::SeqCst) {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                    return Err(misa_reframe::Fault::new("test.refused", "Wait for owner progress"));
-                }
-                Ok(())
-            })));
-        let runtime = Runtime::start_with("expiry", "Expiry", None, Arc::new(Sink::default()),
-            "scripted", "test", Value::Null, contribution);
+        let contribution = crate::Contribution::new().with_handler(
+            "operations/changed",
+            100,
+            Arc::new(FnHandler::new(
+                "expiry-refusal",
+                move |_: &mut misa_reframe::Tx<'_>, _: &Event| {
+                    if refusal.load(Ordering::SeqCst) {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        return Err(misa_reframe::Fault::new(
+                            "test.refused",
+                            "Wait for owner progress",
+                        ));
+                    }
+                    Ok(())
+                },
+            )),
+        );
+        let runtime = Runtime::start_with(
+            "expiry",
+            "Expiry",
+            None,
+            Arc::new(Sink::default()),
+            "scripted",
+            "test",
+            Value::Null,
+            contribution,
+        );
         let id = start(&runtime, "alice", "anthropic");
         refuse.store(true, Ordering::SeqCst);
         let due = crate::now_ms() - 1;
-        runtime.state.lock().unwrap().operations.records.get_mut(&id).unwrap().expires_ms = Some(due);
+        runtime
+            .state
+            .lock()
+            .unwrap()
+            .operations
+            .records
+            .get_mut(&id)
+            .unwrap()
+            .expires_ms = Some(due);
         runtime.operation_deadline.send_replace(Some(due));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while attempts.load(Ordering::SeqCst) == 0 { tokio::task::yield_now().await; }
-        }).await.unwrap();
+            while attempts.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert_eq!(attempts.load(Ordering::SeqCst), 1, "an overdue refused transition must not spin");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "an overdue refused transition must not spin"
+        );
         assert!(runtime.state.lock().unwrap().operations.records[&id].phase == Phase::Awaiting);
-        assert!(matches!(resolve(&runtime, &context("alice"),
+        assert!(
+            matches!(resolve(&runtime, &context("alice"),
             &invocation(&runtime, "credentials.resolve", resolve_input(&id, 1))),
             Outcome::Rejected { fault } if fault.code == "stale_request"),
-            "deadline validity is enforced even when publishing expiry was refused");
+            "deadline validity is enforced even when publishing expiry was refused"
+        );
         refuse.store(false, Ordering::SeqCst);
         runtime.rev.send_replace(runtime.rev());
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
-                if runtime.state.lock().unwrap().operations.records[&id].phase == Phase::Expired { break; }
+                if runtime.state.lock().unwrap().operations.records[&id].phase == Phase::Expired {
+                    break;
+                }
                 tokio::task::yield_now().await;
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         let task = start_expiry_loop(&runtime);
         runtime.shutdown_complete().await;
-        tokio::time::timeout(std::time::Duration::from_secs(1), task).await.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
         // The retained Arc must not keep the scheduling task alive after closure.
         assert!(runtime.is_closed());
     }
@@ -1074,10 +1243,18 @@ mod tests {
     async fn private_responses_are_declared_request_preparation_without_hiding_their_schemas() {
         let (runtime, _) = setup();
         for id in ["credentials.resolve", "input.resolve", "input.cancel"] {
-            assert_eq!(runtime.command_registry[id].definition.preparation, misa_proto::invocation::Preparation::Request);
+            assert_eq!(
+                runtime.command_registry[id].definition.preparation,
+                misa_proto::invocation::Preparation::Request
+            );
             runtime.command_registry[id].definition.validate().unwrap();
         }
-        assert_eq!(runtime.command_registry["credentials.authorize"].definition.preparation, misa_proto::invocation::Preparation::Direct);
+        assert_eq!(
+            runtime.command_registry["credentials.authorize"]
+                .definition
+                .preparation,
+            misa_proto::invocation::Preparation::Direct
+        );
         runtime.shutdown_complete().await;
     }
     use super::*;
@@ -1460,35 +1637,92 @@ mod tests {
     }
     #[tokio::test]
     async fn checkpoint_failure_is_atomic_when_handlers_reject_or_have_pending_writes() {
+        use misa_proto::observation::{Encoding, Handle, Member, Publication, Selection};
         use misa_reframe::{FnHandler, Tx};
-        use misa_proto::observation::{Selection, Member, Encoding, Handle, Publication};
         for mode in ["accepted", "rejected", "busy"] {
             let contribution = crate::Contribution::new()
-                .with_root("failure_seen", Value::Bool(false)).unwrap()
-                .with_handler("operations/persistence.failed", 100, Arc::new(FnHandler::new(
-                    "test.failure", move |tx: &mut Tx<'_>, _: &Event| {
-                        if mode == "rejected" { return Err(misa_reframe::Fault::handler("publication refused")); }
-                        tx.set("failure_seen", Value::Bool(true))
-                    },
-                )))
-                .with_handler("test/stage", 0, Arc::new(FnHandler::new(
-                    "test.stage", |tx: &mut Tx<'_>, _: &Event| tx.set("failure_seen", Value::Bool(true)),
-                )));
+                .with_root("failure_seen", Value::Bool(false))
+                .unwrap()
+                .with_handler(
+                    "operations/persistence.failed",
+                    100,
+                    Arc::new(FnHandler::new(
+                        "test.failure",
+                        move |tx: &mut Tx<'_>, _: &Event| {
+                            if mode == "rejected" {
+                                return Err(misa_reframe::Fault::handler("publication refused"));
+                            }
+                            tx.set("failure_seen", Value::Bool(true))
+                        },
+                    )),
+                )
+                .with_handler(
+                    "test/stage",
+                    0,
+                    Arc::new(FnHandler::new(
+                        "test.stage",
+                        |tx: &mut Tx<'_>, _: &Event| tx.set("failure_seen", Value::Bool(true)),
+                    )),
+                );
             let sink = Arc::new(Sink::default());
-            let runtime = Runtime::start_with("failure", "failure", None, sink.clone(), "scripted", "scripted-1", Value::Null, contribution);
+            let runtime = Runtime::start_with(
+                "failure",
+                "failure",
+                None,
+                sink.clone(),
+                "scripted",
+                "scripted-1",
+                Value::Null,
+                contribution,
+            );
             let id = start(&runtime, "alice", "anthropic");
-            assert!(matches!(resolve(&runtime, &context("alice"), &invocation(&runtime, "credentials.resolve", resolve_input(&id, 1))), Outcome::Accepted { .. }));
+            assert!(matches!(
+                resolve(
+                    &runtime,
+                    &context("alice"),
+                    &invocation(&runtime, "credentials.resolve", resolve_input(&id, 1))
+                ),
+                Outcome::Accepted { .. }
+            ));
             let token = runtime.state.lock().unwrap().deferred.tokens()[0].clone();
-            let selection = Selection { scope: runtime.scope(), members: BTreeMap::from([("operations".into(), Member {
-                query: Query::new(SUMMARY), contract: "operations.summary@1".into(), encoding: Encoding::Value, optional: false,
-            })]) };
-            let (mut observer, _) = runtime.observe(Handle { id: 9, generation: 1 }, selection.clone(), None).unwrap();
-            if mode == "busy" { assert!(runtime.dispatch(Event::new("test/stage")).is_empty()); }
-            let faults = runtime.dispatch(Event::new("kernel/log.failed")
-                .with("kind", Value::str("operations.checkpoint"))
-                .with("data", Value::map([("checkpoint", Value::str(&token))])));
+            let selection = Selection {
+                scope: runtime.scope(),
+                members: BTreeMap::from([(
+                    "operations".into(),
+                    Member {
+                        query: Query::new(SUMMARY),
+                        contract: "operations.summary@1".into(),
+                        encoding: Encoding::Value,
+                        optional: false,
+                    },
+                )]),
+            };
+            let (mut observer, _) = runtime
+                .observe(
+                    Handle {
+                        id: 9,
+                        generation: 1,
+                    },
+                    selection.clone(),
+                    None,
+                )
+                .unwrap();
+            if mode == "busy" {
+                assert!(runtime.dispatch(Event::new("test/stage")).is_empty());
+            }
+            let faults = runtime.dispatch(
+                Event::new("kernel/log.failed")
+                    .with("kind", Value::str("operations.checkpoint"))
+                    .with("data", Value::map([("checkpoint", Value::str(&token))])),
+            );
             tokio::task::yield_now().await;
-            assert!(!sink.0.lock().unwrap().iter().any(|request| matches!(request, Request::Credential { action: CredentialAction::Set { .. }, .. })));
+            assert!(!sink.0.lock().unwrap().iter().any(|request| matches!(
+                request,
+                Request::Credential {
+                    action: CredentialAction::Set { .. },
+                    ..
+                }
+            )));
             assert_eq!(runtime.state.lock().unwrap().deferred.len(), 0);
             if mode != "accepted" {
                 assert_eq!(faults[0].code, "publication_failed");
@@ -1499,16 +1733,40 @@ mod tests {
                 assert_eq!(faults[0].code, "persistence_failed");
                 assert!(!runtime.is_closed());
                 assert!(matches!(observer.poll(), Some(Publication::Update { .. })));
-                assert!(runtime.state.lock().unwrap().operations.records[&id].phase == Phase::Interrupted);
+                assert!(
+                    runtime.state.lock().unwrap().operations.records[&id].phase
+                        == Phase::Interrupted
+                );
                 // The contributed state mutation remains journal-gated, and its
                 // effect must survive the failure publication's dispatch.
-                let data = sink.0.lock().unwrap().iter().find_map(|request| match request {
-                    Request::Append { kind, data, .. } if kind == crate::contribution::PATCH_KIND => Some(data.clone()),
-                    _ => None,
-                }).expect("failure handler journal effect delivered");
-                assert_eq!(runtime.state.lock().unwrap().state.db().get("failure_seen"), Some(&Value::Bool(false)));
-                runtime.dispatch(Event::new("kernel/log.appended").with("conversation", Value::str("failure")).with("kind", Value::str(crate::contribution::PATCH_KIND)).with("data", data));
-                assert_eq!(runtime.state.lock().unwrap().state.db().get("failure_seen"), Some(&Value::Bool(true)));
+                let data = sink
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find_map(|request| match request {
+                        Request::Append { kind, data, .. }
+                            if kind == crate::contribution::PATCH_KIND =>
+                        {
+                            Some(data.clone())
+                        }
+                        _ => None,
+                    })
+                    .expect("failure handler journal effect delivered");
+                assert_eq!(
+                    runtime.state.lock().unwrap().state.db().get("failure_seen"),
+                    Some(&Value::Bool(false))
+                );
+                runtime.dispatch(
+                    Event::new("kernel/log.appended")
+                        .with("conversation", Value::str("failure"))
+                        .with("kind", Value::str(crate::contribution::PATCH_KIND))
+                        .with("data", data),
+                );
+                assert_eq!(
+                    runtime.state.lock().unwrap().state.db().get("failure_seen"),
+                    Some(&Value::Bool(true))
+                );
             }
             runtime.shutdown_complete().await;
         }
@@ -1812,12 +2070,19 @@ mod tests {
     async fn interrupt_before_approved_checkpoint_ack_prevents_tool_execution() {
         let (runtime, sink) = approval_setup();
         let (_, request) = request_tool(&runtime, 72);
-        assert!(matches!(resolve_tool(&runtime, "alice", &request, true), Outcome::Completed { .. }));
+        assert!(matches!(
+            resolve_tool(&runtime, "alice", &request, true),
+            Outcome::Completed { .. }
+        ));
         assert!(runtime.state.lock().unwrap().deferred.len() > 0);
         submit_prompt(&runtime, 73, true);
         tokio::task::yield_now().await;
         let requests = sink.0.lock().unwrap();
-        assert!(!requests.iter().any(|request| matches!(request, Request::ToolRun { .. })));
+        assert!(
+            !requests
+                .iter()
+                .any(|request| matches!(request, Request::ToolRun { .. }))
+        );
         assert!(requests.iter().any(|request| matches!(request, Request::Append { kind, data, .. } if kind == "tool_result" && data.get("ok") == Some(&Value::Bool(false)))));
     }
     #[tokio::test]
@@ -2337,14 +2602,33 @@ impl Runtime {
     /// Resolve the host-bound responder for this exact currently-running tool.
     /// A tool request never supplies its own caller identity.
     pub(crate) fn trusted_tool_context(&self, request: &Request) -> Option<(CallContext, String)> {
-        if self.is_closed() { return None; }
-        let Request::ToolRun { id, call_id, .. } = request else { return None; };
-        if id != call_id { return None; }
+        if self.is_closed() {
+            return None;
+        }
+        let Request::ToolRun { id, call_id, .. } = request else {
+            return None;
+        };
+        if id != call_id {
+            return None;
+        }
         let state = self.state.lock().ok()?;
         let session = state.state.db().get("session")?;
-        if !session.get("running_tools")?.as_list()?.iter().any(|value| value.as_str() == Some(call_id)) { return None; }
+        if !session
+            .get("running_tools")?
+            .as_list()?
+            .iter()
+            .any(|value| value.as_str() == Some(call_id))
+        {
+            return None;
+        }
         let operation = session.get("operation")?.as_str()?;
         let principal = state.operations.prompt_owners.get(operation)?.clone();
-        Some((CallContext { principal, connection: 0 }, operation.to_owned()))
+        Some((
+            CallContext {
+                principal,
+                connection: 0,
+            },
+            operation.to_owned(),
+        ))
     }
 }

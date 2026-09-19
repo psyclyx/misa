@@ -433,8 +433,7 @@ pub(crate) fn finish_group(mut group: Node, attempt: Option<Value>) -> Node {
 /// Build the settled-attempt facts independently so incremental and snapshot views
 /// have the same turn boundary.
 pub(crate) fn attempt_footer(group_id: &str, attempt: &Value) -> Node {
-    let mut footer = Node::new("message.group.footer", Kind::Rule)
-        .id(format!("{group_id}.footer"));
+    let mut footer = Node::new("message.group.footer", Kind::Rule).id(format!("{group_id}.footer"));
     if let Some(started) = attempt.get("started_ms").and_then(Value::as_i64) {
         footer.children.push(Node::new(
             "value.timestamp",
@@ -1329,7 +1328,12 @@ mod tests {
                         ("seq", Value::Int(2)),
                         ("role", Value::str("assistant")),
                         ("text", Value::str("")),
-                        ("error", Value::str("429 application/json: {\"error\":{\"message\":\"Provider returned error\",\"metadata\":{\"raw\":\"temporarily rate-limited\"}},\"user_id\":\"private\"}")),
+                        (
+                            "error",
+                            Value::str(
+                                "429 application/json: {\"error\":{\"message\":\"Provider returned error\",\"metadata\":{\"raw\":\"temporarily rate-limited\"}},\"user_id\":\"private\"}",
+                            ),
+                        ),
                         ("state", Value::str("failed")),
                     ]),
                 ]),
@@ -1341,7 +1345,10 @@ mod tests {
         assert_eq!(error.state, Some(State::Failed));
         let text = find(&node, "msg.2.text").expect("the error text");
         let rendered = match &text.kind {
-            Kind::Text { spans } => spans.iter().map(|span| span.text.as_str()).collect::<String>(),
+            Kind::Text { spans } => spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>(),
             other => panic!("expected error text, got {other:?}"),
         };
         assert!(rendered.contains("429 application/json: Provider returned error"));

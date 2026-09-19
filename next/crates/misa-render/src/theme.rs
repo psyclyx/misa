@@ -154,10 +154,7 @@ impl Theme {
         set("surface.thinking", Style::PLAIN.on(hex(0x282330)));
         set("message.thinking.rail", Style::fg(hex(0xb8a1c9)));
         // A model reasoning aloud: present, readable, and clearly not the answer.
-        set(
-            "message.assistant.thinking",
-            Style::PLAIN.dim(),
-        );
+        set("message.assistant.thinking", Style::PLAIN.dim());
         set("message.assistant.thinking.rail", Style::fg(hex(0xb8a1c9)));
         // What the session told the model on its own: a background command finishing is the
         // only thing that speaks this way, and it should read as a footnote rather than prose.

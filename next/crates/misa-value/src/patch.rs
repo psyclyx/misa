@@ -80,12 +80,16 @@ impl Path {
             if tail.is_empty() {
                 return Ok(Path(segments));
             }
-            let close = tail.find(']').ok_or_else(|| PatchError::new(text, PatchErrorKind::BadPath))?;
+            let close = tail
+                .find(']')
+                .ok_or_else(|| PatchError::new(text, PatchErrorKind::BadPath))?;
             let digits = &tail[1..close];
             if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
                 return Err(PatchError::new(text, PatchErrorKind::BadPath));
             }
-            let index: u32 = digits.parse().map_err(|_| PatchError::new(text, PatchErrorKind::BadPath))?;
+            let index: u32 = digits
+                .parse()
+                .map_err(|_| PatchError::new(text, PatchErrorKind::BadPath))?;
             segments.push(Seg::Index(index));
             rest = &tail[close + 1..];
             if rest.is_empty() {
@@ -247,7 +251,10 @@ pub struct PatchError {
 
 impl PatchError {
     fn new(path: impl Into<String>, kind: PatchErrorKind) -> Self {
-        PatchError { path: path.into(), kind }
+        PatchError {
+            path: path.into(),
+            kind,
+        }
     }
 
     pub fn kind(&self) -> PatchErrorKind {
@@ -291,8 +298,14 @@ pub fn apply_one(root: &Value, path: &Path, op: &Op) -> Result<Value, PatchError
     if path.is_root() {
         return match op {
             Op::Merge(incoming) => merge_into(root, incoming, &path.to_string()),
-            Op::Delete => Err(PatchError::new(path.to_string(), PatchErrorKind::DeleteOfRoot)),
-            _ => Err(PatchError::new(path.to_string(), PatchErrorKind::RootReplacement)),
+            Op::Delete => Err(PatchError::new(
+                path.to_string(),
+                PatchErrorKind::DeleteOfRoot,
+            )),
+            _ => Err(PatchError::new(
+                path.to_string(),
+                PatchErrorKind::RootReplacement,
+            )),
         };
     }
     descend(root, path.segments(), op, &path.to_string())
@@ -315,10 +328,14 @@ fn descend(node: &Value, segs: &[Seg], op: &Op, shown: &str) -> Result<Value, Pa
         None => match (node, head) {
             // A path may only be created where it is written: an absent branch is
             // a leaf, never a container to descend through.
-            _ if !tail.is_empty() => return Err(PatchError::new(shown, PatchErrorKind::NotAContainer)),
+            _ if !tail.is_empty() => {
+                return Err(PatchError::new(shown, PatchErrorKind::NotAContainer));
+            }
             (Value::Map(_) | Value::Null, Seg::Key(_)) => Value::Null,
             (Value::Null, Seg::Index(0)) => Value::Null,
-            (Value::List(_), Seg::Index(_)) => return Err(PatchError::new(shown, PatchErrorKind::OutOfBounds)),
+            (Value::List(_), Seg::Index(_)) => {
+                return Err(PatchError::new(shown, PatchErrorKind::OutOfBounds));
+            }
             _ => return Err(PatchError::new(shown, PatchErrorKind::NotAContainer)),
         },
     };
@@ -440,8 +457,14 @@ mod tests {
 
     fn db() -> Value {
         Value::map([
-            ("session", Value::map([("status", Value::str("idle")), ("turn", Value::Int(0))])),
-            ("messages", Value::list([Value::str("one"), Value::str("two")])),
+            (
+                "session",
+                Value::map([("status", Value::str("idle")), ("turn", Value::Int(0))]),
+            ),
+            (
+                "messages",
+                Value::list([Value::str("one"), Value::str("two")]),
+            ),
             ("scratch", Value::Null),
         ])
     }
@@ -453,8 +476,14 @@ mod tests {
     #[test]
     fn paths_round_trip() {
         assert_eq!(path("").segments(), &[]);
-        assert_eq!(path("a.b").segments(), &[Seg::Key("a".into()), Seg::Key("b".into())]);
-        assert_eq!(path("a[2].b").segments(), &[Seg::Key("a".into()), Seg::Index(2), Seg::Key("b".into())]);
+        assert_eq!(
+            path("a.b").segments(),
+            &[Seg::Key("a".into()), Seg::Key("b".into())]
+        );
+        assert_eq!(
+            path("a[2].b").segments(),
+            &[Seg::Key("a".into()), Seg::Index(2), Seg::Key("b".into())]
+        );
         assert_eq!(path("[0]").segments(), &[Seg::Index(0)]);
         assert!(Path::parse("a..b").is_err());
         assert!(Path::parse("a.").is_err());
@@ -473,38 +502,69 @@ mod tests {
     #[test]
     fn a_write_that_changes_nothing_returns_the_original() {
         let before = db();
-        let after = apply(&before, &[(path("session.status"), Op::Set(Value::str("idle")))]).unwrap();
+        let after = apply(
+            &before,
+            &[(path("session.status"), Op::Set(Value::str("idle")))],
+        )
+        .unwrap();
         assert!(before.shares(&after));
     }
 
     #[test]
     fn set_creates_a_missing_key() {
         let after = apply(&db(), &[(path("scratch.note"), Op::Set(Value::str("hi")))]).unwrap();
-        assert_eq!(after.get_path(&path("scratch.note")).and_then(Value::as_str), Some("hi"));
+        assert_eq!(
+            after
+                .get_path(&path("scratch.note"))
+                .and_then(Value::as_str),
+            Some("hi")
+        );
     }
 
     #[test]
     fn delete_removes_a_key_and_a_list_element() {
         let after = apply(
             &db(),
-            &[(path("session.turn"), Op::Delete), (path("messages[0]"), Op::Delete)],
+            &[
+                (path("session.turn"), Op::Delete),
+                (path("messages[0]"), Op::Delete),
+            ],
         )
         .unwrap();
         assert!(after.get_path(&path("session.turn")).is_none());
         assert_eq!(
-            after.get_path(&path("messages")).and_then(Value::as_list).map(<[Value]>::len),
+            after
+                .get_path(&path("messages"))
+                .and_then(Value::as_list)
+                .map(<[Value]>::len),
             Some(1)
         );
-        assert_eq!(after.get_path(&path("messages[0]")).and_then(Value::as_str), Some("two"));
+        assert_eq!(
+            after.get_path(&path("messages[0]")).and_then(Value::as_str),
+            Some("two")
+        );
     }
 
     #[test]
     fn append_grows_a_list_and_refuses_a_scalar() {
-        let after = apply(&db(), &[(path("messages"), Op::Append(Value::str("three")))]).unwrap();
-        assert_eq!(after.get_path(&path("messages[2]")).and_then(Value::as_str), Some("three"));
+        let after = apply(
+            &db(),
+            &[(path("messages"), Op::Append(Value::str("three")))],
+        )
+        .unwrap();
+        assert_eq!(
+            after.get_path(&path("messages[2]")).and_then(Value::as_str),
+            Some("three")
+        );
         assert!(matches!(
-            apply(&db(), &[(path("session.status"), Op::Append(Value::str("x")))]),
-            Err(PatchError { kind: PatchErrorKind::NotAList, .. })
+            apply(
+                &db(),
+                &[(path("session.status"), Op::Append(Value::str("x")))]
+            ),
+            Err(PatchError {
+                kind: PatchErrorKind::NotAList,
+                ..
+            })
         ));
     }
 
@@ -512,10 +572,16 @@ mod tests {
     fn append_all_keeps_order_and_refuses_an_empty_list() {
         let after = apply(
             &db(),
-            &[(path("messages"), Op::AppendAll(vec![Value::str("three"), Value::str("four")]))],
+            &[(
+                path("messages"),
+                Op::AppendAll(vec![Value::str("three"), Value::str("four")]),
+            )],
         )
         .unwrap();
-        let list = after.get_path(&path("messages")).and_then(Value::as_list).unwrap();
+        let list = after
+            .get_path(&path("messages"))
+            .and_then(Value::as_list)
+            .unwrap();
         assert_eq!(list.len(), 4);
         assert_eq!(list[3].as_str(), Some("four"));
 
@@ -528,15 +594,24 @@ mod tests {
     fn index_bounds_are_checked_against_the_real_list() {
         assert!(matches!(
             apply(&db(), &[(path("messages[9]"), Op::Set(Value::str("x")))]),
-            Err(PatchError { kind: PatchErrorKind::OutOfBounds, .. })
+            Err(PatchError {
+                kind: PatchErrorKind::OutOfBounds,
+                ..
+            })
         ));
     }
 
     #[test]
     fn a_path_may_not_descend_into_a_scalar() {
         assert!(matches!(
-            apply(&db(), &[(path("session.status.deeper"), Op::Set(Value::str("x")))]),
-            Err(PatchError { kind: PatchErrorKind::NotAContainer, .. })
+            apply(
+                &db(),
+                &[(path("session.status.deeper"), Op::Set(Value::str("x")))]
+            ),
+            Err(PatchError {
+                kind: PatchErrorKind::NotAContainer,
+                ..
+            })
         ));
     }
 
@@ -544,22 +619,45 @@ mod tests {
     fn merge_is_opt_in_and_recursive_only_over_maps() {
         let after = apply(
             &db(),
-            &[(path("session"), Op::Merge(Value::map([("status", Value::str("busy"))])))],
+            &[(
+                path("session"),
+                Op::Merge(Value::map([("status", Value::str("busy"))])),
+            )],
         )
         .unwrap();
-        assert_eq!(after.get_path(&path("session.status")).and_then(Value::as_str), Some("busy"));
+        assert_eq!(
+            after
+                .get_path(&path("session.status"))
+                .and_then(Value::as_str),
+            Some("busy")
+        );
         // The key the patch did not mention is still there: that is what merging
         // buys, and why it is never implicit.
-        assert_eq!(after.get_path(&path("session.turn")).and_then(Value::as_i64), Some(0));
+        assert_eq!(
+            after
+                .get_path(&path("session.turn"))
+                .and_then(Value::as_i64),
+            Some(0)
+        );
     }
 
     #[test]
     fn the_root_may_only_be_merged() {
         assert!(matches!(
             apply_one(&db(), &Path::root(), &Op::Set(Value::map([]))),
-            Err(PatchError { kind: PatchErrorKind::RootReplacement, .. })
+            Err(PatchError {
+                kind: PatchErrorKind::RootReplacement,
+                ..
+            })
         ));
-        assert!(apply_one(&db(), &Path::root(), &Op::Merge(Value::map([("new", Value::Int(1))]))).is_ok());
+        assert!(
+            apply_one(
+                &db(),
+                &Path::root(),
+                &Op::Merge(Value::map([("new", Value::Int(1))]))
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -573,23 +671,41 @@ mod tests {
             ],
         )
         .unwrap();
-        let log = after.get_path(&path("scratch.log")).and_then(Value::as_list).unwrap();
+        let log = after
+            .get_path(&path("scratch.log"))
+            .and_then(Value::as_list)
+            .unwrap();
         assert_eq!(log.len(), 2);
         assert_eq!(log[1].as_str(), Some("second"));
 
         // Appending to a scalar is refused rather than silently replacing it,
         // which is what "an op means exactly what it says" costs.
         assert!(matches!(
-            apply(&db(), &[(path("session.status"), Op::Append(Value::str("x")))]),
-            Err(PatchError { kind: PatchErrorKind::NotAList, .. })
+            apply(
+                &db(),
+                &[(path("session.status"), Op::Append(Value::str("x")))]
+            ),
+            Err(PatchError {
+                kind: PatchErrorKind::NotAList,
+                ..
+            })
         ));
     }
 
     #[test]
     fn untouched_siblings_keep_their_allocations() {
         let before = db();
-        let after = apply(&before, &[(path("session.status"), Op::Set(Value::str("busy")))]).unwrap();
-        assert!(before.get("messages").unwrap().shares(after.get("messages").unwrap()));
+        let after = apply(
+            &before,
+            &[(path("session.status"), Op::Set(Value::str("busy")))],
+        )
+        .unwrap();
+        assert!(
+            before
+                .get("messages")
+                .unwrap()
+                .shares(after.get("messages").unwrap())
+        );
     }
 
     #[test]
@@ -610,14 +726,23 @@ mod tests {
         // And a value that is not an operation is not one.
         assert_eq!(Op::from_value(&Value::Null), None);
         assert_eq!(Op::from_value(&Value::str("set")), None);
-        assert_eq!(Op::from_value(&Value::map([("nonsense", Value::Int(1))])), None);
-        assert_eq!(Op::from_value(&Value::map([("append-all", Value::Int(1))])), None);
+        assert_eq!(
+            Op::from_value(&Value::map([("nonsense", Value::Int(1))])),
+            None
+        );
+        assert_eq!(
+            Op::from_value(&Value::map([("append-all", Value::Int(1))])),
+            None
+        );
     }
 
     #[test]
     fn the_root_a_patch_is_about_is_its_first_segment() {
         // Which state a patch is about is a question about a parsed path, never about its text.
-        assert_eq!(Op::root_of(&Path::parse("guest.turns[0].seen").unwrap()), Some("guest"));
+        assert_eq!(
+            Op::root_of(&Path::parse("guest.turns[0].seen").unwrap()),
+            Some("guest")
+        );
         assert_eq!(Op::root_of(&Path::parse("guest").unwrap()), Some("guest"));
         assert_eq!(Op::root_of(&Path::parse("").unwrap()), None);
         assert_eq!(Op::root_of(&Path::parse("[0]").unwrap()), None);

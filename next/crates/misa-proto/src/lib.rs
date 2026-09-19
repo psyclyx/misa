@@ -37,32 +37,32 @@
 //! clients with different tastes both get to be right.
 
 pub mod blob;
-pub mod tool;
 pub mod chunk;
-pub mod observation;
-pub mod query;
 pub mod directory;
-pub mod presentation;
-pub mod preparation;
-pub mod schema;
-pub mod input;
-pub mod invocation;
-pub mod scoped;
-pub mod frame;
-pub mod view;
-pub mod sync;
-pub mod fault;
-pub mod ticket;
 #[cfg(test)]
 mod domain_tests;
+pub mod fault;
+pub mod frame;
+pub mod input;
+pub mod invocation;
+pub mod observation;
+pub mod preparation;
+pub mod presentation;
+pub mod query;
+pub mod schema;
+pub mod scoped;
+pub mod sync;
+pub mod ticket;
+pub mod tool;
+pub mod view;
 
 pub use blob::{BlobMsg, BlobReply, MAX_BLOB_BYTES, MAX_BLOB_FRAME};
-pub use frame::{FrameError, decode, encode};
-pub use view::Node;
 pub use fault::Fault;
+pub use frame::{FrameError, decode, encode};
 pub use query::Query;
 pub use scoped::ClientInfo;
 pub use ticket::{Pairing, Ticket};
+pub use view::Node;
 
 /// Bulk content by hash. A view node that carries an image names a blob here
 /// rather than inlining bytes, so a transcript stays small and a client fetches

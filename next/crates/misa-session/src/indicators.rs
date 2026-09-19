@@ -242,15 +242,21 @@ pub fn subscriptions(registry: Registry) -> Registry {
                     let provider = text(&inputs[0], "provider");
                     let model_id = text(&inputs[0], "model");
                     // The catalogue is a document with a models list, not the list itself.
-                    let discovered_limit =
-                        inputs[2].get("models").and_then(Value::as_list).unwrap_or(&[]).iter().find_map(|row| {
+                    let discovered_limit = inputs[2]
+                        .get("models")
+                        .and_then(Value::as_list)
+                        .unwrap_or(&[])
+                        .iter()
+                        .find_map(|row| {
                             (row.get("provider").and_then(Value::as_str) == Some(provider)
                                 && row.get("id").and_then(Value::as_str) == Some(model_id))
                             .then(|| row.get("context_window").and_then(Value::as_i64))
                             .flatten()
                         });
                     match discovered_limit.or_else(|| {
-                        crate::catalog::model(model_id).filter(|model| model.provider == provider).map(|model| model.context_window)
+                        crate::catalog::model(model_id)
+                            .filter(|model| model.provider == provider)
+                            .map(|model| model.context_window)
                     }) {
                         Some(limit) => Value::map([
                             ("type", Value::str("ratio")),
@@ -438,12 +444,8 @@ mod tests {
                 )])),
             ),
         ] {
-            state = misa_value::apply_one(
-                &state,
-                &misa_value::Path::parse(path).unwrap(),
-                &op,
-            )
-            .unwrap();
+            state = misa_value::apply_one(&state, &misa_value::Path::parse(path).unwrap(), &op)
+                .unwrap();
         }
         let mut scope = Scope::new();
         let registry = subscriptions(crate::agent::registry());

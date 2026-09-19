@@ -1,7 +1,7 @@
 //! Pipeline mode, with injected input, output and session for deterministic tests.
 use crate::Session;
-use misa_kit::intent::{Parsed, parse};
 use misa_kit::intent::Intent;
+use misa_kit::intent::{Parsed, parse};
 use std::io::Write;
 
 pub fn interactive(force_print: bool, stdin_tty: bool, stdout_tty: bool) -> bool {
@@ -25,17 +25,28 @@ pub async fn run(
         if ready && pending.is_none() {
             if let Some(line) = staged.take() {
                 if let Some(request) = crate::save::parse(&line) {
-                    let result = match request {
-                        Ok(request) => match latest.as_ref().ok_or("No view received yet").and_then(|view| crate::save::target(view, &request).map_err(|_| "No matching attachment")) {
-                            Ok(node) => session.save_attachment(node, &request.destination).await.map(|_| request.destination),
-                            Err(error) => Err(error.into()),
-                        },
-                        Err(error) => Err(error),
-                    };
+                    let result =
+                        match request {
+                            Ok(request) => match latest
+                                .as_ref()
+                                .ok_or("No view received yet")
+                                .and_then(|view| {
+                                    crate::save::target(view, &request)
+                                        .map_err(|_| "No matching attachment")
+                                }) {
+                                Ok(node) => session
+                                    .save_attachment(node, &request.destination)
+                                    .await
+                                    .map(|_| request.destination),
+                                Err(error) => Err(error.into()),
+                            },
+                            Err(error) => Err(error),
+                        };
                     match result {
                         Ok(path) => writeln!(errors, "Saved {path}"),
                         Err(error) => writeln!(errors, "[not saved] {error}"),
-                    }.map_err(|error| error.to_string())?;
+                    }
+                    .map_err(|error| error.to_string())?;
                     continue;
                 }
 
@@ -54,7 +65,9 @@ pub async fn run(
                 };
                 if matches!(intent, Intent::Prompt { .. }) {
                     pending = Some(settled.clone());
-                    if session.turn_settled().is_some() { printed.clear(); }
+                    if session.turn_settled().is_some() {
+                        printed.clear();
+                    }
                 }
                 session.send(intent).await?;
             }
@@ -115,9 +128,7 @@ fn working(view: &misa_proto::view::Node) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use misa_proto::{
-        view::{Choice, Node},
-    };
+    use misa_proto::view::{Choice, Node};
     struct Fake {
         views: std::collections::VecDeque<Node>,
         sent: Vec<Intent>,

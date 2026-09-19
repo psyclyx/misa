@@ -11,7 +11,7 @@ struct Facts {
 }
 enum Job {
     Report(Node),
-    Form(String,misa_client::form::Form,BTreeMap<String,String>),
+    Form(String, misa_client::form::Form, BTreeMap<String, String>),
     Completed(String),
     Opened(u64, Choice),
     Closed(String, misa_proto::observation::Scope),
@@ -279,9 +279,20 @@ async fn invoke_daemon(
     input: Value,
     version: u64,
 ) -> Result<Job, String> {
-    let interface=Interface::load(&daemon.client,scope.clone()).await.map_err(|fault|fault.message)?;
-    let definition=interface.commands.get(&command).ok_or("Command no longer installed")?.clone();
-    let outcome=daemon.client.invoke(scope,definition,input.clone(),Duration::from_secs(30)).await.map_err(|fault|fault.message)?.outcome;
+    let interface = Interface::load(&daemon.client, scope.clone())
+        .await
+        .map_err(|fault| fault.message)?;
+    let definition = interface
+        .commands
+        .get(&command)
+        .ok_or("Command no longer installed")?
+        .clone();
+    let outcome = daemon
+        .client
+        .invoke(scope, definition, input.clone(), Duration::from_secs(30))
+        .await
+        .map_err(|fault| fault.message)?
+        .outcome;
     match outcome {
         Outcome::Completed { value } => {
             if command == "daemon.session.close" {
@@ -300,12 +311,22 @@ async fn invoke_daemon(
                         .into(),
                 };
                 Ok(Job::Closed(daemon.identity().into(), scope))
-            } else if matches!(command.as_str(), "daemon.session.create" | "daemon.session.resume") {
+            } else if matches!(
+                command.as_str(),
+                "daemon.session.create" | "daemon.session.resume"
+            ) {
                 let entry = misa_client::lifecycle::opened(&daemon, &value)
                     .await
                     .map_err(|fault| fault.message)?;
                 Ok(Job::Opened(version, (daemon, entry)))
-            } else if value.is_null() { Ok(Job::Completed(format!("{command} completed"))) } else {Ok(Job::Report(misa_client::request::report(&format!("{} · {command}",daemon.identity()),&value)))}
+            } else if value.is_null() {
+                Ok(Job::Completed(format!("{command} completed")))
+            } else {
+                Ok(Job::Report(misa_client::request::report(
+                    &format!("{} · {command}", daemon.identity()),
+                    &value,
+                )))
+            }
         }
         Outcome::Rejected { fault } => Err(fault.message),
         Outcome::Indeterminate { fault } => Err(format!(
@@ -313,14 +334,27 @@ async fn invoke_daemon(
             fault.message
         )),
         Outcome::Accepted { operation } => {
-            let watch=misa_client::operation::Watch::open(&daemon.client,&interface,operation.clone(),false).await.unwrap_or_else(|fault|misa_client::operation::Watch::failed(operation,fault));
-            let message=match watch.wait().await.outcome {
-                misa_client::operation::Terminal::Finished{state,..}=>format!("Operation {state}"),
-                misa_client::operation::Terminal::Expired=>"Accepted operation result expired; completion unknown".into(),
-                misa_client::operation::Terminal::Fault(fault)=>format!("Accepted operation monitoring failed: {}",fault.message),
+            let watch = misa_client::operation::Watch::open(
+                &daemon.client,
+                &interface,
+                operation.clone(),
+                false,
+            )
+            .await
+            .unwrap_or_else(|fault| misa_client::operation::Watch::failed(operation, fault));
+            let message = match watch.wait().await.outcome {
+                misa_client::operation::Terminal::Finished { state, .. } => {
+                    format!("Operation {state}")
+                }
+                misa_client::operation::Terminal::Expired => {
+                    "Accepted operation result expired; completion unknown".into()
+                }
+                misa_client::operation::Terminal::Fault(fault) => {
+                    format!("Accepted operation monitoring failed: {}", fault.message)
+                }
             };
             Ok(Job::Completed(message))
-        },
+        }
     }
 }
 async fn observe_daemon(
@@ -355,7 +389,10 @@ async fn observe_daemon(
             {
                 if let Ok(interface) = Interface::load(&daemon.client, snapshot.scope.clone()).await
                 {
-                    let forms = interface.commands.keys().map(String::as_str)
+                    let forms = interface
+                        .commands
+                        .keys()
+                        .map(String::as_str)
                         .filter_map(|id| {
                             misa_client::form::Form::command(&interface, id)
                                 .ok()

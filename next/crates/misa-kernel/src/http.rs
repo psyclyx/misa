@@ -81,11 +81,18 @@ pub struct Request {
 
 impl Request {
     pub fn get(url: impl Into<String>) -> Request {
-        Request { method: "GET".into(), ..Request::default_for(url) }
+        Request {
+            method: "GET".into(),
+            ..Request::default_for(url)
+        }
     }
 
     pub fn post(url: impl Into<String>, body: Vec<u8>) -> Request {
-        Request { method: "POST".into(), body: Some(body), ..Request::default_for(url) }
+        Request {
+            method: "POST".into(),
+            body: Some(body),
+            ..Request::default_for(url)
+        }
     }
 
     fn default_for(url: impl Into<String>) -> Request {
@@ -110,7 +117,8 @@ impl Request {
     }
 
     pub fn json(mut self, body: &str) -> Request {
-        self.headers.push(("content-type".into(), "application/json".into()));
+        self.headers
+            .push(("content-type".into(), "application/json".into()));
         self.body = Some(body.as_bytes().to_vec());
         self
     }
@@ -157,7 +165,10 @@ impl Http {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|err| err.to_string())?;
-        Ok(Http { client, credentials })
+        Ok(Http {
+            client,
+            credentials,
+        })
     }
 
     /// Send a request and read a whole response.
@@ -169,7 +180,11 @@ impl Http {
         let body = tokio::time::timeout(deadline, read_bounded(response, request.max_bytes))
             .await
             .map_err(|_| format!("the body did not arrive within {}ms", request.overall_ms))??;
-        Ok(Response { status, headers, body })
+        Ok(Response {
+            status,
+            headers,
+            body,
+        })
     }
 
     /// Send a request and hand each server-sent event's data to a callback as it
@@ -177,7 +192,11 @@ impl Http {
     ///
     /// Returns the status and headers, so a caller can report a refusal body that was
     /// not an event stream at all.
-    pub async fn stream<F>(&self, request: &Request, mut on_event: F) -> Result<(u16, Vec<(String, String)>), String>
+    pub async fn stream<F>(
+        &self,
+        request: &Request,
+        mut on_event: F,
+    ) -> Result<(u16, Vec<(String, String)>), String>
     where
         F: FnMut(&str),
     {
@@ -186,7 +205,9 @@ impl Http {
         let headers = collect_headers(&response);
         if !(200..300).contains(&status) {
             // A refusal is usually a JSON body, and the caller wants it.
-            let body = read_bounded(response, request.max_bytes).await.unwrap_or_default();
+            let body = read_bounded(response, request.max_bytes)
+                .await
+                .unwrap_or_default();
             return Err(format!(
                 "{} {}: {}",
                 status,
@@ -195,7 +216,10 @@ impl Http {
                     .find(|(name, _)| name == "content-type")
                     .map(|(_, value)| value.as_str())
                     .unwrap_or(""),
-                String::from_utf8_lossy(&body).chars().take(2_000).collect::<String>()
+                String::from_utf8_lossy(&body)
+                    .chars()
+                    .take(2_000)
+                    .collect::<String>()
             ));
         }
 
@@ -212,13 +236,19 @@ impl Http {
             };
             total += chunk.len();
             if total > request.max_bytes {
-                return Err(format!("a stream passed the {} byte bound", request.max_bytes));
+                return Err(format!(
+                    "a stream passed the {} byte bound",
+                    request.max_bytes
+                ));
             }
             buffer.extend_from_slice(&chunk);
             while let Some(index) = find_blank_line(&buffer) {
                 let frame: Vec<u8> = buffer.drain(..index).collect();
                 // The separator is part of the frame; skip it and any `\n` after it.
-                while buffer.first().is_some_and(|byte| *byte == b'\n' || *byte == b'\r') {
+                while buffer
+                    .first()
+                    .is_some_and(|byte| *byte == b'\n' || *byte == b'\r')
+                {
                     buffer.remove(0);
                 }
                 if let Some(data) = event_data(&String::from_utf8_lossy(&frame)) {
@@ -242,13 +272,19 @@ impl Http {
             self.renew_if_needed(&credential.slot).await?;
             // The one place a secret is read, and it is read straight into a header.
             let secret = self.credentials.secret(&credential.slot).ok_or_else(|| {
-                format!("there is no credential for `{}`; add one before using this provider", credential.slot)
+                format!(
+                    "there is no credential for `{}`; add one before using this provider",
+                    credential.slot
+                )
             })?;
             builder = builder.header(&credential.header, format!("{}{secret}", credential.prefix));
             // One service wants the account as well as the token: OpenAI's
             // subscription backend reads `chatgpt-account-id`.
             if let Some(header) = &credential.account_header
-                && let Some(account) = self.credentials.oauth(&credential.slot).map(|oauth| oauth.account)
+                && let Some(account) = self
+                    .credentials
+                    .oauth(&credential.slot)
+                    .map(|oauth| oauth.account)
                 && !account.is_empty()
             {
                 builder = builder.header(header, account);
@@ -259,7 +295,10 @@ impl Http {
         }
         let first_byte = Duration::from_millis(request.first_byte_ms.max(1_000));
         match tokio::time::timeout(first_byte, builder.send()).await {
-            Err(_) => Err(format!("no response began within {}ms", request.first_byte_ms)),
+            Err(_) => Err(format!(
+                "no response began within {}ms",
+                request.first_byte_ms
+            )),
             Ok(Err(err)) => Err(format!("the request failed: {err}")),
             Ok(Ok(response)) => Ok(response),
         }
@@ -281,8 +320,10 @@ impl Http {
                 "the credential for `{slot}` has expired and carries no refresh token; log in again"
             ));
         }
-        let token = crate::oauth::refresh(&oauth.token_url, &oauth.client_id, &oauth.refresh).await?;
-        self.credentials.renew(slot, &token.access, &token.refresh, token.expires_ms)?;
+        let token =
+            crate::oauth::refresh(&oauth.token_url, &oauth.client_id, &oauth.refresh).await?;
+        self.credentials
+            .renew(slot, &token.access, &token.refresh, token.expires_ms)?;
         Ok(())
     }
 }
@@ -384,7 +425,8 @@ mod tests {
         credentials.set("test", "a", "secret").unwrap();
         let http = Http::new(credentials).unwrap();
         // Nothing to talk to: this asserts the error is a value rather than a panic.
-        let request = Request::get("http://127.0.0.1:1/nothing").header("accept", "application/json");
+        let request =
+            Request::get("http://127.0.0.1:1/nothing").header("accept", "application/json");
         let error = http.send(&request).await.unwrap_err();
         assert!(error.contains("failed"), "{error}");
     }

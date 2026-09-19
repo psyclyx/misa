@@ -91,7 +91,11 @@ fn json_schema(schema: &Schema) -> Result<serde_json::Value, Fault> {
     })
 }
 impl Runtime {
-    pub(crate) fn deliver_request(&self, request: Request, admission: &crate::kernel_queue::Admission) -> Result<(), Fault> {
+    pub(crate) fn deliver_request(
+        &self,
+        request: Request,
+        admission: &crate::kernel_queue::Admission,
+    ) -> Result<(), Fault> {
         let Request::ToolRun { name, args, .. } = &request else {
             return self
                 .to_kernel
@@ -137,8 +141,19 @@ impl Runtime {
         }
         let outcome = self.execute_command(&context, invocation);
         if let Outcome::Accepted { operation } = &outcome {
-            if self.command_registry.get(&binding.command).is_some_and(|registration| registration.event_kind().is_some()) {
-                if let Some(pending) = self.tool_invocations.lock().expect("tool correlations poisoned").get_mut(&id) { pending.2 = Some(operation.clone()); }
+            if self
+                .command_registry
+                .get(&binding.command)
+                .is_some_and(|registration| registration.event_kind().is_some())
+            {
+                if let Some(pending) = self
+                    .tool_invocations
+                    .lock()
+                    .expect("tool correlations poisoned")
+                    .get_mut(&id)
+                {
+                    pending.2 = Some(operation.clone());
+                }
                 self.settle_transaction_tools();
             }
         } else {
@@ -233,7 +248,8 @@ mod tests {
         assert!(install(&[binding.clone()], &BTreeMap::new()).is_err());
         let command = CommandRegistration::new(
             misa_proto::invocation::Command {
-                preparation: Default::default(), id: binding.command.clone(),
+                preparation: Default::default(),
+                id: binding.command.clone(),
                 input: Schema::Bytes,
                 result: Schema::String,
             },
@@ -260,7 +276,8 @@ mod tests {
             let contribution = crate::Contribution::new()
                 .with_command(CommandRegistration::new(
                     misa_proto::invocation::Command {
-                        preparation: Default::default(), id: "test.defer".into(),
+                        preparation: Default::default(),
+                        id: "test.defer".into(),
                         input: Schema::Record {
                             fields: BTreeMap::new(),
                             allow_unknown: false,

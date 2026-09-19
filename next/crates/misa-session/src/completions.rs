@@ -35,7 +35,10 @@ fn metadata_value(metadata: &ChoiceMetadata) -> Value {
         fields.push(("context_window", Value::Int(context)));
     }
     if !metadata.efforts.is_empty() {
-        fields.push(("efforts", Value::list(metadata.efforts.iter().map(Value::str))));
+        fields.push((
+            "efforts",
+            Value::list(metadata.efforts.iter().map(Value::str)),
+        ));
     }
     if let Some(pricing) = &metadata.pricing {
         fields.push(("pricing", pricing_value(pricing)));
@@ -49,10 +52,22 @@ fn metadata_value(metadata: &ChoiceMetadata) -> Value {
 fn pricing_value(pricing: &ChoicePricing) -> Value {
     let mut fields = Vec::new();
     for (name, value) in [
-        ("input_micros_per_thousand", pricing.input_micros_per_thousand),
-        ("output_micros_per_thousand", pricing.output_micros_per_thousand),
-        ("cache_read_micros_per_thousand", pricing.cache_read_micros_per_thousand),
-        ("cache_write_micros_per_thousand", pricing.cache_write_micros_per_thousand),
+        (
+            "input_micros_per_thousand",
+            pricing.input_micros_per_thousand,
+        ),
+        (
+            "output_micros_per_thousand",
+            pricing.output_micros_per_thousand,
+        ),
+        (
+            "cache_read_micros_per_thousand",
+            pricing.cache_read_micros_per_thousand,
+        ),
+        (
+            "cache_write_micros_per_thousand",
+            pricing.cache_write_micros_per_thousand,
+        ),
         ("request_micros", pricing.request_micros),
     ] {
         if let Some(value) = value {
@@ -65,7 +80,10 @@ fn pricing_value(pricing: &ChoicePricing) -> Value {
 fn peak_value(peak: &ChoicePeak) -> Value {
     Value::map([
         ("multiplier_ppm", Value::Int(peak.multiplier_ppm)),
-        ("weekdays", Value::list(peak.weekdays.iter().copied().map(Value::Int))),
+        (
+            "weekdays",
+            Value::list(peak.weekdays.iter().copied().map(Value::Int)),
+        ),
         (
             "windows",
             Value::list(peak.windows.iter().map(|window| {
@@ -290,12 +308,7 @@ pub fn exports() -> Vec<misa_proto::query::Definition> {
                 ("metadata", Schema::Value, true),
             ]
             .into_iter()
-            .map(|(name, schema, optional)| {
-                (
-                    name.into(),
-                    Field { schema, optional },
-                )
-            })
+            .map(|(name, schema, optional)| (name.into(), Field { schema, optional }))
             .collect(),
             allow_unknown: false,
         }),
@@ -456,7 +469,7 @@ pub fn on_demand(
                 title.to_string()
             },
             detail: Some(format!("{messages} messages")),
-                metadata: None,
+            metadata: None,
         });
     }
     // The current conversation is worth saying so about, since resuming it is a
@@ -594,10 +607,7 @@ mod tests {
         assert!(candidates.iter().any(|choice| choice.value == "tavily"));
         assert!(candidates.iter().all(|choice| {
             choice.value == choice.label
-                && choice
-                    .detail
-                    .as_deref()
-                    .is_none_or(str::is_empty)
+                && choice.detail.as_deref().is_none_or(str::is_empty)
                 && choice.value != "scripted"
         }));
     }

@@ -73,32 +73,81 @@ fn runtime() -> Arc<Runtime> {
 #[tokio::test]
 async fn preparation_catalogs_resolve_without_shared_panel_mutation() {
     let runtime = runtime();
-    let panel = runtime.state.lock().unwrap().state.db().get("panel").cloned();
+    let panel = runtime
+        .state
+        .lock()
+        .unwrap()
+        .state
+        .db()
+        .get("panel")
+        .cloned();
     let read = |id: &str, args: Vec<Value>| {
-        let definition = runtime.query_exports().into_iter().find(|definition| definition.id == id).unwrap();
-        let selection = Selection { scope: runtime.scope(), members: BTreeMap::from([("value".into(), Member {
-            query: Query { id: id.into(), args }, contract: definition.contract,
-            encoding: definition.result.encoding(), optional: false,
-        })]) };
+        let definition = runtime
+            .query_exports()
+            .into_iter()
+            .find(|definition| definition.id == id)
+            .unwrap();
+        let selection = Selection {
+            scope: runtime.scope(),
+            members: BTreeMap::from([(
+                "value".into(),
+                Member {
+                    query: Query {
+                        id: id.into(),
+                        args,
+                    },
+                    contract: definition.contract,
+                    encoding: definition.result.encoding(),
+                    optional: false,
+                },
+            )]),
+        };
         let snapshot = runtime.read_selection(&selection).unwrap();
-        match snapshot.members["value"].clone() { Content::Value(value) => value, _ => panic!("expected data") }
+        match snapshot.members["value"].clone() {
+            Content::Value(value) => value,
+            _ => panic!("expected data"),
+        }
     };
-    let sources: Vec<misa_proto::preparation::Source> = crate::wire::parse(&read(misa_proto::preparation::SOURCES, vec![])).unwrap();
-    for source in sources { read(&source.member.query.id, source.member.query.args); }
-    let shortcuts: Vec<misa_proto::preparation::Shortcut> = crate::wire::parse(&read(misa_proto::preparation::SHORTCUTS, vec![])).unwrap();
+    let sources: Vec<misa_proto::preparation::Source> =
+        crate::wire::parse(&read(misa_proto::preparation::SOURCES, vec![])).unwrap();
+    for source in sources {
+        read(&source.member.query.id, source.member.query.args);
+    }
+    let shortcuts: Vec<misa_proto::preparation::Shortcut> =
+        crate::wire::parse(&read(misa_proto::preparation::SHORTCUTS, vec![])).unwrap();
     assert!(shortcuts.iter().any(|shortcut| shortcut.id == "model"));
     for shortcut in shortcuts {
         match shortcut.target {
             misa_proto::preparation::Target::Read { member } => {
                 let encoding = member.encoding;
-                let snapshot = runtime.read_selection(&Selection { scope: runtime.scope(), members: BTreeMap::from([("report".into(), member)]) }).unwrap();
-                assert!(matches!((&snapshot.members["report"], encoding),
-                    (Content::Value(_), Encoding::Value) | (Content::Document(_), Encoding::Document)));
+                let snapshot = runtime
+                    .read_selection(&Selection {
+                        scope: runtime.scope(),
+                        members: BTreeMap::from([("report".into(), member)]),
+                    })
+                    .unwrap();
+                assert!(matches!(
+                    (&snapshot.members["report"], encoding),
+                    (Content::Value(_), Encoding::Value)
+                        | (Content::Document(_), Encoding::Document)
+                ));
             }
-            misa_proto::preparation::Target::Command { command } => assert!(runtime.command_registry.contains_key(&command)),
+            misa_proto::preparation::Target::Command { command } => {
+                assert!(runtime.command_registry.contains_key(&command))
+            }
         }
     }
-    assert_eq!(runtime.state.lock().unwrap().state.db().get("panel").cloned(), panel);
+    assert_eq!(
+        runtime
+            .state
+            .lock()
+            .unwrap()
+            .state
+            .db()
+            .get("panel")
+            .cloned(),
+        panel
+    );
 }
 
 #[tokio::test]
@@ -106,14 +155,50 @@ async fn model_discovery_ignores_superseded_reports_and_accepts_discovered_ids()
     let runtime = runtime();
     runtime.dispatch(Event::new("discovery/models.refresh"));
     runtime.dispatch(Event::new("discovery/models.refresh"));
-    let report = |id: &str, model: &str| Event::new("kernel/models")
-        .with("id", Value::str(id)).with("ok", Value::Bool(true))
-        .with("models", Value::list([Value::map([("id", Value::str(model))])])) ;
+    let report = |id: &str, model: &str| {
+        Event::new("kernel/models")
+            .with("id", Value::str(id))
+            .with("ok", Value::Bool(true))
+            .with(
+                "models",
+                Value::list([Value::map([("id", Value::str(model))])]),
+            )
+    };
     runtime.dispatch(report("models.1", "stale-model"));
-    assert!(runtime.state.lock().unwrap().state.db().get("session").unwrap().get("catalogue").is_none());
+    assert!(
+        runtime
+            .state
+            .lock()
+            .unwrap()
+            .state
+            .db()
+            .get("session")
+            .unwrap()
+            .get("catalogue")
+            .is_none()
+    );
     runtime.dispatch(report("models.2", "newly-served-model"));
-    assert!(runtime.intent(crate::Intent::Command { name: "model".into(), args: Value::str("newly-served-model") }).is_empty());
-    assert_eq!(runtime.state.lock().unwrap().state.db().get("session").unwrap().get("model").and_then(Value::as_str), Some("newly-served-model"));
+    assert!(
+        runtime
+            .intent(crate::Intent::Command {
+                name: "model".into(),
+                args: Value::str("newly-served-model")
+            })
+            .is_empty()
+    );
+    assert_eq!(
+        runtime
+            .state
+            .lock()
+            .unwrap()
+            .state
+            .db()
+            .get("session")
+            .unwrap()
+            .get("model")
+            .and_then(Value::as_str),
+        Some("newly-served-model")
+    );
 }
 
 #[tokio::test]
@@ -176,7 +261,10 @@ async fn presentation_catalog_is_an_ordinary_export_and_resolves_its_query_contr
         panic!()
     };
     let catalog: Vec<misa_proto::presentation::Presentation> = crate::wire::parse(value).unwrap();
-    assert!(misa_proto::view::find(&runtime.view().unwrap(), "indicators").is_none(), "optional status was embedded in the canonical conversation");
+    assert!(
+        misa_proto::view::find(&runtime.view().unwrap(), "indicators").is_none(),
+        "optional status was embedded in the canonical conversation"
+    );
     assert_eq!(
         catalog
             .iter()
@@ -184,7 +272,14 @@ async fn presentation_catalog_is_an_ordinary_export_and_resolves_its_query_contr
             .collect::<Vec<_>>(),
         ["conversation", "status", "test.left", "test.right"]
     );
-    let member = catalog.iter().find(|entry| entry.id == "test.left").unwrap().select(&[]).unwrap().member.clone();
+    let member = catalog
+        .iter()
+        .find(|entry| entry.id == "test.left")
+        .unwrap()
+        .select(&[])
+        .unwrap()
+        .member
+        .clone();
     let document = runtime
         .read_selection(&Selection {
             scope: runtime.scope(),

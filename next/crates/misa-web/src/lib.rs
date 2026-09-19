@@ -5,19 +5,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::{Form, Multipart, Path, State};
-use axum::response::sse::{Event as SseEvent, Sse};
 use axum::http::{StatusCode, header};
+use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::Router;
-use misa_proto::view::{BlobRef, FieldKind};
+use misa_kit::intent::Intent;
 #[cfg(test)]
 use misa_proto::view::{ActionOn, Kind, Node, Span, State as NodeState};
-use misa_kit::intent::Intent;
-use misa_value::Value;
+use misa_proto::view::{BlobRef, FieldKind};
 #[cfg(test)]
 use misa_session::Runtime;
+use misa_value::Value;
 
 /// The stylesheet. Roles from the view tree, and nothing else.
 pub const STYLE: &str = include_str!("style.css");
@@ -26,24 +26,42 @@ pub const STYLE: &str = include_str!("style.css");
 pub const SCRIPT: &str = include_str!("app.js");
 
 mod html;
-pub use html::{escape, render_main};
 pub(crate) use html::render_scoped;
+pub use html::{escape, render_main};
 
 fn render_report(title: &str, value: &Value) -> String {
-    render_scoped(&misa_client::request::report(title, value), &format!("report-{}:", next_id()))
+    render_scoped(
+        &misa_client::request::report(title, value),
+        &format!("report-{}:", next_id()),
+    )
 }
-fn read_report(title: &str, result: &misa_client::ReadValue, member: &str) -> Result<String, misa_proto::Fault> {
-    Ok(render_scoped(&misa_client::interface::report(result, member, title)?, &format!("report-{}:", next_id())))
+fn read_report(
+    title: &str,
+    result: &misa_client::ReadValue,
+    member: &str,
+) -> Result<String, misa_proto::Fault> {
+    Ok(render_scoped(
+        &misa_client::interface::report(result, member, title)?,
+        &format!("report-{}:", next_id()),
+    ))
 }
 
 fn outcome_report(outcome: &misa_proto::invocation::Outcome) -> Option<String> {
     match outcome {
-        misa_proto::invocation::Outcome::Completed { value } if *value != Value::Null => Some(render_report("Result", value)),
+        misa_proto::invocation::Outcome::Completed { value } if *value != Value::Null => {
+            Some(render_report("Result", value))
+        }
         _ => None,
     }
 }
 
-fn document_parts(title: &str, memory: &str, commands: &[misa_kit::intent::Command], region: &str, lead: &str) -> String {
+fn document_parts(
+    title: &str,
+    memory: &str,
+    commands: &[misa_kit::intent::Command],
+    region: &str,
+    lead: &str,
+) -> String {
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n\
@@ -117,7 +135,12 @@ fn command_declarations(commands: &[misa_kit::intent::Command]) -> String {
             format!(
                 "{} — {}",
                 command.description,
-                command.args.iter().map(|arg| arg.label.clone()).collect::<Vec<_>>().join(" ")
+                command
+                    .args
+                    .iter()
+                    .map(|arg| arg.label.clone())
+                    .collect::<Vec<_>>()
+                    .join(" ")
             )
         };
         out.push_str(&format!(
@@ -133,9 +156,9 @@ fn command_declarations(commands: &[misa_kit::intent::Command]) -> String {
 
 mod blobs;
 pub use blobs::Source;
-use blobs::{blob_response, remote_download, upload};
 #[cfg(test)]
 use blobs::local_download;
+use blobs::{blob_response, remote_download, upload};
 
 /// The composer's action, which is the one action this client understands by name.
 ///
@@ -212,13 +235,13 @@ pub async fn attach(ticket: &str, address: std::net::SocketAddr) -> Result<(), S
 
 pub mod hub;
 
-mod remote;
-mod presentations;
-mod requests;
-mod activity;
-mod overview;
 mod actions;
+mod activity;
 mod commands;
+mod overview;
+mod presentations;
+mod remote;
+mod requests;
 
 mod updates;
 pub use updates::Region;
@@ -248,7 +271,11 @@ impl Remote {
         self.region.close();
     }
 }
-impl Drop for Remote { fn drop(&mut self) { self.close(); } }
+impl Drop for Remote {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
 
 /// A correlation id for an intent this process sends.
 fn next_id() -> u64 {
@@ -270,7 +297,15 @@ pub fn remote_router(state: Arc<Remote>) -> Router {
         .route("/requests", get(requests::list))
         .route("/request", get(requests::navigate).post(requests::open))
         .route("/request/events", get(requests::events))
-        .route("/request.js", get(|| async { ([("content-type", "text/javascript")], include_str!("request.js")) }))
+        .route(
+            "/request.js",
+            get(|| async {
+                (
+                    [("content-type", "text/javascript")],
+                    include_str!("request.js"),
+                )
+            }),
+        )
         .route("/respond", post(requests::respond))
         .route("/actions", get(actions::list))
         .route("/action", post(actions::open))
@@ -278,14 +313,41 @@ pub fn remote_router(state: Arc<Remote>) -> Router {
         .route("/commands", get(commands::list))
         .route("/command", get(commands::open))
         .route("/completions", get(commands::candidates))
-        .route("/commands.js", get(|| async { ([("content-type", "text/javascript")], include_str!("commands.js")) }))
-        .route("/attach", post(remote_attach).layer(axum::extract::DefaultBodyLimit::max(misa_proto::blob::MAX_BLOB_BYTES + 8192)))
+        .route(
+            "/commands.js",
+            get(|| async {
+                (
+                    [("content-type", "text/javascript")],
+                    include_str!("commands.js"),
+                )
+            }),
+        )
+        .route(
+            "/attach",
+            post(remote_attach).layer(axum::extract::DefaultBodyLimit::max(
+                misa_proto::blob::MAX_BLOB_BYTES + 8192,
+            )),
+        )
         .route("/detach", post(remote_detach))
         .route("/blob/{hash}", get(remote_blob))
         .route("/download", post(remote_download))
-        .route("/style.css", get(|| async { ([("content-type", "text/css")], STYLE) }))
-        .route("/preferences.js", get(|| async { ([("content-type", "text/javascript")], include_str!("preferences.js")) }))
-        .route("/app.js", get(|| async { ([("content-type", "text/javascript")], SCRIPT) }))
+        .route(
+            "/style.css",
+            get(|| async { ([("content-type", "text/css")], STYLE) }),
+        )
+        .route(
+            "/preferences.js",
+            get(|| async {
+                (
+                    [("content-type", "text/javascript")],
+                    include_str!("preferences.js"),
+                )
+            }),
+        )
+        .route(
+            "/app.js",
+            get(|| async { ([("content-type", "text/javascript")], SCRIPT) }),
+        )
         .with_state(state)
 }
 
@@ -298,40 +360,72 @@ async fn remote_intent(
     headers: axum::http::HeaderMap,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
-    let json = headers.get(header::ACCEPT).and_then(|value| value.to_str().ok()).is_some_and(|value| value.contains("application/json"));
+    let json = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("application/json"));
     let failure = |status: StatusCode, error: &str| {
         (status, Html(format!("<!doctype html><html><body><p role=\"alert\">{}</p><textarea readonly>{}</textarea><a href=\"./\">Back to session</a></body></html>", escape(error), escape(form.get("prompt").map(String::as_str).unwrap_or(""))))).into_response()
     };
     let refused = |error: String| {
-        if json { return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({"ok":false,"error":error}))).into_response(); }
+        if json {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"ok":false,"error":error})),
+            )
+                .into_response();
+        }
         failure(StatusCode::BAD_REQUEST, &error)
     };
     let submitted = state.pending.lock().expect("pending attachments").clone();
     if form.get("action").map(String::as_str) == Some(COMPOSER) {
         let declarations = remote::declarations(&state.interaction);
-        if let misa_kit::intent::Parsed::Needs { command, given, .. } = misa_kit::intent::parse(form.get("prompt").map(String::as_str).unwrap_or(""), &declarations) {
+        if let misa_kit::intent::Parsed::Needs { command, given, .. } = misa_kit::intent::parse(
+            form.get("prompt").map(String::as_str).unwrap_or(""),
+            &declarations,
+        ) {
             return match commands::prepare(&state, &command, &given.into_iter().collect()).await {
-                Ok(html) if json => axum::Json(serde_json::json!({"ok":true,"preparation":true,"report":html})).into_response(),
-                Ok(html) => requests::page(StatusCode::OK, "Prepare command", format!("{html}<script src=\"./commands.js\"></script>")),
+                Ok(html) if json => {
+                    axum::Json(serde_json::json!({"ok":true,"preparation":true,"report":html}))
+                        .into_response()
+                }
+                Ok(html) => requests::page(
+                    StatusCode::OK,
+                    "Prepare command",
+                    format!("{html}<script src=\"./commands.js\"></script>"),
+                ),
                 Err(fault) => refused(fault.message),
             };
         }
     }
     if let Some(id) = form.get("action").filter(|id| id.as_str() != COMPOSER) {
         if let Ok(model) = misa_client::form::Form::action(&state.interaction.interface, id) {
-            if model.fields.iter().any(|(id, field)| !field.optional && !form.contains_key(id)) {
+            if model
+                .fields
+                .iter()
+                .any(|(id, field)| !field.optional && !form.contains_key(id))
+            {
                 let html = actions::markup(&model);
-                return if json { axum::Json(serde_json::json!({"ok":true,"report":html})).into_response() }
-                    else { requests::page(StatusCode::OK, &model.title, html) };
+                return if json {
+                    axum::Json(serde_json::json!({"ok":true,"report":html})).into_response()
+                } else {
+                    requests::page(StatusCode::OK, &model.title, html)
+                };
             }
         }
     }
-    let intent = match remote::submitted(&state, &form, &submitted) { Ok(intent) => intent, Err(error) => return refused(error) };
+    let intent = match remote::submitted(&state, &form, &submitted) {
+        Ok(intent) => intent,
+        Err(error) => return refused(error),
+    };
     let spent = spent(&intent);
     let result = match remote::prepare(&state.interaction, intent) {
         Ok(misa_client::interaction::Prepared::Read { member }) => {
             let title = member.query.id.clone();
-            let selection = misa_proto::observation::Selection { scope: state.interaction.interface.scope.clone(), members: std::collections::BTreeMap::from([("report".into(), member)]) };
+            let selection = misa_proto::observation::Selection {
+                scope: state.interaction.interface.scope.clone(),
+                members: std::collections::BTreeMap::from([("report".into(), member)]),
+            };
             return match state.daemon.client.read(selection, std::time::Duration::from_secs(20)).await {
                 Ok(result) => match read_report(&title, &result, "report") {
                     Ok(html) if json => axum::Json(serde_json::json!({"ok":true,"report":html})).into_response(),
@@ -340,39 +434,80 @@ async fn remote_intent(
                 },
                 Err(fault) => (StatusCode::BAD_GATEWAY, fault.message).into_response(),
             };
-        },
+        }
         Ok(prepared) => remote::invoke(&state, prepared).await,
         Err(error) => return refused(error),
     };
     match result {
-        Ok(outcome @ (misa_proto::invocation::Outcome::Completed { .. } | misa_proto::invocation::Outcome::Accepted { .. })) => {
-            if spent { state.pending.lock().expect("pending attachments").retain(|blob| !submitted.contains(blob)); }
+        Ok(
+            outcome @ (misa_proto::invocation::Outcome::Completed { .. }
+            | misa_proto::invocation::Outcome::Accepted { .. }),
+        ) => {
+            if spent {
+                state
+                    .pending
+                    .lock()
+                    .expect("pending attachments")
+                    .retain(|blob| !submitted.contains(blob));
+            }
             let report = outcome_report(&outcome);
-            if json { axum::Json(serde_json::json!({"ok":true,"outcome":outcome,"report":report})).into_response() }
-            else if let Some(report) = report { requests::page(StatusCode::OK, "Result", report) }
-            else { Redirect::to("./").into_response() }
-        },
+            if json {
+                axum::Json(serde_json::json!({"ok":true,"outcome":outcome,"report":report}))
+                    .into_response()
+            } else if let Some(report) = report {
+                requests::page(StatusCode::OK, "Result", report)
+            } else {
+                Redirect::to("./").into_response()
+            }
+        }
         Ok(outcome) => {
             let (status, message) = match &outcome {
-                misa_proto::invocation::Outcome::Rejected { fault } => (StatusCode::BAD_REQUEST, &fault.message),
-                misa_proto::invocation::Outcome::Indeterminate { fault } => (StatusCode::BAD_GATEWAY, &fault.message),
+                misa_proto::invocation::Outcome::Rejected { fault } => {
+                    (StatusCode::BAD_REQUEST, &fault.message)
+                }
+                misa_proto::invocation::Outcome::Indeterminate { fault } => {
+                    (StatusCode::BAD_GATEWAY, &fault.message)
+                }
                 _ => unreachable!(),
             };
-            if json { (status, axum::Json(serde_json::json!({"ok":false,"error":message,"outcome":outcome}))).into_response() } else { failure(status, message) }
-        },
+            if json {
+                (
+                    status,
+                    axum::Json(serde_json::json!({"ok":false,"error":message,"outcome":outcome})),
+                )
+                    .into_response()
+            } else {
+                failure(status, message)
+            }
+        }
         Err(error) => {
             let outcome = misa_proto::invocation::Outcome::Indeterminate {
                 fault: misa_proto::Fault::new("invocation_unconfirmed", &error),
             };
-            if json { (StatusCode::BAD_GATEWAY, axum::Json(serde_json::json!({"ok":false,"error":error,"outcome":outcome}))).into_response() } else { failure(StatusCode::BAD_GATEWAY, &format!("Command outcome unknown: {error}. It may have taken effect; check session activity before submitting again.")) }
-        },
+            if json {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    axum::Json(serde_json::json!({"ok":false,"error":error,"outcome":outcome})),
+                )
+                    .into_response()
+            } else {
+                failure(
+                    StatusCode::BAD_GATEWAY,
+                    &format!(
+                        "Command outcome unknown: {error}. It may have taken effect; check session activity before submitting again."
+                    ),
+                )
+            }
+        }
     }
 }
 
 /// One uploaded file, put in the daemon's store over the blob connection.
 async fn remote_attach(State(state): State<Arc<Remote>>, multipart: Multipart) -> Response {
     let mut closed = state.closed.subscribe();
-    if *closed.borrow() { return (StatusCode::GONE, "Presentation closed").into_response(); }
+    if *closed.borrow() {
+        return (StatusCode::GONE, "Presentation closed").into_response();
+    }
     tokio::select! {
         biased;
         _ = closed.changed() => (StatusCode::GONE, "Presentation closed").into_response(),
@@ -381,7 +516,11 @@ async fn remote_attach(State(state): State<Arc<Remote>>, multipart: Multipart) -
 }
 
 async fn remote_detach(State(state): State<Arc<Remote>>) -> Response {
-    state.pending.lock().expect("the pending list is never poisoned").clear();
+    state
+        .pending
+        .lock()
+        .expect("the pending list is never poisoned")
+        .clear();
     Redirect::to("./").into_response()
 }
 
@@ -391,15 +530,30 @@ async fn remote_blob(State(state): State<Arc<Remote>>, Path(hash): Path<String>)
 }
 
 async fn remote_page(State(state): State<Arc<Remote>>) -> Html<String> {
-    let lead = lead(&state.pending.lock().expect("the pending list is never poisoned"));
-    let memory = format!("{}:{}:{}", state.daemon.identity(), state.interaction.interface.scope.incarnation, state.instance);
+    let lead = lead(
+        &state
+            .pending
+            .lock()
+            .expect("the pending list is never poisoned"),
+    );
+    let memory = format!(
+        "{}:{}:{}",
+        state.daemon.identity(),
+        state.interaction.interface.scope.incarnation,
+        state.instance
+    );
     Html(document_parts(&state.session.title, &memory, &remote::declarations(&state.interaction), &state.region.get(), &lead).replacen("<body ", &format!("<body data-preferences=\"{}\" ", escape(&format!("{}:{}", state.daemon.identity(), state.session.id))), 1).replacen("</header>", &format!("{}<section id=\"activity\" aria-label=\"Operations and requests\">{}</section></header>", presentations::controls(&state), state.region.activity_html()), 1))
 }
 
 async fn remote_events(
     State(state): State<Arc<Remote>>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
-    let lead = lead(&state.pending.lock().expect("the pending list is never poisoned"));
+    let lead = lead(
+        &state
+            .pending
+            .lock()
+            .expect("the pending list is never poisoned"),
+    );
     state.region.events(lead, state.clone())
 }
 

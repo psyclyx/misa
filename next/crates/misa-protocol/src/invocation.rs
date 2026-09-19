@@ -205,7 +205,8 @@ mod tests {
         fn command(&self, context: &CallContext, id: &str) -> Option<Command> {
             assert_eq!(context.principal, "authenticated");
             (id == "run").then(|| Command {
-                preparation: Default::default(), id: id.into(),
+                preparation: Default::default(),
+                id: id.into(),
                 input: Schema::Bool,
                 result: Schema::Bool,
             })

@@ -373,7 +373,6 @@ impl Default for PickerSettings {
             row: PickerRowSettings::default(),
         }
     }
-
 }
 
 impl PickerSettings {

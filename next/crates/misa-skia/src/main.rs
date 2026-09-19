@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if window || out.is_none() {
         let view = first.take().unwrap_or_else(|| Node::section("connecting"));
-        let live=ticket.is_some()||view_file.is_none();
+        let live = ticket.is_some() || view_file.is_none();
         misa_skia::window::run(view, ticket, out, live)?;
         return Ok(());
     }

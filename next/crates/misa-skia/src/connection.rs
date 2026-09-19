@@ -1,6 +1,5 @@
 //! Native relationship owner. Replica delivery, requests and blob work have
 //! independent bounded lifetimes; the window never performs network IO.
-use misa_kit::intent::Intent;
 use crate::app::Command;
 use misa_client::{
     daemons::{Daemon, Daemons},
@@ -9,6 +8,7 @@ use misa_client::{
     interaction::{Interaction, Prepared},
     interface::{self, Interface},
 };
+use misa_kit::intent::Intent;
 use misa_proto::{
     invocation::Outcome,
     observation::Selection,
@@ -29,7 +29,11 @@ use winit::event_loop::EventLoopProxy;
 mod manager;
 
 pub enum Update {
-    DaemonForm {daemon:String,form:misa_client::form::Form,drafts:BTreeMap<String,String>},
+    DaemonForm {
+        daemon: String,
+        form: misa_client::form::Form,
+        drafts: BTreeMap<String, String>,
+    },
     DocumentReport(Node),
     InstalledCommands(BTreeMap<String, Result<misa_client::form::Form, String>>),
     Form(misa_client::form::Form),
@@ -193,9 +197,31 @@ async fn session(
     };
     let (mut observation, mut deliveries) =
         compose(&daemon, &interaction, &preferences, proxy).await?;
-    let commands = interaction.shortcuts.iter().map(|shortcut| misa_kit::intent::Command { id: shortcut.id.clone(), label: shortcut.label.clone(), description: shortcut.description.clone(), args: shortcut.args.clone() }).collect();
+    let commands = interaction
+        .shortcuts
+        .iter()
+        .map(|shortcut| misa_kit::intent::Command {
+            id: shortcut.id.clone(),
+            label: shortcut.label.clone(),
+            description: shortcut.description.clone(),
+            args: shortcut.args.clone(),
+        })
+        .collect();
     proxy.send_event(Update::Shortcuts(commands))?;
-    proxy.send_event(Update::InstalledCommands(interaction.interface.commands.keys().map(|id| (id.clone(), misa_client::form::Form::command(&interaction.interface,id).map_err(|fault|fault.message))).collect()))?;
+    proxy.send_event(Update::InstalledCommands(
+        interaction
+            .interface
+            .commands
+            .keys()
+            .map(|id| {
+                (
+                    id.clone(),
+                    misa_client::form::Form::command(&interaction.interface, id)
+                        .map_err(|fault| fault.message),
+                )
+            })
+            .collect(),
+    ))?;
     let mut changes = observation.watch();
     let mut image_reader = document::Reader::new("document");
     let mut requested = BTreeSet::new();
@@ -546,7 +572,9 @@ async fn execute(
                 )
                 .await
                 .map_err(|fault| fault.message)?;
-            Ok(Update::DocumentReport(interface::report(&result,"result",&title).map_err(|fault|fault.message)?))
+            Ok(Update::DocumentReport(
+                interface::report(&result, "result", &title).map_err(|fault| fault.message)?,
+            ))
         }
         Prepared::Invoke { command, input } => {
             let title = command.id.clone();

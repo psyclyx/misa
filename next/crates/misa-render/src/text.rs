@@ -119,7 +119,11 @@ mod styled_tests {
     #[test]
     fn styled_layout_preserves_separately_styled_spaces() {
         let rows = wrap_styled(
-            &[(Style::PLAIN.bold(), "a".into()), (Style::PLAIN, " ".into()), (Style::PLAIN.dim(), "b".into())],
+            &[
+                (Style::PLAIN.bold(), "a".into()),
+                (Style::PLAIN, " ".into()),
+                (Style::PLAIN.dim(), "b".into()),
+            ],
             8,
         );
         assert_eq!(rows.len(), 1);
@@ -176,7 +180,12 @@ struct Lines {
 
 impl Lines {
     fn new(columns: usize) -> Self {
-        Lines { columns, lines: Vec::new(), current: Vec::new(), used: 0 }
+        Lines {
+            columns,
+            lines: Vec::new(),
+            current: Vec::new(),
+            used: 0,
+        }
     }
 
     fn break_line(&mut self) {
@@ -231,7 +240,10 @@ impl Lines {
             last.text.push_str(text);
             return;
         }
-        self.current.push(Span { text: text.to_string(), kind: kind.clone() });
+        self.current.push(Span {
+            text: text.to_string(),
+            kind: kind.clone(),
+        });
     }
 
     fn finish(mut self) -> Vec<Vec<Span>> {
@@ -278,7 +290,11 @@ mod tests {
     fn text_of(lines: &[Vec<Span>]) -> Vec<String> {
         lines
             .iter()
-            .map(|line| line.iter().map(|span| span.text.clone()).collect::<String>())
+            .map(|line| {
+                line.iter()
+                    .map(|span| span.text.clone())
+                    .collect::<String>()
+            })
             .collect()
     }
 
@@ -327,7 +343,10 @@ mod tests {
     #[test]
     fn a_long_token_after_a_short_one_still_fits() {
         let lines = wrap_spans(&[plain("a supercalifragilistic")], 6);
-        assert_eq!(text_of(&lines), vec!["a", "superc", "alifra", "gilist", "ic"]);
+        assert_eq!(
+            text_of(&lines),
+            vec!["a", "superc", "alifra", "gilist", "ic"]
+        );
     }
 
     #[test]
@@ -338,7 +357,10 @@ mod tests {
 
     #[test]
     fn emphasis_that_spans_a_break_stays_on_both_halves() {
-        let spans = vec![Span { text: "one two three".into(), kind: SpanKind::Strong }];
+        let spans = vec![Span {
+            text: "one two three".into(),
+            kind: SpanKind::Strong,
+        }];
         let lines = wrap_spans(&spans, 7);
         assert_eq!(text_of(&lines), vec!["one two", "three"]);
         for line in &lines {
@@ -354,7 +376,10 @@ mod tests {
         let lines = wrap_spans(
             &[
                 plain("hello "),
-                Span { text: "world".into(), kind: SpanKind::Emphasis },
+                Span {
+                    text: "world".into(),
+                    kind: SpanKind::Emphasis,
+                },
                 plain(" again"),
             ],
             80,
@@ -364,7 +389,10 @@ mod tests {
         let lines = wrap_spans(
             &[
                 plain("a"),
-                Span { text: "b".into(), kind: SpanKind::Strong },
+                Span {
+                    text: "b".into(),
+                    kind: SpanKind::Strong,
+                },
                 plain("c"),
             ],
             80,
@@ -379,7 +407,13 @@ mod tests {
         assert_eq!(lines[0][0].text, "ab");
 
         let lines = wrap_spans(
-            &[plain("a"), Span { text: "b".into(), kind: SpanKind::Code }],
+            &[
+                plain("a"),
+                Span {
+                    text: "b".into(),
+                    kind: SpanKind::Code,
+                },
+            ],
             80,
         );
         assert_eq!(lines[0].len(), 2);
@@ -387,11 +421,19 @@ mod tests {
 
     #[test]
     fn a_link_keeps_its_target_across_a_break() {
-        let spans = vec![Span::link("a very long link label", "https://example.invalid")];
+        let spans = vec![Span::link(
+            "a very long link label",
+            "https://example.invalid",
+        )];
         let lines = wrap_spans(&spans, 8);
         assert!(lines.len() >= 3);
         for span in lines.iter().flatten() {
-            assert_eq!(span.kind, SpanKind::Link { href: "https://example.invalid".into() });
+            assert_eq!(
+                span.kind,
+                SpanKind::Link {
+                    href: "https://example.invalid".into()
+                }
+            );
         }
     }
 

@@ -164,14 +164,13 @@ async fn drive_with_clipboard(
     animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut frame = 0usize;
     loop {
-        let staging = (!pending.is_empty() || uploads > 0).then(|| {
-            match (uploads > 0, pending.is_empty()) {
+        let staging =
+            (!pending.is_empty() || uploads > 0).then(|| match (uploads > 0, pending.is_empty()) {
                 (true, true) => "Loading image…".to_string(),
                 (true, false) => "Loading image…\nRemove last attachment".to_string(),
                 (false, false) => "Remove last attachment".to_string(),
                 (false, true) => unreachable!("staging exists only for uploads or attachments"),
-            }
-        });
+            });
         let mut extra_document = vec![];
         let mut extra_footer = vec![];
         for contribution in contributions.values_mut() {
@@ -192,11 +191,7 @@ async fn drive_with_clipboard(
                 .iter_mut()
                 .find(|line| line.node.as_deref() == Some("indicators"))
             {
-                if let Some((_, text)) = line
-                    .spans
-                    .iter_mut()
-                    .find(|(_, text)| text == "●")
-                {
+                if let Some((_, text)) = line.spans.iter_mut().find(|(_, text)| text == "●") {
                     text.replace_range(.."●".len(), FRAMES[frame % FRAMES.len()]);
                 }
             }
@@ -434,7 +429,8 @@ async fn drive_with_clipboard(
                         })
                     }
                 } else {
-                    let Some(key) = crate::translate(key.code, key.modifiers, &screen.prefs.keymap) else {
+                    let Some(key) = crate::translate(key.code, key.modifiers, &screen.prefs.keymap)
+                    else {
                         continue;
                     };
                     // Ctrl-C has the reference's two meanings: while a turn is
@@ -511,7 +507,7 @@ async fn drive_with_clipboard(
                                 value: format!("/action {id}"),
                                 label: label.clone(),
                                 detail: Some(origin.clone()),
-                metadata: None,
+                                metadata: None,
                             })
                             .collect(),
                         false,
@@ -616,11 +612,7 @@ fn paste(screen: &mut Screen, text: &str, commands: &mpsc::UnboundedSender<Reque
         enqueue(commands, Request::Complete { source, prefix }, screen);
     }
 }
-fn enqueue(
-    sender: &mpsc::UnboundedSender<Request>,
-    request: Request,
-    screen: &mut Screen,
-) -> bool {
+fn enqueue(sender: &mpsc::UnboundedSender<Request>, request: Request, screen: &mut Screen) -> bool {
     if sender.send(request).is_err() {
         screen.notice = Some("The session request owner is closed".into());
         false

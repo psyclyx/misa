@@ -310,10 +310,7 @@ fn indicator_spans(
             .as_deref()
             .or(node.label.as_deref())
             .filter(|label| !label.is_empty()),
-        Representation::LabelValue => node
-            .label
-            .as_deref()
-            .filter(|label| !label.is_empty()),
+        Representation::LabelValue => node.label.as_deref().filter(|label| !label.is_empty()),
     };
     let mut spans = Vec::new();
     if let Some(label) = label {
@@ -338,8 +335,12 @@ fn indicators(node: &Node, context: &Context<'_>) -> Result<Vec<Line>, String> {
             line.spans
                 .push((context.theme.role("status.separator"), "  ".into()));
         }
-        line.spans
-            .extend(indicator_spans(node, &selection, context.values, context.theme));
+        line.spans.extend(indicator_spans(
+            node,
+            &selection,
+            context.values,
+            context.theme,
+        ));
     }
     Ok(if line.spans.is_empty() {
         vec![]

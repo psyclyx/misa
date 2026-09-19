@@ -89,7 +89,13 @@ impl Attempt {
 
 /// What a store is asked for.
 pub trait Store: Send + Sync {
-    fn append(&self, conversation: &str, kind: &str, data: &Value, at_ms: i64) -> Result<i64, String>;
+    fn append(
+        &self,
+        conversation: &str,
+        kind: &str,
+        data: &Value,
+        at_ms: i64,
+    ) -> Result<i64, String>;
     fn load(&self, conversation: &str, after: i64, limit: usize) -> Result<Vec<Entry>, String>;
     fn conversations(&self) -> Result<Vec<Conversation>, String>;
     /// Write a row before the call. Returns the name the row actually got.
@@ -121,7 +127,9 @@ pub fn free_name(
     name: &str,
 ) -> Result<String, String> {
     if live(name)? {
-        return Err(format!("`{name}` is held by an attempt that has not finished"));
+        return Err(format!(
+            "`{name}` is held by an attempt that has not finished"
+        ));
     }
     if !exists(name)? {
         return Ok(name.to_string());
@@ -150,12 +158,21 @@ impl MemoryStore {
 }
 
 impl Store for MemoryStore {
-    fn append(&self, conversation: &str, kind: &str, data: &Value, at_ms: i64) -> Result<i64, String> {
+    fn append(
+        &self,
+        conversation: &str,
+        kind: &str,
+        data: &Value,
+        at_ms: i64,
+    ) -> Result<i64, String> {
         let seq = self
             .next_seq
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             + 1;
-        let mut entries = self.entries.lock().map_err(|_| "the log is poisoned".to_string())?;
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| "the log is poisoned".to_string())?;
         entries.push(Entry {
             seq,
             conversation: conversation.to_string(),
@@ -167,7 +184,10 @@ impl Store for MemoryStore {
     }
 
     fn load(&self, conversation: &str, after: i64, limit: usize) -> Result<Vec<Entry>, String> {
-        let entries = self.entries.lock().map_err(|_| "the log is poisoned".to_string())?;
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| "the log is poisoned".to_string())?;
         Ok(entries
             .iter()
             .filter(|entry| entry.conversation == conversation && entry.seq > after)
@@ -177,12 +197,18 @@ impl Store for MemoryStore {
     }
 
     fn conversations(&self) -> Result<Vec<Conversation>, String> {
-        let entries = self.entries.lock().map_err(|_| "the log is poisoned".to_string())?;
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| "the log is poisoned".to_string())?;
         Ok(summarise(&entries))
     }
 
     fn attempt_start(&self, attempt: &Attempt) -> Result<String, String> {
-        let mut attempts = self.attempts.lock().map_err(|_| "the ledger is poisoned".to_string())?;
+        let mut attempts = self
+            .attempts
+            .lock()
+            .map_err(|_| "the ledger is poisoned".to_string())?;
         let live: Vec<String> = attempts
             .iter()
             .filter(|row| row.status == "started")
@@ -207,7 +233,10 @@ impl Store for MemoryStore {
         cost_micros: i64,
         at_ms: i64,
     ) -> Result<(), String> {
-        let mut attempts = self.attempts.lock().map_err(|_| "the ledger is poisoned".to_string())?;
+        let mut attempts = self
+            .attempts
+            .lock()
+            .map_err(|_| "the ledger is poisoned".to_string())?;
         for row in attempts.iter_mut() {
             if row.name == name {
                 row.status = status.to_string();
@@ -231,7 +260,10 @@ impl Store for MemoryStore {
     }
 
     fn attempts(&self, conversation: Option<&str>) -> Result<Vec<Attempt>, String> {
-        let attempts = self.attempts.lock().map_err(|_| "the ledger is poisoned".to_string())?;
+        let attempts = self
+            .attempts
+            .lock()
+            .map_err(|_| "the ledger is poisoned".to_string())?;
         Ok(attempts
             .iter()
             .filter(|row| match conversation {
@@ -243,8 +275,13 @@ impl Store for MemoryStore {
     }
 
     fn attempt_live(&self, name: &str) -> Result<bool, String> {
-        let attempts = self.attempts.lock().map_err(|_| "the ledger is poisoned".to_string())?;
-        Ok(attempts.iter().any(|row| row.name == name && row.status == "started"))
+        let attempts = self
+            .attempts
+            .lock()
+            .map_err(|_| "the ledger is poisoned".to_string())?;
+        Ok(attempts
+            .iter()
+            .any(|row| row.name == name && row.status == "started"))
     }
 }
 
@@ -292,16 +329,26 @@ impl SqliteStore {
                  );",
             )
             .map_err(|err| err.to_string())?;
-        Ok(SqliteStore { connection: std::sync::Mutex::new(connection) })
+        Ok(SqliteStore {
+            connection: std::sync::Mutex::new(connection),
+        })
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, String> {
-        self.connection.lock().map_err(|_| "the database is poisoned".to_string())
+        self.connection
+            .lock()
+            .map_err(|_| "the database is poisoned".to_string())
     }
 }
 
 impl Store for SqliteStore {
-    fn append(&self, conversation: &str, kind: &str, data: &Value, at_ms: i64) -> Result<i64, String> {
+    fn append(
+        &self,
+        conversation: &str,
+        kind: &str,
+        data: &Value,
+        at_ms: i64,
+    ) -> Result<i64, String> {
         let connection = self.lock()?;
         // The data is stored as text so the transcript model can evolve without a
         // migration; a ciborium round trip keeps it a single column and byte-exact.
@@ -325,19 +372,27 @@ impl Store for SqliteStore {
             )
             .map_err(|err| err.to_string())?;
         let rows = statement
-            .query_map(rusqlite::params![conversation, after, limit as i64], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })
+            .query_map(
+                rusqlite::params![conversation, after, limit as i64],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
             .map_err(|err| err.to_string())?;
         let mut out = Vec::new();
         for row in rows {
             let (seq, conversation, kind, data) = row.map_err(|err| err.to_string())?;
-            out.push(Entry { seq, conversation, kind, data: unhex_value(&data) });
+            out.push(Entry {
+                seq,
+                conversation,
+                kind,
+                data: unhex_value(&data),
+            });
         }
         Ok(out)
     }
@@ -365,7 +420,12 @@ impl Store for SqliteStore {
         let mut out = Vec::new();
         for row in rows {
             let (id, data, _seq, messages) = row.map_err(|err| err.to_string())?;
-            out.push(Conversation { id, title: title_of(&unhex_value(&data)), messages, last_ms: 0 });
+            out.push(Conversation {
+                id,
+                title: title_of(&unhex_value(&data)),
+                messages,
+                last_ms: 0,
+            });
         }
         Ok(out)
     }
@@ -374,9 +434,11 @@ impl Store for SqliteStore {
         let connection = self.lock()?;
         let mut is_live = |name: &str| -> Result<bool, String> {
             connection
-                .query_row("select 1 from attempts where name = ?1 and status = 'started'", rusqlite::params![name], |_| {
-                    Ok(true)
-                })
+                .query_row(
+                    "select 1 from attempts where name = ?1 and status = 'started'",
+                    rusqlite::params![name],
+                    |_| Ok(true),
+                )
                 .or_else(|err| match err {
                     rusqlite::Error::QueryReturnedNoRows => Ok(false),
                     other => Err(other.to_string()),
@@ -384,7 +446,11 @@ impl Store for SqliteStore {
         };
         let mut is_known = |name: &str| -> Result<bool, String> {
             connection
-                .query_row("select 1 from attempts where name = ?1", rusqlite::params![name], |_| Ok(true))
+                .query_row(
+                    "select 1 from attempts where name = ?1",
+                    rusqlite::params![name],
+                    |_| Ok(true),
+                )
                 .or_else(|err| match err {
                     rusqlite::Error::QueryReturnedNoRows => Ok(false),
                     other => Err(other.to_string()),
@@ -434,7 +500,14 @@ impl Store for SqliteStore {
                      cost_micros = max(cost_micros, ?5),
                      finished_ms = case when ?6 > 0 then ?6 else finished_ms end
                  where name = ?1",
-                rusqlite::params![name, status, input_tokens, output_tokens, cost_micros, at_ms],
+                rusqlite::params![
+                    name,
+                    status,
+                    input_tokens,
+                    output_tokens,
+                    cost_micros,
+                    at_ms
+                ],
             )
             .map_err(|err| err.to_string())?;
         Ok(())
@@ -477,7 +550,11 @@ impl Store for SqliteStore {
     fn attempt_live(&self, name: &str) -> Result<bool, String> {
         let connection = self.lock()?;
         connection
-            .query_row("select 1 from attempts where name = ?1 and status = 'started'", rusqlite::params![name], |_| Ok(true))
+            .query_row(
+                "select 1 from attempts where name = ?1 and status = 'started'",
+                rusqlite::params![name],
+                |_| Ok(true),
+            )
             .or_else(|err| match err {
                 rusqlite::Error::QueryReturnedNoRows => Ok(false),
                 other => Err(other.to_string()),
@@ -493,11 +570,19 @@ fn title_of(entry: &Value) -> String {
     let text = match entry {
         Value::Str(text) => &**text,
         other => {
-            owned = other.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+            owned = other
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             &owned
         }
     };
-    let line = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim();
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     if line.is_empty() {
         "untitled".into()
     } else {
@@ -578,10 +663,16 @@ mod tests {
     }
 
     fn exercise(store: &dyn Store) {
-        let seq = store.append("c1", "message", &Value::str("hello there"), 10).unwrap();
+        let seq = store
+            .append("c1", "message", &Value::str("hello there"), 10)
+            .unwrap();
         assert_eq!(seq, 1);
-        store.append("c1", "message", &Value::str("a reply"), 11).unwrap();
-        store.append("c2", "message", &Value::str("another branch"), 12).unwrap();
+        store
+            .append("c1", "message", &Value::str("a reply"), 11)
+            .unwrap();
+        store
+            .append("c2", "message", &Value::str("another branch"), 12)
+            .unwrap();
 
         let page = store.load("c1", 0, 10).unwrap();
         assert_eq!(page.len(), 2);
@@ -591,7 +682,10 @@ mod tests {
         let conversations = store.conversations().unwrap();
         assert_eq!(conversations.len(), 2);
         let first = conversations.iter().find(|c| c.id == "c1").unwrap();
-        assert_eq!(first.title, "hello there", "a conversation is named by its first message");
+        assert_eq!(
+            first.title, "hello there",
+            "a conversation is named by its first message"
+        );
         assert_eq!(first.messages, 2);
 
         let name = store.attempt_start(&attempt("r1")).unwrap();
@@ -603,8 +697,13 @@ mod tests {
         assert!(!store.attempt_live("r1").unwrap());
         // A settled name is recorded beside the old one.
         let recycled = store.attempt_start(&attempt("r1")).unwrap();
-        assert_eq!(recycled, "r1#2", "a resumed session's attempt overwrote the old one");
-        store.attempt_settle("r1#2", "ok", 100, 200, 0, 100).unwrap();
+        assert_eq!(
+            recycled, "r1#2",
+            "a resumed session's attempt overwrote the old one"
+        );
+        store
+            .attempt_settle("r1#2", "ok", 100, 200, 0, 100)
+            .unwrap();
 
         let rows = store.attempts(Some("c1")).unwrap();
         assert_eq!(rows.len(), 2);
@@ -623,12 +722,23 @@ mod tests {
 
     #[test]
     fn operation_metadata_never_becomes_a_conversation_title_or_message_count() {
-        let stores: Vec<Box<dyn Store>> = vec![Box::new(MemoryStore::new()), Box::new(SqliteStore::open(std::path::Path::new(":memory:")).unwrap())];
+        let stores: Vec<Box<dyn Store>> = vec![
+            Box::new(MemoryStore::new()),
+            Box::new(SqliteStore::open(std::path::Path::new(":memory:")).unwrap()),
+        ];
         for store in stores {
-            store.append("only-metadata", "operations.checkpoint", &Value::Null, 0).unwrap();
-            store.append("chat", "operations.checkpoint", &Value::Null, 0).unwrap();
-            store.append("chat", "message", &Value::str("actual prompt"), 1).unwrap();
-            store.append("chat", "operations.checkpoint", &Value::Null, 2).unwrap();
+            store
+                .append("only-metadata", "operations.checkpoint", &Value::Null, 0)
+                .unwrap();
+            store
+                .append("chat", "operations.checkpoint", &Value::Null, 0)
+                .unwrap();
+            store
+                .append("chat", "message", &Value::str("actual prompt"), 1)
+                .unwrap();
+            store
+                .append("chat", "operations.checkpoint", &Value::Null, 2)
+                .unwrap();
             let conversations = store.conversations().unwrap();
             assert_eq!(conversations.len(), 1);
             assert_eq!(conversations[0].title, "actual prompt");

@@ -423,7 +423,10 @@ mod tracker_tests {
         assert_eq!(done.len(), 2);
         assert!(done.iter().any(|item| item.operation == reference("a")));
         assert!(done.iter().any(|item| item.operation == reference("b")));
-        assert!(done.iter().all(|item| matches!(item.outcome, Terminal::Fault(_))));
+        assert!(
+            done.iter()
+                .all(|item| matches!(item.outcome, Terminal::Fault(_)))
+        );
         assert!(tracker.drain().is_empty());
         assert!(tracker.is_empty());
     }

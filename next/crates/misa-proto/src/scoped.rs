@@ -369,6 +369,9 @@ pub struct ClientInfo {
 
 impl ClientInfo {
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
-        ClientInfo { name: name.into(), version: version.into() }
+        ClientInfo {
+            name: name.into(),
+            version: version.into(),
+        }
     }
 }

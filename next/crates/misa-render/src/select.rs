@@ -106,7 +106,10 @@ impl Body {
     pub fn clamp(&self, spot: Spot) -> Spot {
         let row = spot.row.min(self.rows.len().saturating_sub(1));
         let text = self.row(row);
-        Spot { row, byte: floor_boundary(text, spot.byte) }
+        Spot {
+            row,
+            byte: floor_boundary(text, spot.byte),
+        }
     }
 }
 
@@ -121,7 +124,11 @@ pub struct Selection {
 impl Selection {
     /// A selection that selects nothing yet: one spot, and `v` from there.
     pub fn caret(at: Spot) -> Selection {
-        Selection { anchor: at, head: at, kind: Kind::Char }
+        Selection {
+            anchor: at,
+            head: at,
+            kind: Kind::Char,
+        }
     }
 
     /// A selection anchored at one end of a node and headed at the other.
@@ -293,11 +300,18 @@ impl Selection {
 
     /// The range, ordered, as the two spots a copy reads between.
     pub fn range(&self, body: &Body) -> (Spot, Spot) {
-        let (start, end) = if self.anchor <= self.head { (self.anchor, self.head) } else { (self.head, self.anchor) };
+        let (start, end) = if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        };
         let (start, end) = (body.clamp(start), body.clamp(end));
         match self.kind {
             Kind::Char => (start, end),
-            Kind::Line => (Spot::new(start.row, 0), Spot::new(end.row, body.row(end.row).len())),
+            Kind::Line => (
+                Spot::new(start.row, 0),
+                Spot::new(end.row, body.row(end.row).len()),
+            ),
             // A block keeps its columns and takes every row between.
             Kind::Block => {
                 let from = start.byte.min(end.byte);
@@ -317,7 +331,10 @@ impl Selection {
         let text = body.row(row);
         let (from, to) = match self.kind {
             Kind::Block => (start.byte, end.byte),
-            _ => (if row == start.row { start.byte } else { 0 }, if row == end.row { end.byte } else { text.len() }),
+            _ => (
+                if row == start.row { start.byte } else { 0 },
+                if row == end.row { end.byte } else { text.len() },
+            ),
         };
         let from = floor_boundary(text, from.min(text.len()));
         let to = floor_boundary(text, to.max(from).min(text.len()));
@@ -329,7 +346,9 @@ impl Selection {
         let (start, end) = self.range(body);
         let mut out = String::new();
         for row in start.row..=end.row {
-            let Some((from, to)) = self.on_row(body, row) else { continue };
+            let Some((from, to)) = self.on_row(body, row) else {
+                continue;
+            };
             if row > start.row {
                 out.push('\n');
             }
@@ -587,7 +606,11 @@ mod tests {
         let body = body();
         let mut selection = Selection::caret(Spot::new(0, 2));
         selection.node_forward(&body);
-        assert_eq!(selection.head(), Spot::new(2, 0), "the next node is the tool result");
+        assert_eq!(
+            selection.head(),
+            Spot::new(2, 0),
+            "the next node is the tool result"
+        );
         // Twice from the start of the second node leaves it rather than moving within it.
         selection.node_back(&body);
         assert_eq!(selection.head(), Spot::new(0, 0));
@@ -616,14 +639,22 @@ mod tests {
         let body = body();
         let mut selection = Selection::caret(Spot::new(1, 0));
         selection.head = Spot::new(2, 2);
-        assert_eq!(selection.nodes(&body), vec!["msg.1".to_string(), "call.1".to_string()]);
+        assert_eq!(
+            selection.nodes(&body),
+            vec!["msg.1".to_string(), "call.1".to_string()]
+        );
     }
 
     #[test]
     fn a_selection_over_a_row_with_no_node_names_none() {
         // A notice or the composer is drawn without a node; a selection may cover it,
         // and then there is nothing to attribute the bytes to.
-        let body = Body::of(&[Line { indent: 0, spans: vec![(Style::PLAIN, "the composer".into())], surface: None, node: None }]);
+        let body = Body::of(&[Line {
+            indent: 0,
+            spans: vec![(Style::PLAIN, "the composer".into())],
+            surface: None,
+            node: None,
+        }]);
         let mut selection = Selection::caret(Spot::new(0, 0));
         selection.head = Spot::new(0, 4);
         assert_eq!(selection.nodes(&body), Vec::<String>::new());

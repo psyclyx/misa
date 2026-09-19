@@ -26,6 +26,4 @@ pub enum Intent {
     },
     /// Invoke a declared command by name.
     Command { name: String, args: Value },
-
 }
-

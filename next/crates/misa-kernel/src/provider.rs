@@ -440,25 +440,25 @@ impl Provider for OpenAiChat {
         for model in models {
             let (context_window, efforts, input_micros, output_micros, cache_read_micros) =
                 match model.id.as_str() {
-                // These are the published names from the reference DeepSeek
-                // catalogue. Do not invent aliases here: the service's list is
-                // authoritative and only these rows receive provider-owned facts.
-                "deepseek-flash" | "deepseek-v4-flash" | "deepseek-v4-flash-vision-exp" => (
-                    Some(1_000_000),
-                    vec!["none", "low", "high", "max"],
-                    150,
-                    600,
-                    3,
-                ),
-                "deepseek-v4-pro" => (
-                    Some(1_000_000),
-                    vec!["none", "low", "high", "max"],
-                    660,
-                    1_980,
-                    22,
-                ),
-                _ => continue,
-            };
+                    // These are the published names from the reference DeepSeek
+                    // catalogue. Do not invent aliases here: the service's list is
+                    // authoritative and only these rows receive provider-owned facts.
+                    "deepseek-flash" | "deepseek-v4-flash" | "deepseek-v4-flash-vision-exp" => (
+                        Some(1_000_000),
+                        vec!["none", "low", "high", "max"],
+                        150,
+                        600,
+                        3,
+                    ),
+                    "deepseek-v4-pro" => (
+                        Some(1_000_000),
+                        vec!["none", "low", "high", "max"],
+                        660,
+                        1_980,
+                        22,
+                    ),
+                    _ => continue,
+                };
             model.context_window = context_window;
             model.efforts = efforts.into_iter().map(str::to_string).collect();
             model.input_micros = Some(input_micros);
@@ -1191,22 +1191,16 @@ fn parse_models(body: &serde_json::Value, provider: &str) -> Vec<Listed> {
                     .get("default_effort")
                     .and_then(|value| value.as_str())
                     .map(str::to_string),
-                cache_read_micros: pricing.and_then(|pricing| {
-                    pricing_rate(pricing, "input_cache_read")
-                }),
-                cache_write_micros: pricing.and_then(|pricing| {
-                    pricing_rate(pricing, "input_cache_write")
-                }),
+                cache_read_micros: pricing
+                    .and_then(|pricing| pricing_rate(pricing, "input_cache_read")),
+                cache_write_micros: pricing
+                    .and_then(|pricing| pricing_rate(pricing, "input_cache_write")),
                 input_micros: pricing
                     .and_then(|pricing| pricing_rate(pricing, "prompt"))
-                    .or_else(|| {
-                        pricing.and_then(|pricing| pricing_rate(pricing, "input"))
-                    }),
+                    .or_else(|| pricing.and_then(|pricing| pricing_rate(pricing, "input"))),
                 output_micros: pricing
                     .and_then(|pricing| pricing_rate(pricing, "completion"))
-                    .or_else(|| {
-                        pricing.and_then(|pricing| pricing_rate(pricing, "output"))
-                    }),
+                    .or_else(|| pricing.and_then(|pricing| pricing_rate(pricing, "output"))),
                 request_micros: pricing.and_then(|pricing| pricing_request(pricing, "request")),
                 peak: None,
             })
@@ -2835,7 +2829,10 @@ mod tests {
         assert_eq!((answer.input_tokens, answer.output_tokens), (3, 2));
         let request = server.requests().await.remove(0).to_ascii_lowercase();
         assert!(request.contains("post /chat/completions"), "{request}");
-        assert!(request.contains("content-type: application/json"), "{request}");
+        assert!(
+            request.contains("content-type: application/json"),
+            "{request}"
+        );
         assert!(
             request.contains("authorization: bearer deepseek-test-token"),
             "{request}"
@@ -3356,16 +3353,17 @@ mod tests {
         // headers required by the service, but model discovery must not depend
         // on an OpenRouter token being present.
         let server = SseServer::json(r#"{"data":[{"id":"open-model"}]}"#, "200 OK").await;
-        let provider = OpenAiChat::from_preset(
-            crate::presets::preset("openrouter").unwrap(),
-            http(),
-        )
-        .with_base_url(format!("http://{}", server.address));
+        let provider =
+            OpenAiChat::from_preset(crate::presets::preset("openrouter").unwrap(), http())
+                .with_base_url(format!("http://{}", server.address));
         let models = discover(&provider, &http()).await.expect("a public list");
         assert_eq!(models[0].id, "open-model");
         let request = server.requests().await.remove(0).to_ascii_lowercase();
         assert!(!request.contains("authorization:"), "{request}");
-        assert!(request.contains("http-referer: https://github.com/psyclyx/misa"), "{request}");
+        assert!(
+            request.contains("http-referer: https://github.com/psyclyx/misa"),
+            "{request}"
+        );
         assert!(request.contains("x-title: misa"), "{request}");
 
         // Anthropic's, which names a display label as well as an id, and lives at

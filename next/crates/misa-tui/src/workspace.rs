@@ -1,11 +1,11 @@
 //! A client's daemon directory and current session, independently owned.
 use crate::{Presentation, Session, SessionReply, SessionRequest};
-use misa_proto::view::Choice;
 use misa_kit::intent::Command;
-use misa_proto::preparation::Arg;
-use misa_kit::intent::Source;
-use misa_proto::{ClientInfo, Node};
 use misa_kit::intent::Intent;
+use misa_kit::intent::Source;
+use misa_proto::preparation::Arg;
+use misa_proto::view::Choice;
+use misa_proto::{ClientInfo, Node};
 use std::collections::VecDeque;
 
 pub struct Workspace {
@@ -169,9 +169,13 @@ impl Workspace {
             .into_iter()
             .find(|entry| entry.id == session)
             .ok_or("Session is not in the daemon directory")?;
-        self.attach_entry(daemon.clone(),entry).await
+        self.attach_entry(daemon.clone(), entry).await
     }
-    async fn attach_entry(&mut self,daemon:std::sync::Arc<misa_client::daemons::Daemon>,entry:misa_proto::directory::Entry)->Result<(),String> {
+    async fn attach_entry(
+        &mut self,
+        daemon: std::sync::Arc<misa_client::daemons::Daemon>,
+        entry: misa_proto::directory::Entry,
+    ) -> Result<(), String> {
         let key = format!("{}:{:?}", daemon.identity(), entry.scope());
         let remote = if let Some(remote) = self.parked.remove(&key) {
             remote
@@ -183,7 +187,11 @@ impl Workspace {
     }
 
     fn declaration(&self) -> crate::Catalog {
-        let mut info = self.active.as_ref().map(Session::catalog).unwrap_or_default();
+        let mut info = self
+            .active
+            .as_ref()
+            .map(Session::catalog)
+            .unwrap_or_default();
         info.commands.extend([
             Command::new("new","New session","Create a daemon-owned session").arg(Arg::new("id","Session ID").required()).arg(Arg::new("title","Title")).arg(Arg::new("provider","Provider")).arg(Arg::new("model","Model")),
             Command::new("resume","Resume conversation","Mount a stored conversation as a live session").arg(Arg::new("id","Session ID").required()).arg(Arg::new("conversation","Conversation").required().from("client.conversations")).arg(Arg::new("title","Title")).arg(Arg::new("provider","Provider")).arg(Arg::new("model","Model")),
@@ -273,7 +281,7 @@ impl Workspace {
                             .map(|snapshot| snapshot.sessions.len())
                             .unwrap_or(0)
                     )),
-                metadata: None,
+                    metadata: None,
                 })
                 .collect(),
             "client.sessions" => self
@@ -290,7 +298,7 @@ impl Workspace {
                             value: entry.id,
                             label: entry.title,
                             detail: None,
-                metadata: None,
+                            metadata: None,
                         })
                         .collect()
                 })
@@ -307,8 +315,10 @@ impl Workspace {
                 .map(|remote| remote.identity())
                 .unwrap_or_else(|| "directory".into()),
         ));
-        self.updates
-            .push_back(Presentation::Declaration {catalog:self.declaration(),location:self.location()});
+        self.updates.push_back(Presentation::Declaration {
+            catalog: self.declaration(),
+            location: self.location(),
+        });
         if self.active.is_none() {
             let mut view = Node::section("session").id("session");
             view.children.push(
@@ -441,16 +451,40 @@ impl Workspace {
                 }
             }
             "attention" => {
-                let id=value("daemon");
-                let current=self.connected.get(id).and_then(|daemon|daemon.sessions().ok()).filter(|snapshot|matches!(snapshot.status,misa_protocol::observation::Status::Current)).and_then(|snapshot|snapshot.sessions.into_iter().find(|entry|entry.id==value("session") && entry.incarnation==value("incarnation")));
-                if current.is_none() {Err("That request owner incarnation is no longer current".into())}
-                else if let Ok(generation)=value("generation").parse::<i64>() {
-                    self.selected=Some(id.into());
-                    match self.attach_entry(self.connected[id].clone(),current.unwrap()).await {
-                        Ok(())=>{self.active.as_mut().unwrap().focus_request(value("request").into(),generation);Ok(())},
-                        Err(error)=>Err(error),
+                let id = value("daemon");
+                let current = self
+                    .connected
+                    .get(id)
+                    .and_then(|daemon| daemon.sessions().ok())
+                    .filter(|snapshot| {
+                        matches!(snapshot.status, misa_protocol::observation::Status::Current)
+                    })
+                    .and_then(|snapshot| {
+                        snapshot.sessions.into_iter().find(|entry| {
+                            entry.id == value("session")
+                                && entry.incarnation == value("incarnation")
+                        })
+                    });
+                if current.is_none() {
+                    Err("That request owner incarnation is no longer current".into())
+                } else if let Ok(generation) = value("generation").parse::<i64>() {
+                    self.selected = Some(id.into());
+                    match self
+                        .attach_entry(self.connected[id].clone(), current.unwrap())
+                        .await
+                    {
+                        Ok(()) => {
+                            self.active
+                                .as_mut()
+                                .unwrap()
+                                .focus_request(value("request").into(), generation);
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
                     }
-                } else {Err("Invalid request generation".into())}
+                } else {
+                    Err("Invalid request generation".into())
+                }
             }
             "visit" => {
                 let id = value("daemon");
@@ -480,9 +514,18 @@ impl Session for Workspace {
     fn turn_settled(&self) -> Option<bool> {
         self.active.as_ref().and_then(Session::turn_settled)
     }
-    fn catalog(&self) -> crate::Catalog { self.declaration() }
-    fn location(&self) -> String { self.active.as_ref().map(Session::location).unwrap_or_else(|| "Daemons".into()) }
-    fn selected(&self) -> Option<misa_proto::directory::Entry> { self.active.as_ref().and_then(Session::selected) }
+    fn catalog(&self) -> crate::Catalog {
+        self.declaration()
+    }
+    fn location(&self) -> String {
+        self.active
+            .as_ref()
+            .map(Session::location)
+            .unwrap_or_else(|| "Daemons".into())
+    }
+    fn selected(&self) -> Option<misa_proto::directory::Entry> {
+        self.active.as_ref().and_then(Session::selected)
+    }
     async fn next_presentation(&mut self) -> Result<Option<Presentation>, String> {
         loop {
             if let Some(update) = self.updates.pop_front() {
@@ -523,44 +566,152 @@ impl Session for Workspace {
         }
     }
     async fn request(&mut self, request: SessionRequest) -> Option<SessionReply> {
-        if let SessionRequest::DaemonInvoke{daemon,scope,command,input}=&request {
-            let Some(owner)=self.connected.get(daemon).cloned() else{return Some(SessionReply::Notice("Daemon disconnected".into()));};
-            if self.local_pending.len()>=8{return Some(SessionReply::Notice("Daemon requests are busy".into()));}
-            let (scope,command,input)=(scope.clone(),command.clone(),input.clone());
+        if let SessionRequest::DaemonInvoke {
+            daemon,
+            scope,
+            command,
+            input,
+        } = &request
+        {
+            let Some(owner) = self.connected.get(daemon).cloned() else {
+                return Some(SessionReply::Notice("Daemon disconnected".into()));
+            };
+            if self.local_pending.len() >= 8 {
+                return Some(SessionReply::Notice("Daemon requests are busy".into()));
+            }
+            let (scope, command, input) = (scope.clone(), command.clone(), input.clone());
             self.local_pending.spawn(async move {
-                let interface=misa_client::interface::Interface::load(&owner.client,scope.clone()).await.map_err(|f|f.message)?;
-                let definition=interface.commands.get(&command).ok_or("Command is no longer installed")?.clone();
-                let reply=owner.client.invoke(scope,definition,input,std::time::Duration::from_secs(30)).await.map_err(|f|f.message)?;
-                let message=match reply.outcome {
-                    misa_proto::invocation::Outcome::Completed{value}=>{if !value.is_null(){return Ok(LocalChange::Reply(SessionReply::Report(misa_client::request::report(&format!("{} · {command}",owner.identity()),&value))));}format!("{command} completed")},
-                    misa_proto::invocation::Outcome::Rejected{fault}=>fault.message,
-                    misa_proto::invocation::Outcome::Indeterminate{fault}=>format!("Outcome uncertain: {}",fault.message),
-                    misa_proto::invocation::Outcome::Accepted{operation}=>{
-                        let watch=misa_client::operation::Watch::open(&owner.client,&interface,operation.clone(),false).await.unwrap_or_else(|fault|misa_client::operation::Watch::failed(operation,fault));
-                        match watch.wait().await.outcome {misa_client::operation::Terminal::Finished{state,..}=>format!("Operation {state}"),misa_client::operation::Terminal::Expired=>"Operation expired; result unknown".into(),misa_client::operation::Terminal::Fault(fault)=>fault.message}
+                let interface =
+                    misa_client::interface::Interface::load(&owner.client, scope.clone())
+                        .await
+                        .map_err(|f| f.message)?;
+                let definition = interface
+                    .commands
+                    .get(&command)
+                    .ok_or("Command is no longer installed")?
+                    .clone();
+                let reply = owner
+                    .client
+                    .invoke(scope, definition, input, std::time::Duration::from_secs(30))
+                    .await
+                    .map_err(|f| f.message)?;
+                let message = match reply.outcome {
+                    misa_proto::invocation::Outcome::Completed { value } => {
+                        if !value.is_null() {
+                            return Ok(LocalChange::Reply(SessionReply::Report(
+                                misa_client::request::report(
+                                    &format!("{} · {command}", owner.identity()),
+                                    &value,
+                                ),
+                            )));
+                        }
+                        format!("{command} completed")
+                    }
+                    misa_proto::invocation::Outcome::Rejected { fault } => fault.message,
+                    misa_proto::invocation::Outcome::Indeterminate { fault } => {
+                        format!("Outcome uncertain: {}", fault.message)
+                    }
+                    misa_proto::invocation::Outcome::Accepted { operation } => {
+                        let watch = misa_client::operation::Watch::open(
+                            &owner.client,
+                            &interface,
+                            operation.clone(),
+                            false,
+                        )
+                        .await
+                        .unwrap_or_else(|fault| {
+                            misa_client::operation::Watch::failed(operation, fault)
+                        });
+                        match watch.wait().await.outcome {
+                            misa_client::operation::Terminal::Finished { state, .. } => {
+                                format!("Operation {state}")
+                            }
+                            misa_client::operation::Terminal::Expired => {
+                                "Operation expired; result unknown".into()
+                            }
+                            misa_client::operation::Terminal::Fault(fault) => fault.message,
+                        }
                     }
                 };
                 Ok(LocalChange::Reply(SessionReply::Notice(message)))
-            });return None;
+            });
+            return None;
         }
-        if let SessionRequest::Intent(Intent::Command{name,args})=&request && matches!(name.as_str(),"daemon-commands"|"daemon-command"|"work-command") {
-            if self.local_pending.len()>=8{return Some(SessionReply::Notice("Daemon requests are busy".into()));}
-            let Some(owner)=args.get("daemon").and_then(misa_value::Value::as_str).or(self.selected.as_deref()).and_then(|id|self.connected.get(id)).cloned() else{return Some(SessionReply::Notice("Choose a daemon first".into()));};
-            let command=args.get("command").and_then(misa_value::Value::as_str).map(str::to_owned);
-            let work=args.get("operation").and_then(misa_value::Value::as_str).map(str::to_owned);
-            let incarnation=args.get("incarnation").and_then(misa_value::Value::as_str).map(str::to_owned);
-            self.local_pending.spawn(async move{
-                let mut scope=owner.client.welcome().scope;
-                if let Some(incarnation)=incarnation{scope.incarnation=incarnation;}
-                let interface=misa_client::interface::Interface::load(&owner.client,scope).await.map_err(|f|f.message)?;
-                let drafts=if let Some(id)=work {
-                    let detail=misa_client::operation::detail(&owner.client,&interface,&id).await.map_err(|f|f.message)?.ok_or("Work result expired")?;
-                    std::collections::BTreeMap::from([("operation".into(),id),("generation".into(),detail.generation.to_string())])
-                }else{Default::default()};
-                let reply=if let Some(command)=command {SessionReply::DaemonForm{daemon:owner.identity().into(),scope:interface.scope.clone(),form:misa_client::form::Form::command(&interface,&command).map_err(|f|f.message)?,drafts}}
-                else {SessionReply::Report(Node::section("daemon-commands").children(interface.commands.keys().map(|id|Node::text("command",[misa_proto::view::Span::plain(format!("/daemon-command {}",misa_kit::intent::quote(id)))]).id(id))))};
+        if let SessionRequest::Intent(Intent::Command { name, args }) = &request
+            && matches!(
+                name.as_str(),
+                "daemon-commands" | "daemon-command" | "work-command"
+            )
+        {
+            if self.local_pending.len() >= 8 {
+                return Some(SessionReply::Notice("Daemon requests are busy".into()));
+            }
+            let Some(owner) = args
+                .get("daemon")
+                .and_then(misa_value::Value::as_str)
+                .or(self.selected.as_deref())
+                .and_then(|id| self.connected.get(id))
+                .cloned()
+            else {
+                return Some(SessionReply::Notice("Choose a daemon first".into()));
+            };
+            let command = args
+                .get("command")
+                .and_then(misa_value::Value::as_str)
+                .map(str::to_owned);
+            let work = args
+                .get("operation")
+                .and_then(misa_value::Value::as_str)
+                .map(str::to_owned);
+            let incarnation = args
+                .get("incarnation")
+                .and_then(misa_value::Value::as_str)
+                .map(str::to_owned);
+            self.local_pending.spawn(async move {
+                let mut scope = owner.client.welcome().scope;
+                if let Some(incarnation) = incarnation {
+                    scope.incarnation = incarnation;
+                }
+                let interface = misa_client::interface::Interface::load(&owner.client, scope)
+                    .await
+                    .map_err(|f| f.message)?;
+                let drafts = if let Some(id) = work {
+                    let detail = misa_client::operation::detail(&owner.client, &interface, &id)
+                        .await
+                        .map_err(|f| f.message)?
+                        .ok_or("Work result expired")?;
+                    std::collections::BTreeMap::from([
+                        ("operation".into(), id),
+                        ("generation".into(), detail.generation.to_string()),
+                    ])
+                } else {
+                    Default::default()
+                };
+                let reply = if let Some(command) = command {
+                    SessionReply::DaemonForm {
+                        daemon: owner.identity().into(),
+                        scope: interface.scope.clone(),
+                        form: misa_client::form::Form::command(&interface, &command)
+                            .map_err(|f| f.message)?,
+                        drafts,
+                    }
+                } else {
+                    SessionReply::Report(Node::section("daemon-commands").children(
+                        interface.commands.keys().map(|id| {
+                            Node::text(
+                                "command",
+                                [misa_proto::view::Span::plain(format!(
+                                    "/daemon-command {}",
+                                    misa_kit::intent::quote(id)
+                                ))],
+                            )
+                            .id(id)
+                        }),
+                    ))
+                };
                 Ok(LocalChange::Reply(reply))
-            });return None;
+            });
+            return None;
         }
         if let SessionRequest::Intent(Intent::Command { name, args }) = &request
             && matches!(name.as_str(), "new" | "resume" | "close")
@@ -889,7 +1040,24 @@ fn overview_rows(daemon: &str, snapshot: &misa_client::overview::Snapshot) -> Ve
                 nodes.push(text(
                     format!("request-{daemon}-{}-{}", entry.id, nodes.len()),
                     "notice",
-                    format!("  {kind} in {id} · /attention {} {} {} {} {}",misa_kit::intent::quote(daemon),misa_kit::intent::quote(id),misa_kit::intent::quote(&request.scope.incarnation),misa_kit::intent::quote(request.request.get("id").and_then(misa_value::Value::as_str).unwrap_or("unknown")),request.request.get("generation").and_then(misa_value::Value::as_i64).unwrap_or(0)),
+                    format!(
+                        "  {kind} in {id} · /attention {} {} {} {} {}",
+                        misa_kit::intent::quote(daemon),
+                        misa_kit::intent::quote(id),
+                        misa_kit::intent::quote(&request.scope.incarnation),
+                        misa_kit::intent::quote(
+                            request
+                                .request
+                                .get("id")
+                                .and_then(misa_value::Value::as_str)
+                                .unwrap_or("unknown")
+                        ),
+                        request
+                            .request
+                            .get("generation")
+                            .and_then(misa_value::Value::as_i64)
+                            .unwrap_or(0)
+                    ),
                 ));
             }
         }
@@ -982,7 +1150,11 @@ mod overview_tests {
                     scope: child,
                     source_position: 1,
                     availability: Availability::Current,
-                    request: Value::map([("kind", Value::str("tool_approval")),("id",Value::str("request-1")),("generation",Value::Int(7))]),
+                    request: Value::map([
+                        ("kind", Value::str("tool_approval")),
+                        ("id", Value::str("request-1")),
+                        ("generation", Value::Int(7)),
+                    ]),
                 }],
                 blocking: vec!["delegation".into()],
                 unavailable: vec![],

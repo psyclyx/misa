@@ -42,5 +42,8 @@ mod handler;
 mod host;
 
 pub use handler::{PLUGIN_PRIORITY, PluginHandler};
-pub use host::{Descriptor, Patch, Plugin, PluginFault, QueryDefinition, QuerySource, QueryResultContract, Presentation, PresentationVariant};
 pub use host::CommandDefinition;
+pub use host::{
+    Descriptor, Patch, Plugin, PluginFault, Presentation, PresentationVariant, QueryDefinition,
+    QueryResultContract, QuerySource,
+};

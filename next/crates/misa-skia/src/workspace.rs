@@ -55,14 +55,14 @@ mod tests {
 
     #[test]
     fn exact_attention_waits_for_matching_request_and_rejects_replaced_generation() {
-        let mut local=Local::default();
-        local.open_request("credential".into(),2);
+        let mut local = Local::default();
+        local.open_request("credential".into(), 2);
         assert!(local.app().is_none());
-        local.request("credential".into(),2,Some(request(2)));
+        local.request("credential".into(), 2, Some(request(2)));
         assert!(local.app().is_some());
-        local.open_request("credential".into(),1);
+        local.open_request("credential".into(), 1);
         assert!(local.app().is_none());
-        local.request("credential".into(),3,Some(request(3)));
+        local.request("credential".into(), 3, Some(request(3)));
         assert!(local.app().is_none());
     }
     #[test]
@@ -185,7 +185,8 @@ mod tests {
             commands: BTreeMap::from([(
                 "feed".into(),
                 Definition {
-                    preparation: Default::default(), id: "feed".into(),
+                    preparation: Default::default(),
+                    id: "feed".into(),
                     input: Schema::Record {
                         fields: BTreeMap::from([(
                             "amount".into(),
@@ -238,7 +239,10 @@ mod tests {
         assert!(local.key(Key::Escape).unwrap().is_empty());
         assert!(local.app().is_none());
         local.form(misa_client::form::Form::action(&interface, "pet.feed").unwrap());
-        assert_eq!(local.app().unwrap().field_text("local.form", "quantity"), Some("3"));
+        assert_eq!(
+            local.app().unwrap().field_text("local.form", "quantity"),
+            Some("3")
+        );
     }
 }
 #[derive(Default)]
@@ -255,7 +259,7 @@ pub struct Local {
     directories: Vec<DaemonChoice>,
     chooser: Option<App>,
     requests: BTreeMap<String, (Model, App)>,
-    attention: Option<(String,i64)>,
+    attention: Option<(String, i64)>,
     active: Option<String>,
     catalog: Vec<misa_proto::presentation::Presentation>,
     preferences: misa_client::composition::Preferences,
@@ -588,14 +592,16 @@ impl Local {
     }
     pub fn open_request(&mut self, id: String, generation: i64) {
         self.deactivate();
-        self.attention=Some((id,generation));
+        self.attention = Some((id, generation));
         self.focus_attention();
     }
     fn focus_attention(&mut self) {
-        if let Some((id,generation))=&self.attention {
-            if let Some((model,_))=self.requests.get(id) {
-                if model.generation==*generation { self.active=Some(id.clone()); }
-                self.attention=None;
+        if let Some((id, generation)) = &self.attention {
+            if let Some((model, _)) = self.requests.get(id) {
+                if model.generation == *generation {
+                    self.active = Some(id.clone());
+                }
+                self.attention = None;
             }
         }
     }
@@ -856,15 +862,24 @@ impl Local {
                             .value
                             .clone(),
                     }),
-                    "work-form" => {
-                        Some(Command::PrepareWork{daemon:self.managing.clone()?,scope:misa_client::interface::decode(args.get("scope")?).ok()?,id:args.get("id")?.as_str()?.into(),command:args.get("command")?.as_str()?.into()})
-                    }
+                    "work-form" => Some(Command::PrepareWork {
+                        daemon: self.managing.clone()?,
+                        scope: misa_client::interface::decode(args.get("scope")?).ok()?,
+                        id: args.get("id")?.as_str()?.into(),
+                        command: args.get("command")?.as_str()?.into(),
+                    }),
                     "stop-session" => {
                         let daemon = self.managing.clone()?;
                         let scope: misa_proto::observation::Scope =
                             misa_client::interface::decode(&args).ok()?;
                         Some(Command::DaemonInvoke {
-                            scope: self.directories.iter().find(|row|row.identity==daemon).and_then(|row|row.overview.as_ref()).and_then(|result|result.as_ref().ok()).map(|snapshot|snapshot.scope.clone()),
+                            scope: self
+                                .directories
+                                .iter()
+                                .find(|row| row.identity == daemon)
+                                .and_then(|row| row.overview.as_ref())
+                                .and_then(|result| result.as_ref().ok())
+                                .map(|snapshot| snapshot.scope.clone()),
                             daemon,
                             command: "daemon.session.close".into(),
                             input: misa_client::lifecycle::close_input(&scope).ok()?,
@@ -898,7 +913,12 @@ impl Local {
                             incarnation: get("incarnation")?,
                         };
                         let command = if action == "attention" {
-                            Command::SelectRequest {daemon,scope,request:get("request")?,generation:args.get("generation")?.as_i64()?}
+                            Command::SelectRequest {
+                                daemon,
+                                scope,
+                                request: get("request")?,
+                                generation: args.get("generation")?.as_i64()?,
+                            }
                         } else if action == "choose" {
                             Command::Select { daemon, scope }
                         } else {
@@ -944,11 +964,26 @@ impl Local {
             self.notice("Daemon command is not available");
             return;
         };
-        let drafts=form.fields.iter().filter_map(|(id,_)|args.get(id).and_then(Value::as_str).map(|value|(id.clone(),value.into()))).collect();
-        self.prepared_daemon_form(daemon,form,drafts);
+        let drafts = form
+            .fields
+            .iter()
+            .filter_map(|(id, _)| {
+                args.get(id)
+                    .and_then(Value::as_str)
+                    .map(|value| (id.clone(), value.into()))
+            })
+            .collect();
+        self.prepared_daemon_form(daemon, form, drafts);
     }
-    pub fn prepared_daemon_form(&mut self,daemon:String,form:misa_client::form::Form,drafts:BTreeMap<String,String>) {
-        if self.managing.as_ref()!=Some(&daemon){return;}
+    pub fn prepared_daemon_form(
+        &mut self,
+        daemon: String,
+        form: misa_client::form::Form,
+        drafts: BTreeMap<String, String>,
+    ) {
+        if self.managing.as_ref() != Some(&daemon) {
+            return;
+        }
         let fields = form
             .fields
             .iter()
@@ -1003,8 +1038,22 @@ impl Local {
                 Value::map([("command", Value::str("daemon.session.create"))]),
                 ActionOn::Click,
             ));
-        for id in daemon.forms.keys().filter(|id| !matches!(id.as_str(),"daemon.session.create"|"daemon.session.resume")) {
-            root.children.push(Node::section("command").id(format!("daemon-command-{id}")).action(action("daemon-form",id,Value::map([("command",Value::str(id))]),ActionOn::Click)));
+        for id in daemon.forms.keys().filter(|id| {
+            !matches!(
+                id.as_str(),
+                "daemon.session.create" | "daemon.session.resume"
+            )
+        }) {
+            root.children.push(
+                Node::section("command")
+                    .id(format!("daemon-command-{id}"))
+                    .action(action(
+                        "daemon-form",
+                        id,
+                        Value::map([("command", Value::str(id))]),
+                        ActionOn::Click,
+                    )),
+            );
         }
         for (index, entry) in daemon.sessions.iter().enumerate() {
             let mut label = entry.title.clone();
@@ -1085,10 +1134,30 @@ impl Local {
                         );
                     }
                     for work in &snapshot.work {
-                        for (command,label) in [("operation.cancel","Cancel work"),("daemon.work.forget","Forget terminal work")] {
+                        for (command, label) in [
+                            ("operation.cancel", "Cancel work"),
+                            ("daemon.work.forget", "Forget terminal work"),
+                        ] {
                             if daemon.forms.contains_key(command) {
-                                let scope=serde_json::to_value(&snapshot.scope).ok().and_then(|value|serde_json::from_value::<Value>(value).ok());
-                                if let Some(scope)=scope {root.children.push(Node::section("work-action").id(format!("work-action-{}-{command}",work.id)).action(action("work-form",label,Value::map([("id",Value::str(&work.id)),("command",Value::str(command)),("scope",scope)]),ActionOn::Click)));}
+                                let scope = serde_json::to_value(&snapshot.scope)
+                                    .ok()
+                                    .and_then(|value| serde_json::from_value::<Value>(value).ok());
+                                if let Some(scope) = scope {
+                                    root.children.push(
+                                        Node::section("work-action")
+                                            .id(format!("work-action-{}-{command}", work.id))
+                                            .action(action(
+                                                "work-form",
+                                                label,
+                                                Value::map([
+                                                    ("id", Value::str(&work.id)),
+                                                    ("command", Value::str(command)),
+                                                    ("scope", scope),
+                                                ]),
+                                                ActionOn::Click,
+                                            )),
+                                    );
+                                }
                             }
                         }
                     }
@@ -1194,7 +1263,8 @@ mod lifecycle_tests {
     #[test]
     fn installed_command_chooser_uses_schema_without_shortcut_or_action() {
         let command = Definition {
-            preparation: Default::default(), id: "plugin.custom".into(),
+            preparation: Default::default(),
+            id: "plugin.custom".into(),
             input: Schema::Record {
                 fields: BTreeMap::new(),
                 allow_unknown: false,
@@ -1263,7 +1333,8 @@ mod lifecycle_tests {
     #[test]
     fn resume_form_prefills_conversation_and_survives_directory_refresh() {
         let definition = Definition {
-            preparation: Default::default(), id: "daemon.session.resume".into(),
+            preparation: Default::default(),
+            id: "daemon.session.resume".into(),
             input: Schema::Record {
                 fields: BTreeMap::from([
                     (

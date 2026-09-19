@@ -30,7 +30,7 @@ impl Form {
         }
         let Schema::Record { fields, .. } = &command.input else {
             return Ok(Self {
-            scope: interface.scope.clone(),
+                scope: interface.scope.clone(),
                 title: id.into(),
                 fields: vec![(
                     "value".into(),
@@ -286,7 +286,10 @@ mod tests {
             },
         };
         let form = Form {
-            scope: misa_proto::observation::Scope {id:misa_proto::observation::ScopeId::Daemon,incarnation:"test".into()},
+            scope: misa_proto::observation::Scope {
+                id: misa_proto::observation::ScopeId::Daemon,
+                incarnation: "test".into(),
+            },
             direct_value: false,
             title: "Feed".into(),
             fields: vec![(

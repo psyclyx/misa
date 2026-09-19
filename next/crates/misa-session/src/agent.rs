@@ -42,11 +42,11 @@
 //!    queued, not refused and not an interruption, and it is drained when the turn ends.
 
 use crate::{Level, SessionEvent};
-use std::collections::BTreeSet;
 use misa_proto::view::{Field, FieldKind, Node};
 use misa_reframe::fields;
 use misa_reframe::{Effect, Event, Fault, Registry, Tx};
 use misa_value::{Op, Value};
+use std::collections::BTreeSet;
 
 use misa_kernel::KernelEvent;
 
@@ -1174,9 +1174,8 @@ fn refresh_models_for_many(tx: &mut Tx<'_>, providers: &[&str]) -> Result<(), Fa
     for provider in providers {
         sequence += 1;
         let id = format!("models.{sequence}");
-        requests.retain(|request| {
-            request.get("provider").and_then(Value::as_str) != Some(*provider)
-        });
+        requests
+            .retain(|request| request.get("provider").and_then(Value::as_str) != Some(*provider));
         requests.push(Value::map([
             ("id", Value::str(&id)),
             ("provider", Value::str(provider)),

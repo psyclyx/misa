@@ -170,11 +170,15 @@ impl Value {
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::List(a), Value::List(b)) => {
-                Arc::ptr_eq(a, b) || (a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.same(y)))
+                Arc::ptr_eq(a, b)
+                    || (a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.same(y)))
             }
             (Value::Map(a), Value::Map(b)) => {
                 Arc::ptr_eq(a, b)
-                    || (a.len() == b.len() && a.iter().zip(b.iter()).all(|((ka, va), (kb, vb))| ka == kb && va.same(vb)))
+                    || (a.len() == b.len()
+                        && a.iter()
+                            .zip(b.iter())
+                            .all(|((ka, va), (kb, vb))| ka == kb && va.same(vb)))
             }
             _ => false,
         }
@@ -409,7 +413,10 @@ impl<'de> serde::Deserialize<'de> for Value {
                 <Value as serde::Deserialize>::deserialize(d)
             }
 
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Value, A::Error> {
                 let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0));
                 while let Some(item) = seq.next_element::<Value>()? {
                     items.push(item);
@@ -417,7 +424,10 @@ impl<'de> serde::Deserialize<'de> for Value {
                 Ok(Value::List(items.into()))
             }
 
-            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Value, A::Error> {
                 let mut out = BTreeMap::new();
                 while let Some((key, value)) = map.next_entry::<String, Value>()? {
                     out.insert(key, value);
@@ -452,7 +462,11 @@ mod tests {
     #[test]
     fn an_untouched_branch_keeps_its_allocation() {
         let before = sample();
-        let after = apply(&before, &[(Path::parse("a").unwrap(), Op::Set(Value::Int(2)))]).unwrap();
+        let after = apply(
+            &before,
+            &[(Path::parse("a").unwrap(), Op::Set(Value::Int(2)))],
+        )
+        .unwrap();
         let (Value::Map(a), Value::Map(b)) = (&before, &after) else {
             panic!("expected maps")
         };
@@ -467,7 +481,11 @@ mod tests {
         let value = sample();
         let clone = value.clone();
         assert!(value.same(&clone));
-        let changed = apply(&value, &[(Path::parse("a").unwrap(), Op::Set(Value::Int(9)))]).unwrap();
+        let changed = apply(
+            &value,
+            &[(Path::parse("a").unwrap(), Op::Set(Value::Int(9)))],
+        )
+        .unwrap();
         assert!(!value.same(&changed));
     }
 
@@ -487,7 +505,10 @@ mod tests {
         let mut second = BTreeMap::new();
         second.insert("a".to_string(), Value::Int(2));
         second.insert("z".to_string(), Value::Int(1));
-        assert_eq!(Value::Map(Arc::new(first)).canonical_key(), Value::Map(Arc::new(second)).canonical_key());
+        assert_eq!(
+            Value::Map(Arc::new(first)).canonical_key(),
+            Value::Map(Arc::new(second)).canonical_key()
+        );
     }
 
     #[test]

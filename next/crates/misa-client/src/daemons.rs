@@ -256,7 +256,10 @@ impl Daemons {
         }
         if let Ok(daemon) = &result {
             daemon.client.refresh_address(address.clone()).await?;
-            daemon.blobs.refresh_address(address).map_err(Fault::protocol)?;
+            daemon
+                .blobs
+                .refresh_address(address)
+                .map_err(Fault::protocol)?;
         }
         if result.is_err() {
             let mut connected = self
@@ -297,14 +300,9 @@ impl Daemons {
         if let Some(code) = code.filter(|_| !local) {
             // Admission is a separate exchange from
             // scoped application traffic; no attached session is opened here.
-            misa_transport::pairing::pair(
-                &self.endpoint,
-                address.clone(),
-                &code,
-                &self.info.name,
-            )
-            .await
-            .map_err(Fault::protocol)?;
+            misa_transport::pairing::pair(&self.endpoint, address.clone(), &code, &self.info.name)
+                .await
+                .map_err(Fault::protocol)?;
         }
         Ok((self.connect(address).await?, hint))
     }
@@ -496,19 +494,29 @@ mod tests {
         let secret = a.secret_key().clone();
         let endpoint = misa_transport::iroh::bind(None, false).await.unwrap();
         let router = iroh::protocol::Router::builder(a.clone())
-            .accept(scoped::ALPN, handler(&a, Directory::new("before"))).spawn();
+            .accept(scoped::ALPN, handler(&a, Directory::new("before")))
+            .spawn();
         let registry = Daemons::new(endpoint.clone(), ClientInfo::new("restart-test", "1"));
         let first = registry.connect(address(&a)).await.unwrap();
         current(&first, "before").await;
         router.shutdown().await.unwrap();
         a.close().await;
-        let b = misa_transport::iroh::bind(Some(secret), false).await.unwrap();
+        let b = misa_transport::iroh::bind(Some(secret), false)
+            .await
+            .unwrap();
         let router = iroh::protocol::Router::builder(b.clone())
-            .accept(scoped::ALPN, handler(&b, Directory::new("after"))).spawn();
+            .accept(scoped::ALPN, handler(&b, Directory::new("after")))
+            .spawn();
         let refreshed = registry.connect(address(&b)).await.unwrap();
         assert!(Arc::ptr_eq(&first, &refreshed));
         current(&first, "after").await;
-        assert!(first.client.refresh_address(address(&endpoint)).await.is_err());
+        assert!(
+            first
+                .client
+                .refresh_address(address(&endpoint))
+                .await
+                .is_err()
+        );
         first.client.disconnect().await.unwrap();
         router.shutdown().await.unwrap();
         endpoint.close().await;

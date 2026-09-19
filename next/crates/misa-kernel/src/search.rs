@@ -52,13 +52,20 @@ impl WebSearch {
         );
         let mut request = crate::http::Request::get(url).header("accept", "application/json");
         if let Some(slot) = &self.backend.credential {
-            request = request.with_credential(crate::Credential::header(slot, "x-subscription-token"));
+            request =
+                request.with_credential(crate::Credential::header(slot, "x-subscription-token"));
         }
         let response = self.http.send(&request).await?;
         if !response.ok() {
-            return Err(format!("brave answered {}: {}", response.status, truncate(&response.text(), 400)));
+            return Err(format!(
+                "brave answered {}: {}",
+                response.status,
+                truncate(&response.text(), 400)
+            ));
         }
-        let body = response.json().ok_or_else(|| "brave answered with something that is not json".to_string())?;
+        let body = response
+            .json()
+            .ok_or_else(|| "brave answered with something that is not json".to_string())?;
         Ok(parse_hits(
             body.pointer("/web/results"),
             &["title", "url"],
@@ -70,11 +77,9 @@ impl WebSearch {
         // Tavily wants its key in the body, which is the one backend where a credential
         // cannot be a header. It is read here, in the kernel, and never handed out.
         let key = match &self.backend.credential {
-            Some(slot) => self
-                .http
-                .credentials
-                .secret(slot)
-                .ok_or_else(|| format!("there is no credential for `{slot}`; add one before searching"))?,
+            Some(slot) => self.http.credentials.secret(slot).ok_or_else(|| {
+                format!("there is no credential for `{slot}`; add one before searching")
+            })?,
             None => return Err("tavily needs a credential".into()),
         };
         let body = serde_json::json!({
@@ -86,13 +91,26 @@ impl WebSearch {
         let url = format!("{}/search", self.backend.base_url.trim_end_matches('/'));
         let response = self
             .http
-            .send(&crate::http::Request::post(url, body.into_bytes()).header("accept", "application/json"))
+            .send(
+                &crate::http::Request::post(url, body.into_bytes())
+                    .header("accept", "application/json"),
+            )
             .await?;
         if !response.ok() {
-            return Err(format!("tavily answered {}: {}", response.status, truncate(&response.text(), 400)));
+            return Err(format!(
+                "tavily answered {}: {}",
+                response.status,
+                truncate(&response.text(), 400)
+            ));
         }
-        let parsed = response.json().ok_or_else(|| "tavily answered with something that is not json".to_string())?;
-        Ok(parse_hits(parsed.get("results"), &["title", "url"], &["content"]))
+        let parsed = response
+            .json()
+            .ok_or_else(|| "tavily answered with something that is not json".to_string())?;
+        Ok(parse_hits(
+            parsed.get("results"),
+            &["title", "url"],
+            &["content"],
+        ))
     }
 
     async fn searxng(&self, query: &str) -> Result<Vec<Hit>, String> {
@@ -106,10 +124,20 @@ impl WebSearch {
             .send(&crate::http::Request::get(url).header("accept", "application/json"))
             .await?;
         if !response.ok() {
-            return Err(format!("searxng answered {}: {}", response.status, truncate(&response.text(), 400)));
+            return Err(format!(
+                "searxng answered {}: {}",
+                response.status,
+                truncate(&response.text(), 400)
+            ));
         }
-        let parsed = response.json().ok_or_else(|| "searxng answered with something that is not json".to_string())?;
-        Ok(parse_hits(parsed.get("results"), &["title", "url"], &["content", "snippet"]))
+        let parsed = response
+            .json()
+            .ok_or_else(|| "searxng answered with something that is not json".to_string())?;
+        Ok(parse_hits(
+            parsed.get("results"),
+            &["title", "url"],
+            &["content", "snippet"],
+        ))
     }
 
     /// Whether this backend can run at all, for a diagnostic before a call.
@@ -176,7 +204,11 @@ pub struct Hit {
 ///
 /// Several, because the three backends disagree and a fourth will disagree again: this
 /// is where the disagreement is absorbed so nothing above it has to know.
-fn parse_hits(value: Option<&serde_json::Value>, title_keys: &[&str], snippet_keys: &[&str]) -> Vec<Hit> {
+fn parse_hits(
+    value: Option<&serde_json::Value>,
+    title_keys: &[&str],
+    snippet_keys: &[&str],
+) -> Vec<Hit> {
     let Some(items) = value.and_then(|value| value.as_array()) else {
         return Vec::new();
     };
@@ -198,7 +230,11 @@ fn parse_hits(value: Option<&serde_json::Value>, title_keys: &[&str], snippet_ke
             if url.is_empty() {
                 return None;
             }
-            Some(Hit { title: pick(title_keys), url, snippet: pick(snippet_keys) })
+            Some(Hit {
+                title: pick(title_keys),
+                url,
+                snippet: pick(snippet_keys),
+            })
         })
         .collect()
 }
@@ -208,7 +244,9 @@ pub fn urlencode(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for byte in text.as_bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(*byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
             b' ' => out.push('+'),
             other => out.push_str(&format!("%{other:02X}")),
         }
@@ -253,7 +291,12 @@ mod tests {
     }
 
     fn backend(kind: SearchKind, base_url: String) -> SearchBackend {
-        SearchBackend { kind, base_url, credential: None, limit: 5 }
+        SearchBackend {
+            kind,
+            base_url,
+            credential: None,
+            limit: 5,
+        }
     }
 
     #[tokio::test]
@@ -261,9 +304,15 @@ mod tests {
         let body = r#"{"results":[{"title":"Rust","url":"https://rust-lang.org","content":"a language"}]}"#;
         let address = serve(body, "200 OK").await;
         let http = Arc::new(Http::new(Arc::new(Credentials::in_memory())).unwrap());
-        let tool = WebSearch::new(http, backend(SearchKind::Searxng, format!("http://{address}")));
+        let tool = WebSearch::new(
+            http,
+            backend(SearchKind::Searxng, format!("http://{address}")),
+        );
         assert!(tool.ready().is_ok());
-        let out = tool.run(&Value::map([("query", Value::str("rust"))])).await.unwrap();
+        let out = tool
+            .run(&Value::map([("query", Value::str("rust"))]))
+            .await
+            .unwrap();
         assert!(out.contains("https://rust-lang.org"), "{out}");
         assert!(out.contains("a language"), "{out}");
     }
@@ -278,7 +327,10 @@ mod tests {
         let tool = WebSearch::new(http, configuration);
         // With no credential it says so before it makes a request.
         assert!(tool.ready().is_err());
-        let out = tool.run(&Value::map([("query", Value::str("rust"))])).await.unwrap();
+        let out = tool
+            .run(&Value::map([("query", Value::str("rust"))]))
+            .await
+            .unwrap();
         assert!(out.contains("the search failed"), "{out}");
     }
 
@@ -286,15 +338,24 @@ mod tests {
     async fn a_refusal_is_reported_with_its_status_rather_than_parsed() {
         let address = serve(r#"{"error":"rate limited"}"#, "429 Too Many Requests").await;
         let http = Arc::new(Http::new(Arc::new(Credentials::in_memory())).unwrap());
-        let tool = WebSearch::new(http, backend(SearchKind::Searxng, format!("http://{address}")));
-        let out = tool.run(&Value::map([("query", Value::str("rust"))])).await.unwrap();
+        let tool = WebSearch::new(
+            http,
+            backend(SearchKind::Searxng, format!("http://{address}")),
+        );
+        let out = tool
+            .run(&Value::map([("query", Value::str("rust"))]))
+            .await
+            .unwrap();
         assert!(out.contains("429"), "{out}");
     }
 
     #[tokio::test]
     async fn a_query_that_was_not_given_is_a_result_and_not_a_request() {
         let http = Arc::new(Http::new(Arc::new(Credentials::in_memory())).unwrap());
-        let tool = WebSearch::new(http, backend(SearchKind::Searxng, "http://127.0.0.1:1".into()));
+        let tool = WebSearch::new(
+            http,
+            backend(SearchKind::Searxng, "http://127.0.0.1:1".into()),
+        );
         let out = tool.run(&Value::Null).await.unwrap();
         assert!(out.contains("no `query`"), "{out}");
     }

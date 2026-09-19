@@ -81,15 +81,16 @@ impl BlobMsg {
         let bad = |hash: &str| Fault::new("blob.hash", format!("`{hash}` is not a content hash"));
         match self {
             BlobMsg::Get { hash } => valid_hash(hash).then_some(()).ok_or_else(|| bad(hash)),
-            BlobMsg::Have { hashes } => {
-                match hashes.iter().find(|hash| !valid_hash(hash)) {
-                    Some(hash) => Err(bad(hash)),
-                    None => Ok(()),
-                }
-            }
+            BlobMsg::Have { hashes } => match hashes.iter().find(|hash| !valid_hash(hash)) {
+                Some(hash) => Err(bad(hash)),
+                None => Ok(()),
+            },
             BlobMsg::Put { bytes, .. } if bytes.len() > MAX_BLOB_BYTES => Err(Fault::new(
                 "blob.size",
-                format!("{} bytes is larger than the {MAX_BLOB_BYTES} byte bound", bytes.len()),
+                format!(
+                    "{} bytes is larger than the {MAX_BLOB_BYTES} byte bound",
+                    bytes.len()
+                ),
             )),
             BlobMsg::Put { .. } => Ok(()),
         }
@@ -112,7 +113,11 @@ pub enum BlobReply {
         bytes: Vec<u8>,
     },
     /// Bytes that were stored, named by content.
-    Stored { hash: String, len: u64, media: Option<String> },
+    Stored {
+        hash: String,
+        len: u64,
+        media: Option<String>,
+    },
     /// Which of the asked-for hashes the server holds.
     Have { hashes: Vec<String> },
     /// The server does not hold it. Not an error: a blob a client asked for may have
@@ -137,7 +142,9 @@ impl BlobReply {
 
     /// The refusal a server sends for a request it will not serve.
     pub fn refused(message: impl Into<String>) -> BlobReply {
-        BlobReply::Refused { fault: Fault::new("blob.refused", message) }
+        BlobReply::Refused {
+            fault: Fault::new("blob.refused", message),
+        }
     }
 
     /// A refusal for a hash that is not one.
@@ -158,7 +165,10 @@ impl BlobReply {
 /// system produced, so it is refused rather than normalised: a name that two ends
 /// disagree about is a name that will be mis-served.
 pub fn valid_hash(hash: &str) -> bool {
-    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 #[cfg(test)]
@@ -174,10 +184,20 @@ mod tests {
     #[test]
     fn every_blob_message_round_trips() {
         let messages = [
-            BlobMsg::Get { hash: "a".repeat(64) },
-            BlobMsg::Have { hashes: vec!["b".repeat(64)] },
-            BlobMsg::Put { bytes: vec![0x89, b'P', b'N', b'G'], media: Some("image/png".into()) },
-            BlobMsg::Put { bytes: b"text".to_vec(), media: None },
+            BlobMsg::Get {
+                hash: "a".repeat(64),
+            },
+            BlobMsg::Have {
+                hashes: vec!["b".repeat(64)],
+            },
+            BlobMsg::Put {
+                bytes: vec![0x89, b'P', b'N', b'G'],
+                media: Some("image/png".into()),
+            },
+            BlobMsg::Put {
+                bytes: b"text".to_vec(),
+                media: None,
+            },
         ];
         for message in messages {
             assert_eq!(round_trip(&message), message);
@@ -192,9 +212,15 @@ mod tests {
                 media: Some("image/jpeg".into()),
                 bytes: vec![0xff, 0xd8, 0xff],
             },
-            BlobReply::Stored { hash: "d".repeat(64), len: 3, media: None },
+            BlobReply::Stored {
+                hash: "d".repeat(64),
+                len: 3,
+                media: None,
+            },
             BlobReply::Have { hashes: Vec::new() },
-            BlobReply::Missing { hash: "e".repeat(64) },
+            BlobReply::Missing {
+                hash: "e".repeat(64),
+            },
             BlobReply::refused("too large"),
         ];
         for reply in replies {
@@ -209,7 +235,10 @@ mod tests {
         assert!(!valid_hash("../../etc/shadow"));
         assert!(!valid_hash(&"a".repeat(63)));
         assert!(!valid_hash(&"a".repeat(65)));
-        assert!(matches!(BlobReply::bad_hash("nope"), BlobReply::Refused { .. }));
+        assert!(matches!(
+            BlobReply::bad_hash("nope"),
+            BlobReply::Refused { .. }
+        ));
     }
 
     #[test]
@@ -218,31 +247,75 @@ mod tests {
         // that could never be served.
         assert!(MAX_BLOB_FRAME > MAX_BLOB_BYTES + crate::frame::HEADER_BYTES);
         let payload = vec![0u8; 4096];
-        let reply = BlobReply::Bytes { hash: "f".repeat(64), media: Some("image/png".into()), bytes: payload };
+        let reply = BlobReply::Bytes {
+            hash: "f".repeat(64),
+            media: Some("image/png".into()),
+            bytes: payload,
+        };
         let frame = crate::frame::encode_within(&reply, MAX_BLOB_FRAME).expect("a blob frames");
         // The envelope is small next to the bytes, which is the whole claim.
-        assert!(frame.len() < 4096 + 512, "the envelope is {} bytes", frame.len() - 4096);
+        assert!(
+            frame.len() < 4096 + 512,
+            "the envelope is {} bytes",
+            frame.len() - 4096
+        );
     }
 
     #[test]
     fn a_message_a_server_should_not_carry_out_is_refused_before_a_store_sees_it() {
         // A name that is not a hash would become a filename, so it is refused here rather
         // than defended against in every store.
-        let bad = BlobMsg::Get { hash: "../../etc/shadow".into() };
+        let bad = BlobMsg::Get {
+            hash: "../../etc/shadow".into(),
+        };
         assert_eq!(bad.acceptable().unwrap_err().code, "blob.hash");
-        assert!(BlobMsg::Have { hashes: vec!["a".repeat(64), "no".into()] }.acceptable().is_err());
-        assert!(BlobMsg::Have { hashes: vec!["a".repeat(64)] }.acceptable().is_ok());
+        assert!(
+            BlobMsg::Have {
+                hashes: vec!["a".repeat(64), "no".into()]
+            }
+            .acceptable()
+            .is_err()
+        );
+        assert!(
+            BlobMsg::Have {
+                hashes: vec!["a".repeat(64)]
+            }
+            .acceptable()
+            .is_ok()
+        );
         // And bytes beyond the bound are refused for the same reason: the store's bound and
         // the wire's are the same number, so the answer here is final.
-        let oversized = BlobMsg::Put { bytes: vec![0u8; MAX_BLOB_BYTES + 1], media: None };
+        let oversized = BlobMsg::Put {
+            bytes: vec![0u8; MAX_BLOB_BYTES + 1],
+            media: None,
+        };
         assert_eq!(oversized.acceptable().unwrap_err().code, "blob.size");
-        assert!(BlobMsg::Put { bytes: vec![0u8; 8], media: None }.acceptable().is_ok());
-        assert!(BlobMsg::Get { hash: "a".repeat(64) }.acceptable().is_ok());
+        assert!(
+            BlobMsg::Put {
+                bytes: vec![0u8; 8],
+                media: None
+            }
+            .acceptable()
+            .is_ok()
+        );
+        assert!(
+            BlobMsg::Get {
+                hash: "a".repeat(64)
+            }
+            .acceptable()
+            .is_ok()
+        );
     }
 
     #[test]
     fn a_message_that_names_itself_says_something_useful_in_a_log() {
-        assert_eq!(BlobMsg::Get { hash: String::new() }.name(), "get");
+        assert_eq!(
+            BlobMsg::Get {
+                hash: String::new()
+            }
+            .name(),
+            "get"
+        );
         assert_eq!(BlobReply::Have { hashes: Vec::new() }.name(), "have");
     }
 }

@@ -29,12 +29,34 @@ use misa_render::{Line, Style, Theme};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
     /// A retained local scene, positioned without rebuilding its paint operations.
-    Group { x:f32, y:f32, ops:std::sync::Arc<Vec<Op>> },
-    Image { x: f32, y: f32, width: f32, height: f32, image: std::sync::Arc<image::RgbaImage> },
+    Group {
+        x: f32,
+        y: f32,
+        ops: std::sync::Arc<Vec<Op>>,
+    },
+    Image {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        image: std::sync::Arc<image::RgbaImage>,
+    },
     /// A run of text at a baseline position.
-    Text { x: f32, y: f32, size: f32, style: Style, text: String },
+    Text {
+        x: f32,
+        y: f32,
+        size: f32,
+        style: Style,
+        text: String,
+    },
     /// A filled rectangle, in device pixels.
-    Rect { x: f32, y: f32, width: f32, height: f32, style: Style },
+    Rect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        style: Style,
+    },
 }
 
 /// A drawable frame.
@@ -60,7 +82,12 @@ pub struct Layout {
 
 impl Default for Layout {
     fn default() -> Self {
-        Layout { advance: 8.4, line_height: 21.0, margin: 24.0, font_size: 15.0 }
+        Layout {
+            advance: 8.4,
+            line_height: 21.0,
+            margin: 24.0,
+            font_size: 15.0,
+        }
     }
 }
 
@@ -120,18 +147,19 @@ fn rail(line: &Line, theme: &Theme, scene: &mut Scene, layout: Layout, y: f32) {
 }
 
 /// The scene as a PNG.
-
 pub mod app;
+pub mod appearance;
 pub mod connection;
+mod preferences;
 pub mod window;
 pub mod workspace;
-mod preferences;
-pub mod appearance;
 
 pub mod paint {
     use super::{Op, Scene};
     use misa_render::Color;
-    use skia_safe::{surfaces, Canvas, Font, FontMgr, FontStyle, Paint as SkPaint, PaintStyle, Rect};
+    use skia_safe::{
+        Canvas, Font, FontMgr, FontStyle, Paint as SkPaint, PaintStyle, Rect, surfaces,
+    };
 
     fn skia_color(color: Color, fallback: u32) -> u32 {
         match color {
@@ -148,20 +176,24 @@ pub mod paint {
     pub fn raster(scene: &Scene, background: Color) -> Result<image::RgbaImage, String> {
         let width = scene.width.ceil().max(1.0) as i32;
         let height = scene.height.ceil().max(1.0) as i32;
-        let mut surface = surfaces::raster_n32_premul((width, height)).ok_or("no raster surface")?;
+        let mut surface =
+            surfaces::raster_n32_premul((width, height)).ok_or("no raster surface")?;
         let canvas: &Canvas = surface.canvas();
         canvas.clear(skia_safe::Color::from(skia_color(background, 0xff14_161a)));
 
         let fonts = FontMgr::default();
-        let typeface = fonts.match_family_style("monospace", FontStyle::default())
-            .or_else(|| fonts.family_names().find_map(|family| {
-                fonts.match_family_style(family, FontStyle::default())
-            }))
+        let typeface = fonts
+            .match_family_style("monospace", FontStyle::default())
+            .or_else(|| {
+                fonts
+                    .family_names()
+                    .find_map(|family| fonts.match_family_style(family, FontStyle::default()))
+            })
             .ok_or("no typeface available; install a font")?;
         let mut fill = SkPaint::default();
         fill.set_anti_alias(true);
 
-        draw_ops(canvas,&scene.ops,&typeface,&mut fill);
+        draw_ops(canvas, &scene.ops, &typeface, &mut fill);
 
         let pixmap = surface.peek_pixels().ok_or("no pixels")?;
         let bytes = pixmap.bytes().ok_or("no pixel bytes")?;
@@ -170,26 +202,62 @@ pub mod paint {
             // N32 premultiplied is BGRA on a little-endian machine.
             rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
         }
-        image::RgbaImage::from_raw(width as u32, height as u32, rgba).ok_or_else(|| "no image".to_string())
+        image::RgbaImage::from_raw(width as u32, height as u32, rgba)
+            .ok_or_else(|| "no image".to_string())
     }
 
-    fn draw_ops(canvas:&Canvas,ops:&[Op],typeface:&skia_safe::Typeface,fill:&mut SkPaint) {
+    fn draw_ops(canvas: &Canvas, ops: &[Op], typeface: &skia_safe::Typeface, fill: &mut SkPaint) {
         for op in ops {
             match op {
-                Op::Group {x,y,ops}=>{canvas.save();canvas.translate((*x,*y));draw_ops(canvas,ops,typeface,fill);canvas.restore();}
-                Op::Image { x, y, width, height, image } => {
-                    let info = skia_safe::ImageInfo::new((image.width() as i32, image.height() as i32), skia_safe::ColorType::RGBA8888, skia_safe::AlphaType::Unpremul, None);
+                Op::Group { x, y, ops } => {
+                    canvas.save();
+                    canvas.translate((*x, *y));
+                    draw_ops(canvas, ops, typeface, fill);
+                    canvas.restore();
+                }
+                Op::Image {
+                    x,
+                    y,
+                    width,
+                    height,
+                    image,
+                } => {
+                    let info = skia_safe::ImageInfo::new(
+                        (image.width() as i32, image.height() as i32),
+                        skia_safe::ColorType::RGBA8888,
+                        skia_safe::AlphaType::Unpremul,
+                        None,
+                    );
                     let data = skia_safe::Data::new_copy(image.as_raw());
-                    if let Some(bitmap) = skia_safe::images::raster_from_data(&info, data, image.width() as usize * 4) {
-                        canvas.draw_image_rect(bitmap, None, Rect::from_xywh(*x, *y, *width, *height), fill);
+                    if let Some(bitmap) =
+                        skia_safe::images::raster_from_data(&info, data, image.width() as usize * 4)
+                    {
+                        canvas.draw_image_rect(
+                            bitmap,
+                            None,
+                            Rect::from_xywh(*x, *y, *width, *height),
+                            fill,
+                        );
                     }
                 }
-                Op::Rect { x, y, width, height, style } => {
+                Op::Rect {
+                    x,
+                    y,
+                    width,
+                    height,
+                    style,
+                } => {
                     fill.set_style(PaintStyle::Fill);
                     fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xff9a_a2ad)));
                     canvas.draw_rect(Rect::from_xywh(*x, *y, *width, *height), fill);
                 }
-                Op::Text { x, y, size, style, text } => {
+                Op::Text {
+                    x,
+                    y,
+                    size,
+                    style,
+                    text,
+                } => {
                     let font = Font::from_typeface(typeface.clone(), *size);
                     fill.set_style(PaintStyle::Fill);
                     fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xffe9_ebee)));
@@ -229,7 +297,11 @@ mod tests {
                 Kind::Code {
                     lang: Some("rust".into()),
                     text: "let x = 1;".into(),
-                    captures: vec![misa_proto::view::Capture { start: 0, end: 3, token: "keyword".into() }],
+                    captures: vec![misa_proto::view::Capture {
+                        start: 0,
+                        end: 3,
+                        token: "keyword".into(),
+                    }],
                 },
             ))
     }
@@ -249,8 +321,10 @@ mod tests {
                     assert!(*x >= 0.0 && *y >= 0.0);
                     assert!(!text.is_empty(), "an empty run was emitted");
                 }
-                Op::Group { .. } => {},
-                Op::Image { width, height, .. } | Op::Rect { width, height, .. } => assert!(*width > 0.0 && *height > 0.0),
+                Op::Group { .. } => {}
+                Op::Image { width, height, .. } | Op::Rect { width, height, .. } => {
+                    assert!(*width > 0.0 && *height > 0.0)
+                }
             }
         }
     }
@@ -283,14 +357,21 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        assert_ne!(colours(&dark), colours(&plain), "the theme made no difference");
+        assert_ne!(
+            colours(&dark),
+            colours(&plain),
+            "the theme made no difference"
+        );
     }
 
     #[test]
     fn a_tall_view_is_clipped_to_the_rows_it_was_given() {
         let mut root = Node::section("session");
         for index in 0..200 {
-            root = root.child(Node::text("message.assistant", [Span::plain(format!("line {index}"))]));
+            root = root.child(Node::text(
+                "message.assistant",
+                [Span::plain(format!("line {index}"))],
+            ));
         }
         let scene = scene(&root, &Theme::dark(), 60, 10, Layout::default());
         let lowest = scene
@@ -320,6 +401,10 @@ mod tests {
         let scene = scene_of(&Theme::dark());
         let bytes = paint::png(&scene, misa_render::Color::Rgb(20, 22, 26)).expect("a png");
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
-        assert!(bytes.len() > 1000, "the raster is suspiciously small: {} bytes", bytes.len());
+        assert!(
+            bytes.len() > 1000,
+            "the raster is suspiciously small: {} bytes",
+            bytes.len()
+        );
     }
 }

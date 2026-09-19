@@ -1,6 +1,6 @@
 //! Surface-owned request drafts and report visibility.
-use crate::{Key, KeyOut};
 use crate::prefs::DialogSettings;
+use crate::{Key, KeyOut};
 use misa_client::request::Model;
 use misa_proto::Node;
 use misa_value::Value;
@@ -436,10 +436,7 @@ impl Dialogs {
                 node: None,
                 spans: vec![(
                     theme.role("notice"),
-                    format!(
-                        "{} pending input requests",
-                        self.requests.len()
-                    ),
+                    format!("{} pending input requests", self.requests.len()),
                 )],
             });
         }
@@ -456,10 +453,7 @@ impl Dialogs {
                 .filter(|action| !cancellable || action.id != "cancel")
                 .map(|action| (action.id.as_str(), action.label.as_str()))
                 .collect();
-            footer_actions.push((
-                "panel.close",
-                if cancellable { "Cancel" } else { "Close" },
-            ));
+            footer_actions.push(("panel.close", if cancellable { "Cancel" } else { "Close" }));
             let line = |text| misa_render::Line {
                 surface: None,
                 indent: 0,
@@ -537,12 +531,7 @@ impl Dialogs {
             surface: theme.surface("dialog"),
             indent: 0,
             node: None,
-            spans: crate::buttons::footer(
-                theme,
-                settings,
-                footer_actions,
-            )
-            .spans,
+            spans: crate::buttons::footer(theme, settings, footer_actions).spans,
         });
         framed
     }
@@ -594,7 +583,10 @@ mod tests {
         dialogs.update("custom".into(), 1, Some(model));
         dialogs.open();
         dialogs.paste("bad");
-        assert!(matches!(dialogs.key(&Key::Submit, &DialogSettings::default()), Some(KeyOut::Local)));
+        assert!(matches!(
+            dialogs.key(&Key::Submit, &DialogSettings::default()),
+            Some(KeyOut::Local)
+        ));
         assert_eq!(dialogs.request_forms["custom"].0["count"], "bad");
         dialogs.key(&Key::Escape, &DialogSettings::default());
         dialogs.open();
@@ -704,11 +696,8 @@ mod tests {
         let mut settings = DialogSettings::default();
         settings.action_keys.insert("approve".into(), "a".into());
         settings.action_keys.insert("deny".into(), "d".into());
-        let text = misa_render::to_plain(&dialogs.lines(
-            &misa_render::Theme::plain(),
-            80,
-            &settings,
-        ));
+        let text =
+            misa_render::to_plain(&dialogs.lines(&misa_render::Theme::plain(), 80, &settings));
         assert!(text.contains("a Allow tool   d Deny tool"), "{text}");
         assert!(!text.contains("y Allow tool"), "{text}");
         assert!(matches!(
@@ -779,13 +768,18 @@ mod action_form_tests {
         let mut dialogs = Dialogs::default();
         dialogs.form(misa_client::form::Form::action(&interface, "edit").unwrap());
         dialogs.key(&Key::Char('x'), &DialogSettings::default());
-        assert!(matches!(dialogs.key(&Key::Submit, &DialogSettings::default()), Some(KeyOut::Local)));
+        assert!(matches!(
+            dialogs.key(&Key::Submit, &DialogSettings::default()),
+            Some(KeyOut::Local)
+        ));
         assert!(dialogs.focused());
         dialogs.key(&Key::Backspace, &DialogSettings::default());
         dialogs.paste("3");
         dialogs.key(&Key::Tab, &DialogSettings::default());
         dialogs.paste("Misa");
-        let Some(KeyOut::Invoke { command, input }) = dialogs.key(&Key::Submit, &DialogSettings::default()) else {
+        let Some(KeyOut::Invoke { command, input }) =
+            dialogs.key(&Key::Submit, &DialogSettings::default())
+        else {
             panic!("valid typed form submits")
         };
         assert_eq!(command, "change");
@@ -824,8 +818,16 @@ mod report_tests {
     #[test]
     fn escape_closes_a_report() {
         let mut dialogs = Dialogs::default();
-        dialogs.report(Node::section("report").id("report").label("Status for `provider`"));
-        assert!(dialogs.key(&Key::Escape, &DialogSettings::default()).is_some());
+        dialogs.report(
+            Node::section("report")
+                .id("report")
+                .label("Status for `provider`"),
+        );
+        assert!(
+            dialogs
+                .key(&Key::Escape, &DialogSettings::default())
+                .is_some()
+        );
         assert!(!dialogs.modal());
 
         let mut dialogs = Dialogs::default();

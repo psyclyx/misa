@@ -19,8 +19,8 @@
 //! holds; the matching happens here. A session is asked only when a source has no
 //! items to hold — see [`misa_kit::picker`].
 
-mod chrome;
 mod buttons;
+mod chrome;
 pub mod clipboard;
 mod dialogs;
 mod event_loop;
@@ -416,10 +416,11 @@ impl Screen {
         // would be a list that learned nothing.
         self.picker = Some(
             Picker::inline(source, format!("/{command} {argument}"), accept)
-                .with_views(self.prefs.picker.picker_views(
-                    source,
-                    misa_kit::picker::PickerPlacement::Inline,
-                ))
+                .with_views(
+                    self.prefs
+                        .picker
+                        .picker_views(source, misa_kit::picker::PickerPlacement::Inline),
+                )
                 .with_frecency(self.prefs.frecency())
                 .with_favorites(self.prefs.favorites()),
         );
@@ -588,9 +589,14 @@ impl Screen {
                 fields: Vec::new(),
             }));
         }
-        if panel.children.iter().flat_map(|child| child.actions.iter()).any(|action| {
-            action.on == ActionOn::Submit && self.prefs.dialogs.matches(&action.id, key)
-        }) {
+        if panel
+            .children
+            .iter()
+            .flat_map(|child| child.actions.iter())
+            .any(|action| {
+                action.on == ActionOn::Submit && self.prefs.dialogs.matches(&action.id, key)
+            })
+        {
             return Some(self.submit_panel(panel));
         }
         Some(match key {
@@ -624,17 +630,14 @@ impl Screen {
 
     /// Take the panel away, by the action the session offered for it.
     fn dismiss_panel(&mut self, panel: &Node) -> KeyOut {
-        let close = panel
-            .actions
-            .iter()
-            .find(|action| {
-                action.on == ActionOn::Click
-                    && self
-                        .prefs
-                        .dialogs
-                        .key(&action.id)
-                        .is_some_and(|key| key == "escape")
-            });
+        let close = panel.actions.iter().find(|action| {
+            action.on == ActionOn::Click
+                && self
+                    .prefs
+                    .dialogs
+                    .key(&action.id)
+                    .is_some_and(|key| key == "escape")
+        });
         let Some(close) = close else {
             // A panel nobody can dismiss is the session's decision; this client will not
             // invent one, and it says so rather than eating the key in silence.
@@ -1147,10 +1150,11 @@ impl Screen {
     fn open_action_palette(&mut self) -> KeyOut {
         self.editor.set_text(":");
         let mut picker = Picker::over("actions", "Actions", Accept::Run)
-            .with_views(self.prefs.picker.picker_views(
-                "actions",
-                misa_kit::picker::PickerPlacement::Overlay,
-            ))
+            .with_views(
+                self.prefs
+                    .picker
+                    .picker_views("actions", misa_kit::picker::PickerPlacement::Overlay),
+            )
             .with_frecency(self.prefs.frecency())
             .with_favorites(self.prefs.favorites());
         picker.set_items(
@@ -1541,10 +1545,11 @@ impl Screen {
                 argument: "model".into(),
             },
         )
-        .with_views(self.prefs.picker.picker_views(
-            source,
-            misa_kit::picker::PickerPlacement::Overlay,
-        ))
+        .with_views(
+            self.prefs
+                .picker
+                .picker_views(source, misa_kit::picker::PickerPlacement::Overlay),
+        )
         .with_frecency(self.prefs.frecency())
         .with_favorites(self.prefs.favorites());
         if let Some((items, truncated)) = self.resident.get(source) {
@@ -1697,7 +1702,11 @@ fn choice_preview(
         lines.push(format!("{}: {context} tokens", settings.context_label));
     }
     if !metadata.efforts.is_empty() {
-        lines.push(format!("{}: {}", settings.effort_label, metadata.efforts.join(" · ")));
+        lines.push(format!(
+            "{}: {}",
+            settings.effort_label,
+            metadata.efforts.join(" · ")
+        ));
     }
     if let Some(pricing) = &metadata.pricing {
         let rate = |value: Option<i64>| {
@@ -1726,7 +1735,11 @@ fn choice_preview(
             ));
         }
         if let Some(request) = pricing.request_micros.filter(|value| *value > 0) {
-            lines.push(format!("{}: ${}", settings.request_label, format_money(request)));
+            lines.push(format!(
+                "{}: ${}",
+                settings.request_label,
+                format_money(request)
+            ));
         }
         lines.push(settings.estimate_note.clone());
     } else {
@@ -1769,12 +1782,18 @@ fn choice_preview(
 
 fn format_rate(rate: i64) -> String {
     let value = format!("{:.6}", rate as f64 / 1_000.0);
-    value.trim_end_matches('0').trim_end_matches('.').to_string()
+    value
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
 }
 
 fn format_money(micros: i64) -> String {
     let value = format!("{:.6}", micros as f64 / 1_000_000.0);
-    value.trim_end_matches('0').trim_end_matches('.').to_string()
+    value
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
 }
 
 fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
@@ -1800,8 +1819,7 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
         .rev()
         .find(|count| {
             content_width
-                >= count * settings.minimum_panel_width
-                    + count.saturating_sub(1) * settings.gap
+                >= count * settings.minimum_panel_width + count.saturating_sub(1) * settings.gap
         })
         .unwrap_or(1);
     let panel_width = content_width
@@ -1825,7 +1843,11 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
         .map(|(_, view)| {
             let choices = picker.matches_for(*view);
             let active_view = *view == picker.view();
-            let selected = if active_view { picker.selected_index() } else { 0 };
+            let selected = if active_view {
+                picker.selected_index()
+            } else {
+                0
+            };
             let start = selected
                 .saturating_sub(panel_budget / 2)
                 .min(choices.len().saturating_sub(1));
@@ -1841,13 +1863,26 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
                 }
                 used += wrapped.len();
                 shown += 1;
-                rows.extend(wrapped.into_iter().map(|row| pad_styled(row, panel_width, theme.role(if active { "choice.row.selected" } else { "choice.row" }))));
+                rows.extend(wrapped.into_iter().map(|row| {
+                    pad_styled(
+                        row,
+                        panel_width,
+                        theme.role(if active {
+                            "choice.row.selected"
+                        } else {
+                            "choice.row"
+                        }),
+                    )
+                }));
                 if used >= panel_budget {
                     break;
                 }
             }
             if choices.is_empty() {
-                rows.push(vec![(theme.role("choice.empty"), misa_render::pad(&settings.empty_label, panel_width))]);
+                rows.push(vec![(
+                    theme.role("choice.empty"),
+                    misa_render::pad(&settings.empty_label, panel_width),
+                )]);
             }
             let more = choices.len() > start + shown || picker.is_truncated();
             let overflow = more.then(|| {
@@ -1885,17 +1920,26 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
             (theme.role("choice.prompt"), input_prefix.clone()),
             (
                 theme.role("choice.query"),
-                misa_render::clip(&picker.query, width.saturating_sub(misa_render::width(&input_prefix))),
+                misa_render::clip(
+                    &picker.query,
+                    width.saturating_sub(misa_render::width(&input_prefix)),
+                ),
             ),
         ],
         node: None,
     }];
     if selected_detail {
-        let detail = picker.selected().and_then(|choice| choice.detail.as_deref()).unwrap_or_default();
+        let detail = picker
+            .selected()
+            .and_then(|choice| choice.detail.as_deref())
+            .unwrap_or_default();
         lines.push(Line {
             surface: None,
             indent: 0,
-            spans: vec![(theme.role("choice.hint"), misa_render::pad(&format!("{}{}", " ".repeat(padding), detail), width))],
+            spans: vec![(
+                theme.role("choice.hint"),
+                misa_render::pad(&format!("{}{}", " ".repeat(padding), detail), width),
+            )],
             node: None,
         });
     }
@@ -1922,7 +1966,12 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
             heading_spans.push((theme.role("plain"), " ".repeat(settings.gap)));
         }
     }
-    lines.push(Line { surface: None, indent: 0, spans: heading_spans, node: None });
+    lines.push(Line {
+        surface: None,
+        indent: 0,
+        spans: heading_spans,
+        node: None,
+    });
     let max_rows = panels
         .iter()
         .map(|(_, _, rows, _, _)| rows.len())
@@ -1940,7 +1989,12 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
                 spans.push((theme.role("plain"), " ".repeat(settings.gap)));
             }
         }
-        lines.push(Line { surface: None, indent: 0, spans, node: None });
+        lines.push(Line {
+            surface: None,
+            indent: 0,
+            spans,
+            node: None,
+        });
     }
     let hints = picker_hints(settings, picker, false);
     lines.push(Line {
@@ -1951,7 +2005,9 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
             spans.extend(crate::buttons::key_reference(
                 theme,
                 &settings.hint_separator,
-                hints.iter().map(|hint| (hint.key.as_str(), hint.label.as_str())),
+                hints
+                    .iter()
+                    .map(|hint| (hint.key.as_str(), hint.label.as_str())),
             ));
             spans
         },
@@ -1961,19 +2017,19 @@ fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
         lines.push(Line {
             surface: None,
             indent: 0,
-                spans: vec![(
-                    theme.role("choice.hint"),
-                    format!(
-                        "{}{} {}",
-                        " ".repeat(padding),
-                        panels
-                            .iter()
-                            .filter_map(|(_, _, _, _, overflow)| overflow.as_deref())
-                            .collect::<Vec<_>>()
-                            .join(&settings.hint_separator),
-                        settings.more_label
-                    ),
-                )],
+            spans: vec![(
+                theme.role("choice.hint"),
+                format!(
+                    "{}{} {}",
+                    " ".repeat(padding),
+                    panels
+                        .iter()
+                        .filter_map(|(_, _, _, _, overflow)| overflow.as_deref())
+                        .collect::<Vec<_>>()
+                        .join(&settings.hint_separator),
+                    settings.more_label
+                ),
+            )],
             node: None,
         });
     }
@@ -1995,24 +2051,56 @@ fn choice_spans(
     selected: bool,
     picker: &Picker,
 ) -> Vec<(misa_render::Style, String)> {
-    let row_style = theme.role(if selected { "choice.row.selected" } else { "choice.row" });
+    let row_style = theme.role(if selected {
+        "choice.row.selected"
+    } else {
+        "choice.row"
+    });
     let mut spans = vec![
-        (row_style, if selected { row.selected_marker.clone() } else { row.marker.clone() }),
+        (
+            row_style,
+            if selected {
+                row.selected_marker.clone()
+            } else {
+                row.marker.clone()
+            },
+        ),
         (row_style, row.marker_separator.clone()),
-        (if selected { row_style } else { theme.role("keybinding") }, display_keys(&picker.shortcut_for(index))),
+        (
+            if selected {
+                row_style
+            } else {
+                theme.role("keybinding")
+            },
+            display_keys(&picker.shortcut_for(index)),
+        ),
         (row_style, row.marker_separator.clone()),
         (row_style, candidate.label.clone()),
     ];
     if let Some(detail) = &candidate.detail
         && !detail.is_empty()
     {
-        spans.push((if selected { row_style } else { theme.role("choice.hint") }, format!("{}{detail}", row.detail_separator)));
+        spans.push((
+            if selected {
+                row_style
+            } else {
+                theme.role("choice.hint")
+            },
+            format!("{}{detail}", row.detail_separator),
+        ));
     }
     spans
 }
 
-fn pad_styled(mut spans: Vec<(misa_render::Style, String)>, width: usize, style: misa_render::Style) -> Vec<(misa_render::Style, String)> {
-    let used = spans.iter().map(|(_, text)| misa_render::width(text)).sum::<usize>();
+fn pad_styled(
+    mut spans: Vec<(misa_render::Style, String)>,
+    width: usize,
+    style: misa_render::Style,
+) -> Vec<(misa_render::Style, String)> {
+    let used = spans
+        .iter()
+        .map(|(_, text)| misa_render::width(text))
+        .sum::<usize>();
     if used < width {
         spans.push((style, " ".repeat(width - used)));
     }
@@ -2028,28 +2116,57 @@ pub(crate) fn completion_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
     let mut lines = Vec::new();
     for (index, candidate) in matches.iter().enumerate() {
         let selected = index == picker.selected_index();
-        let mut spans = vec![(screen.theme.role("plain"), screen.prefs.picker.row.inline_prefix.clone())];
-        spans.extend(choice_spans(&screen.theme, &screen.prefs.picker.row, candidate, index, selected, picker));
+        let mut spans = vec![(
+            screen.theme.role("plain"),
+            screen.prefs.picker.row.inline_prefix.clone(),
+        )];
+        spans.extend(choice_spans(
+            &screen.theme,
+            &screen.prefs.picker.row,
+            candidate,
+            index,
+            selected,
+            picker,
+        ));
         let wrapped = misa_render::wrap_styled(&spans, width.max(1));
         for row in wrapped {
             lines.push(Line {
                 surface: None,
                 indent: 0,
-                spans: pad_styled(row, width, screen.theme.role(if selected { "choice.row.selected" } else { "choice.row" })),
+                spans: pad_styled(
+                    row,
+                    width,
+                    screen.theme.role(if selected {
+                        "choice.row.selected"
+                    } else {
+                        "choice.row"
+                    }),
+                ),
                 node: None,
             });
         }
     }
     if picker.is_truncated() {
         let hints = picker_hints(&screen.prefs.picker, picker, true);
-        let mut spans = vec![(screen.theme.role("plain"), screen.prefs.picker.row.inline_prefix.clone())];
+        let mut spans = vec![(
+            screen.theme.role("plain"),
+            screen.prefs.picker.row.inline_prefix.clone(),
+        )];
         spans.extend(crate::buttons::key_reference(
             &screen.theme,
             &screen.prefs.picker.hint_separator,
-            hints.iter().map(|hint| (hint.key.as_str(), hint.label.as_str())),
+            hints
+                .iter()
+                .map(|hint| (hint.key.as_str(), hint.label.as_str())),
         ));
-        spans.push((screen.theme.role("plain"), screen.prefs.picker.hint_separator.clone()));
-        spans.push((screen.theme.role("choice.hint"), screen.prefs.picker.more_label.clone()));
+        spans.push((
+            screen.theme.role("plain"),
+            screen.prefs.picker.hint_separator.clone(),
+        ));
+        spans.push((
+            screen.theme.role("choice.hint"),
+            screen.prefs.picker.more_label.clone(),
+        ));
         lines.push(Line {
             surface: None,
             indent: 0,
@@ -2672,10 +2789,19 @@ mod tests {
             .insert("panel.submit".into(), "s".into());
 
         for character in "abc".chars() {
-            assert_eq!(screen.panel_key(&asking, &Key::Char(character)), Some(KeyOut::Local));
+            assert_eq!(
+                screen.panel_key(&asking, &Key::Char(character)),
+                Some(KeyOut::Local)
+            );
         }
-        assert!(matches!(screen.panel_key(&asking, &Key::Char('s')), Some(KeyOut::Intent(_))));
-        assert!(matches!(screen.panel_key(&asking, &Key::Char('q')), Some(KeyOut::Intent(_))));
+        assert!(matches!(
+            screen.panel_key(&asking, &Key::Char('s')),
+            Some(KeyOut::Intent(_))
+        ));
+        assert!(matches!(
+            screen.panel_key(&asking, &Key::Char('q')),
+            Some(KeyOut::Intent(_))
+        ));
         assert_eq!(screen.panel_key(&asking, &Key::Escape), Some(KeyOut::Local));
     }
 
@@ -3477,11 +3603,7 @@ mod tests {
         );
         assert_eq!(keymap.keys("model.open"), "ctrl+x");
         assert_eq!(
-            translate(
-                KeyCode::Char('m'),
-                KeyModifiers::ALT,
-                &keymap,
-            ),
+            translate(KeyCode::Char('m'), KeyModifiers::ALT, &keymap,),
             Some(Key::Alt('m'))
         );
     }

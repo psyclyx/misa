@@ -1,6 +1,6 @@
 //! Installed query contracts, independent of presentation and transport policy.
-use serde::{Deserialize, Serialize};
 use misa_value::Value;
+use serde::{Deserialize, Serialize};
 
 pub const CATALOG: &str = "queries.catalog";
 pub fn catalog_definition() -> Definition {
@@ -74,8 +74,15 @@ pub struct Definition {
 
 impl Definition {
     pub fn member(&self, arguments: Vec<misa_value::Value>) -> Result<Member, Fault> {
-        let member = Member { query: crate::Query { id: self.id.clone(), args: arguments },
-            contract: self.contract.clone(), encoding: self.result.encoding(), optional: false };
+        let member = Member {
+            query: crate::Query {
+                id: self.id.clone(),
+                args: arguments,
+            },
+            contract: self.contract.clone(),
+            encoding: self.result.encoding(),
+            optional: false,
+        };
         self.validate(&member)?;
         Ok(member)
     }
@@ -171,7 +178,10 @@ pub struct Query {
 
 impl Query {
     pub fn new(id: impl Into<String>) -> Self {
-        Query { id: id.into(), args: Vec::new() }
+        Query {
+            id: id.into(),
+            args: Vec::new(),
+        }
     }
 
     pub fn arg(mut self, value: Value) -> Self {

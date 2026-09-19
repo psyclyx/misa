@@ -2,18 +2,18 @@
 //! owns IO and dispatches returned requests; surfaces observe replicas and keep
 //! their own selection/drafts. No method reconnects or retries an invocation.
 pub mod composition;
+pub mod daemons;
+pub mod document;
+pub mod driver;
+pub mod form;
+pub mod interaction;
+pub mod interface;
 pub mod lifecycle;
+pub mod operation;
 pub mod overview;
 pub mod preference_store;
-pub mod operation;
-pub mod form;
-pub mod daemons;
-pub mod transfers;
-pub mod document;
-pub mod interface;
-pub mod interaction;
 pub mod request;
-pub mod driver;
+pub mod transfers;
 use std::{collections::BTreeMap, time::Instant};
 
 use misa_proto::{
@@ -611,7 +611,8 @@ mod tests {
     }
     fn command() -> Command {
         Command {
-            preparation: Default::default(), id: "increment".into(),
+            preparation: Default::default(),
+            id: "increment".into(),
             input: Schema::Int,
             result: Schema::Int,
         }

@@ -8,7 +8,10 @@ use std::collections::BTreeMap;
 use misa_value::Value;
 use serde::{Deserialize, Serialize};
 
-use crate::{Fault, Node, Query, sync::{Change, Stream, StreamUpdate, Version}};
+use crate::{
+    Fault, Node, Query,
+    sync::{Change, Stream, StreamUpdate, Version},
+};
 
 pub const MAX_SELECTION_MEMBERS: usize = 64;
 
@@ -28,7 +31,9 @@ pub struct Scope {
 
 impl Scope {
     pub fn validate(&self) -> Result<(), Fault> {
-        if self.incarnation.is_empty() { return Err(Fault::protocol("Scope needs an incarnation")); }
+        if self.incarnation.is_empty() {
+            return Err(Fault::protocol("Scope needs an incarnation"));
+        }
         if matches!(&self.id, ScopeId::Session { id } if id.is_empty()) {
             return Err(Fault::protocol("Session scope needs an identity"));
         }
@@ -45,7 +50,10 @@ pub struct Handle {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Encoding { Value, Document }
+pub enum Encoding {
+    Value,
+    Document,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Member {
@@ -73,7 +81,9 @@ impl Selection {
         }
         for (name, member) in &self.members {
             if name.is_empty() || member.query.id.is_empty() || member.contract.is_empty() {
-                return Err(Fault::query("Selection members need a name, query and result contract"));
+                return Err(Fault::query(
+                    "Selection members need a name, query and result contract",
+                ));
             }
         }
         Ok(())
@@ -100,10 +110,15 @@ pub enum Content {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Delta {
-    Replace { content: Content },
+    Replace {
+        content: Content,
+    },
     /// Both lists are one application unit. In particular, durable insertion
     /// cannot become visible separately from retirement of its live text.
-    Document { changes: Vec<Change>, streams: Vec<StreamUpdate> },
+    Document {
+        changes: Vec<Change>,
+        streams: Vec<StreamUpdate>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -133,8 +148,14 @@ pub struct Resume {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Recovery {
-    Replace { content: Content },
-    Document { from: Version, changes: Vec<Change>, streams: Vec<Stream> },
+    Replace {
+        content: Content,
+    },
+    Document {
+        from: Version,
+        changes: Vec<Change>,
+        streams: Vec<Stream>,
+    },
 }
 
 /// Recovery supplies every member at one current owner publication. It can
@@ -148,19 +169,36 @@ pub struct Recovered {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Publication {
-    Snapshot { handle: Handle, snapshot: Snapshot },
-    Update { handle: Handle, update: Update },
-    Recovered { handle: Handle, recovered: Recovered },
-    Fault { handle: Handle, fault: Fault },
-    Closed { handle: Handle, reason: Fault },
+    Snapshot {
+        handle: Handle,
+        snapshot: Snapshot,
+    },
+    Update {
+        handle: Handle,
+        update: Update,
+    },
+    Recovered {
+        handle: Handle,
+        recovered: Recovered,
+    },
+    Fault {
+        handle: Handle,
+        fault: Fault,
+    },
+    Closed {
+        handle: Handle,
+        reason: Fault,
+    },
 }
 
 impl Publication {
     pub fn handle(&self) -> Handle {
         match self {
-            Self::Snapshot { handle, .. } | Self::Update { handle, .. } |
-            Self::Recovered { handle, .. } | Self::Fault { handle, .. } |
-            Self::Closed { handle, .. } => *handle,
+            Self::Snapshot { handle, .. }
+            | Self::Update { handle, .. }
+            | Self::Recovered { handle, .. }
+            | Self::Fault { handle, .. }
+            | Self::Closed { handle, .. } => *handle,
         }
     }
 }
@@ -172,17 +210,39 @@ mod tests {
     #[test]
     fn a_composed_publication_keeps_domain_values_and_presentation_distinct() {
         let message = Publication::Update {
-            handle: Handle { id: 4, generation: 2 },
-            update: Update { from: 19, position: 21, members: BTreeMap::from([
-                ("usage".into(), Delta::Replace { content: Content::Value(Value::Int(12)) }),
-                ("conversation".into(), Delta::Document { changes: vec![], streams: vec![
-                    StreamUpdate::Append { id: "attempt.1".into(), offset: 2, text: "🙂".into() },
-                ] }),
-            ]) },
+            handle: Handle {
+                id: 4,
+                generation: 2,
+            },
+            update: Update {
+                from: 19,
+                position: 21,
+                members: BTreeMap::from([
+                    (
+                        "usage".into(),
+                        Delta::Replace {
+                            content: Content::Value(Value::Int(12)),
+                        },
+                    ),
+                    (
+                        "conversation".into(),
+                        Delta::Document {
+                            changes: vec![],
+                            streams: vec![StreamUpdate::Append {
+                                id: "attempt.1".into(),
+                                offset: 2,
+                                text: "🙂".into(),
+                            }],
+                        },
+                    ),
+                ]),
+            },
         };
         let bytes = crate::chunk::encode(&message).unwrap();
         let mut decoder = crate::chunk::Decoder::new();
-        for bytes in bytes.chunks(3) { decoder.push(bytes).unwrap(); }
+        for bytes in bytes.chunks(3) {
+            decoder.push(bytes).unwrap();
+        }
         let actual: Publication = crate::chunk::decode(&decoder.next().unwrap().unwrap()).unwrap();
         assert_eq!(actual, message);
     }

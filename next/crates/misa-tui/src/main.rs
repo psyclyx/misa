@@ -10,18 +10,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--print" | "-p" => force_print = true,
-            "--daemon" | "-d" => targets.push(arguments.next().ok_or("--daemon needs an address or pairing ticket")?),
+            "--daemon" | "-d" => targets.push(
+                arguments
+                    .next()
+                    .ok_or("--daemon needs an address or pairing ticket")?,
+            ),
             "--help" | "-h" => {
-                println!("usage: misa [--print|-p] [--daemon ADDRESS]... [misa:<endpoint>:<session>] [prompt]\nWithout an address, discovers local daemons. /daemon selects a daemon; /session selects its session.");
+                println!(
+                    "usage: misa [--print|-p] [--daemon ADDRESS]... [misa:<endpoint>:<session>] [prompt]\nWithout an address, discovers local daemons. /daemon selects a daemon; /session selects its session."
+                );
                 return Ok(());
             }
             _ => positional.push(argument),
         }
     }
-    if positional.first().is_some_and(|s: &String| s.starts_with("misa:") || s.starts_with("misa-pair:")) {
+    if positional
+        .first()
+        .is_some_and(|s: &String| s.starts_with("misa:") || s.starts_with("misa-pair:"))
+    {
         targets.push(positional.remove(0));
     }
-    if positional.len() > 1 { return Err("Pass the prompt as one quoted argument".into()); }
+    if positional.len() > 1 {
+        return Err("Pass the prompt as one quoted argument".into());
+    }
     let mut remote = Workspace::start(&targets).await?;
     if misa_tui::print::interactive(
         force_print,

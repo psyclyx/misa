@@ -1,10 +1,20 @@
 //! Local preparation for installed command bindings. Widgets follow schemas;
 //! plugins do not require a domain-specific browser implementation.
-use std::{collections::{BTreeMap, HashMap}, sync::Arc};
-use axum::{extract::{State, Form}, http::{StatusCode, HeaderMap}, response::{IntoResponse, Redirect, Response}};
-use misa_client::{form::Form as ActionForm, interaction::Prepared};
-use misa_proto::{invocation::Outcome, schema::{Literal, Schema}};
 use crate::{Remote, escape};
+use axum::{
+    extract::{Form, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Redirect, Response},
+};
+use misa_client::{form::Form as ActionForm, interaction::Prepared};
+use misa_proto::{
+    invocation::Outcome,
+    schema::{Literal, Schema},
+};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 pub(crate) fn markup(model: &ActionForm) -> String {
     markup_for(model, false, &BTreeMap::new(), &BTreeMap::new())
@@ -14,25 +24,58 @@ pub(crate) struct Choices {
     pub source: String,
     pub candidates: misa_proto::preparation::Candidates,
 }
-pub(crate) fn markup_for(model: &ActionForm, command: bool, choices: &BTreeMap<String, Choices>, drafts: &BTreeMap<String, String>) -> String {
+pub(crate) fn markup_for(
+    model: &ActionForm,
+    command: bool,
+    choices: &BTreeMap<String, Choices>,
+    drafts: &BTreeMap<String, String>,
+) -> String {
     markup_at(model, command, choices, drafts, "./perform", &[])
 }
-pub(crate) fn markup_at(model: &ActionForm, command: bool, choices: &BTreeMap<String, Choices>, drafts: &BTreeMap<String, String>, action: &str, hidden: &[(&str, &str)]) -> String {
-    let mut html = format!("<h2>{}</h2><form class=\"command-form\" method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"kind\" value=\"{}\"><input type=\"hidden\" name=\"action_id\" value=\"{}\">", escape(&model.title), escape(action), if command { "command" } else { "action" }, escape(&model.title));
-    for (name, value) in hidden { html.push_str(&format!("<input type=\"hidden\" name=\"{}\" value=\"{}\">", escape(name), escape(value))); }
+pub(crate) fn markup_at(
+    model: &ActionForm,
+    command: bool,
+    choices: &BTreeMap<String, Choices>,
+    drafts: &BTreeMap<String, String>,
+    action: &str,
+    hidden: &[(&str, &str)],
+) -> String {
+    let mut html = format!(
+        "<h2>{}</h2><form class=\"command-form\" method=\"post\" action=\"{}\"><input type=\"hidden\" name=\"kind\" value=\"{}\"><input type=\"hidden\" name=\"action_id\" value=\"{}\">",
+        escape(&model.title),
+        escape(action),
+        if command { "command" } else { "action" },
+        escape(&model.title)
+    );
+    for (name, value) in hidden {
+        html.push_str(&format!(
+            "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
+            escape(name),
+            escape(value)
+        ));
+    }
     html.push_str(&fields(&model.fields, &BTreeMap::new(), choices, drafts));
     html.push_str("<button>Run action</button></form>");
     html
 }
 
-pub(crate) fn fields(fields: &[(String, misa_proto::schema::Field)], labels: &BTreeMap<String,String>, choices: &BTreeMap<String, Choices>, drafts: &BTreeMap<String,String>) -> String {
+pub(crate) fn fields(
+    fields: &[(String, misa_proto::schema::Field)],
+    labels: &BTreeMap<String, String>,
+    choices: &BTreeMap<String, Choices>,
+    drafts: &BTreeMap<String, String>,
+) -> String {
     let mut html = String::new();
     for (id, field) in fields {
         let name = escape(&format!("field.{id}"));
         let draft = drafts.get(id).map(String::as_str).unwrap_or("");
         let value = escape(draft);
         let required = if field.optional { "" } else { " required" };
-        html.push_str(&format!("<label>{}{} ", escape(labels.get(id).unwrap_or(id)), if field.optional { " (optional)" } else { "" }));
+        html.push_str(&format!(
+            "<label>{}{} ",
+            escape(labels.get(id).unwrap_or(id)),
+            if field.optional { " (optional)" } else { "" }
+        ));
         match &field.schema {
             Schema::String => {
                 if let Some(choices) = choices.get(id) {
@@ -71,20 +114,46 @@ pub(crate) async fn list(State(remote): State<Arc<Remote>>) -> Response {
     for id in remote.interaction.interface.actions.keys() {
         html.push_str(&format!("<form method=\"post\" action=\"./action\"><input type=\"hidden\" name=\"action_id\" value=\"{}\"><button>{}</button></form>", escape(id), escape(id)));
     }
-    if html.is_empty() { html.push_str("<p>No actions available.</p>"); }
+    if html.is_empty() {
+        html.push_str("<p>No actions available.</p>");
+    }
     crate::requests::page(StatusCode::OK, "Available actions", html)
 }
-pub(crate) async fn open(State(remote): State<Arc<Remote>>, Form(fields): Form<HashMap<String,String>>) -> Response {
-    match ActionForm::action(&remote.interaction.interface, fields.get("action_id").map(String::as_str).unwrap_or("")) {
+pub(crate) async fn open(
+    State(remote): State<Arc<Remote>>,
+    Form(fields): Form<HashMap<String, String>>,
+) -> Response {
+    match ActionForm::action(
+        &remote.interaction.interface,
+        fields.get("action_id").map(String::as_str).unwrap_or(""),
+    ) {
         Ok(model) => crate::requests::page(StatusCode::OK, &model.title, markup(&model)),
-        Err(fault) => crate::requests::page(StatusCode::BAD_REQUEST, "Action unavailable", escape(&fault.message)),
+        Err(fault) => crate::requests::page(
+            StatusCode::BAD_REQUEST,
+            "Action unavailable",
+            escape(&fault.message),
+        ),
     }
 }
-pub(crate) async fn perform(State(remote): State<Arc<Remote>>, headers: HeaderMap, Form(fields): Form<HashMap<String,String>>) -> Response {
-    let json = headers.get("accept").and_then(|value| value.to_str().ok()).is_some_and(|value| value.contains("application/json"));
+pub(crate) async fn perform(
+    State(remote): State<Arc<Remote>>,
+    headers: HeaderMap,
+    Form(fields): Form<HashMap<String, String>>,
+) -> Response {
+    let json = headers
+        .get("accept")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("application/json"));
     let failed = |status, title: &str, message: &str| {
-        if json { (status, axum::Json(serde_json::json!({"ok":false,"error":message}))).into_response() }
-        else { crate::requests::page(status, title, escape(message)) }
+        if json {
+            (
+                status,
+                axum::Json(serde_json::json!({"ok":false,"error":message})),
+            )
+                .into_response()
+        } else {
+            crate::requests::page(status, title, escape(message))
+        }
     };
     let prepared = (|| {
         let id = fields.get("action_id").map(String::as_str).unwrap_or("");
@@ -93,7 +162,13 @@ pub(crate) async fn perform(State(remote): State<Arc<Remote>>, headers: HeaderMa
             Some("command") => ActionForm::command(&remote.interaction.interface, id)?,
             _ => return Err(misa_proto::Fault::protocol("Unknown form kind")),
         };
-        let drafts = fields.iter().filter_map(|(key,value)| key.strip_prefix("field.").map(|id| (id.into(), value.clone()))).collect::<BTreeMap<_, _>>();
+        let drafts = fields
+            .iter()
+            .filter_map(|(key, value)| {
+                key.strip_prefix("field.")
+                    .map(|id| (id.into(), value.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
         let (command, input) = model.prepare(&drafts)?;
         remote.interaction.invoke(&command, input)
     })();
@@ -104,11 +179,22 @@ pub(crate) async fn perform(State(remote): State<Arc<Remote>>, headers: HeaderMa
     match crate::remote::invoke(&remote, prepared).await {
         Ok(outcome @ (Outcome::Completed { .. } | Outcome::Accepted { .. })) => {
             let report = crate::outcome_report(&outcome);
-            if json { axum::Json(serde_json::json!({"ok":true,"outcome":outcome,"report":report})).into_response() }
-            else if let Some(report) = report { crate::requests::page(StatusCode::OK, "Result", report) }
-            else { Redirect::to("./").into_response() }
-        },
-        Ok(Outcome::Rejected { fault }) => failed(StatusCode::BAD_REQUEST, "Action rejected", &fault.message),
-        _ => failed(StatusCode::BAD_GATEWAY, "Action not confirmed", "Check the operation before retrying."),
+            if json {
+                axum::Json(serde_json::json!({"ok":true,"outcome":outcome,"report":report}))
+                    .into_response()
+            } else if let Some(report) = report {
+                crate::requests::page(StatusCode::OK, "Result", report)
+            } else {
+                Redirect::to("./").into_response()
+            }
+        }
+        Ok(Outcome::Rejected { fault }) => {
+            failed(StatusCode::BAD_REQUEST, "Action rejected", &fault.message)
+        }
+        _ => failed(
+            StatusCode::BAD_GATEWAY,
+            "Action not confirmed",
+            "Check the operation before retrying.",
+        ),
     }
 }

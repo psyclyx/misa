@@ -642,9 +642,7 @@ impl Retained {
                     .iter()
                     .chain(node.children.iter().flat_map(|child| child.actions.iter()))
             })
-            .filter(|action| {
-                matches!(action.on, ActionOn::Click | ActionOn::Submit)
-            })
+            .filter(|action| matches!(action.on, ActionOn::Click | ActionOn::Submit))
             .map(|action| {
                 (
                     action.id.as_str(),
@@ -680,11 +678,9 @@ impl Retained {
             top.truncate(screen.height as usize);
             let available = (screen.height as usize).saturating_sub(top.len() + status.len());
             let overlay = if screen.dialogs.modal() {
-                screen.dialogs.lines(
-                    &screen.theme,
-                    screen.width as usize,
-                    &screen.prefs.dialogs,
-                )
+                screen
+                    .dialogs
+                    .lines(&screen.theme, screen.width as usize, &screen.prefs.dialogs)
             } else {
                 self.surface_lines(screen)
             };
@@ -1272,7 +1268,10 @@ mod tests {
             .find(|line| line.text().contains("pondering"))
             .expect("the streamed body");
         assert!(body.text().starts_with("┃ "), "{:?}", body.text());
-        assert_eq!(body.surface, screen.theme.surface("message.assistant.thinking"));
+        assert_eq!(
+            body.surface,
+            screen.theme.surface("message.assistant.thinking")
+        );
     }
 
     #[test]
@@ -1402,10 +1401,7 @@ mod tests {
         );
         retained.reindex();
         let rows: Vec<String> = all(&retained).iter().map(Line::text).collect();
-        assert_eq!(
-            rows,
-            vec!["┃ one", "┃ two", "┃ three", "┃ four", "┃ five"]
-        );
+        assert_eq!(rows, vec!["┃ one", "┃ two", "┃ three", "┃ four", "┃ five"]);
     }
 
     #[test]
@@ -1434,7 +1430,10 @@ mod tests {
         let rows: Vec<String> = lines.iter().map(Line::text).collect();
         assert_eq!(rows, vec!["┃ one", "┃ two"]);
         // The rail is the thinking block's own, not the assistant's stacked on it.
-        assert_eq!(lines[0].spans[0].0, screen.theme.role("message.assistant.thinking.rail"));
+        assert_eq!(
+            lines[0].spans[0].0,
+            screen.theme.role("message.assistant.thinking.rail")
+        );
     }
 
     #[test]
@@ -1488,12 +1487,7 @@ mod tests {
         let rows = lines.iter().map(Line::text).collect::<Vec<_>>();
         assert_eq!(
             rows,
-            vec![
-                "┃ thinking · one",
-                "┃ two",
-                "┃ three",
-                "┃ … 3 lines hidden",
-            ]
+            vec!["┃ thinking · one", "┃ two", "┃ three", "┃ … 3 lines hidden",]
         );
         assert_eq!(
             lines[0].spans[0].0,

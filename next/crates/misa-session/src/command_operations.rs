@@ -155,13 +155,26 @@ impl Runtime {
     pub(crate) fn settle_transaction_tools(&self) {
         let completed = {
             let mut state = self.state.lock().expect("session state poisoned");
-            self.tool_invocations.lock().expect("tool correlations poisoned").iter().filter_map(|(id, (_, _, operation))| {
-                let operation = operation.as_ref()?;
-                if operation.scope != self.scope() { return None; }
-                let record = state.state.query(&misa_proto::Query::new("operation.result").arg(Value::str(&operation.id))).ok()?;
-                let outcome = crate::operations::outcome_of_result(&record)?;
-                Some((*id, outcome))
-            }).collect::<Vec<_>>()
+            self.tool_invocations
+                .lock()
+                .expect("tool correlations poisoned")
+                .iter()
+                .filter_map(|(id, (_, _, operation))| {
+                    let operation = operation.as_ref()?;
+                    if operation.scope != self.scope() {
+                        return None;
+                    }
+                    let record = state
+                        .state
+                        .query(
+                            &misa_proto::Query::new("operation.result")
+                                .arg(Value::str(&operation.id)),
+                        )
+                        .ok()?;
+                    let outcome = crate::operations::outcome_of_result(&record)?;
+                    Some((*id, outcome))
+                })
+                .collect::<Vec<_>>()
         };
         for (id, outcome) in completed {
             self.complete_tool_invocation(id, outcome);
@@ -176,7 +189,8 @@ impl Runtime {
         let id = format!(
             "{}:command:{}",
             self.scope().incarnation,
-            self.next_call.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            self.next_call
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let record = Value::map([
             ("id", Value::str(&id)),
@@ -205,7 +219,11 @@ impl Runtime {
                     .with("record", record)
                     .with("event", Value::str(kind))
                     .with("data", event.data),
-                if context.connection == 0 { crate::kernel_queue::Class::Control } else { crate::kernel_queue::Class::External },
+                if context.connection == 0 {
+                    crate::kernel_queue::Class::Control
+                } else {
+                    crate::kernel_queue::Class::External
+                },
             );
             if outcome.committed() {
                 self.queue_operation_checkpoint(&mut state, &mut outcome, &mut None);

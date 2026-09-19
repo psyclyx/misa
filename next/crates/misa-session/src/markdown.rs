@@ -57,7 +57,10 @@ pub fn inline(text: &str) -> Vec<Span> {
     let mut index = 0;
     while index < text.len() {
         let rest = &text[index..];
-        let ch = rest.chars().next().expect("a non-empty remainder has a first char");
+        let ch = rest
+            .chars()
+            .next()
+            .expect("a non-empty remainder has a first char");
 
         if ch == '\\'
             && let Some(next) = rest[1..].chars().next()
@@ -79,7 +82,10 @@ pub fn inline(text: &str) -> Vec<Span> {
             && let Some((inner, next)) = delimited(text, index, &rest[..2])
         {
             flush(&mut out, &mut plain);
-            out.push(Span { text: inner, kind: SpanKind::Strong });
+            out.push(Span {
+                text: inner,
+                kind: SpanKind::Strong,
+            });
             index = next;
             continue;
         }
@@ -87,7 +93,10 @@ pub fn inline(text: &str) -> Vec<Span> {
             && let Some((inner, next)) = delimited(text, index, "~~")
         {
             flush(&mut out, &mut plain);
-            out.push(Span { text: inner, kind: SpanKind::Strikethrough });
+            out.push(Span {
+                text: inner,
+                kind: SpanKind::Strikethrough,
+            });
             index = next;
             continue;
         }
@@ -95,7 +104,10 @@ pub fn inline(text: &str) -> Vec<Span> {
             && let Some((inner, next)) = delimited(text, index, &rest[..1])
         {
             flush(&mut out, &mut plain);
-            out.push(Span { text: inner, kind: SpanKind::Emphasis });
+            out.push(Span {
+                text: inner,
+                kind: SpanKind::Emphasis,
+            });
             index = next;
             continue;
         }
@@ -139,7 +151,13 @@ impl Parser<'_> {
                 out.push(node);
                 index = next;
             } else if let Some((level, body)) = heading(line) {
-                out.push(Node::new(self.role("heading"), Kind::Heading { level, spans: inline(body) }));
+                out.push(Node::new(
+                    self.role("heading"),
+                    Kind::Heading {
+                        level,
+                        spans: inline(body),
+                    },
+                ));
                 index += 1;
             } else if is_rule(line) {
                 out.push(Node::new(self.role("rule"), Kind::Rule));
@@ -181,7 +199,17 @@ impl Parser<'_> {
             Some(lang) if lang.eq_ignore_ascii_case("diff") => "diff",
             _ => "code",
         };
-        (Node::new(self.role(shape), Kind::Code { lang, text, captures: Vec::new() }), index)
+        (
+            Node::new(
+                self.role(shape),
+                Kind::Code {
+                    lang,
+                    text,
+                    captures: Vec::new(),
+                },
+            ),
+            index,
+        )
     }
 
     fn quote(&self, lines: &[&str], start: usize) -> (Node, usize) {
@@ -196,7 +224,10 @@ impl Parser<'_> {
                 None => break,
             }
         }
-        (Node::new(self.role("quote"), Kind::Quote).children(self.blocks(&inner)), index)
+        (
+            Node::new(self.role("quote"), Kind::Quote).children(self.blocks(&inner)),
+            index,
+        )
     }
 
     fn list(&self, lines: &[&str], start: usize) -> (Node, usize) {
@@ -204,7 +235,9 @@ impl Parser<'_> {
         let mut items: Vec<Vec<Node>> = Vec::new();
         let mut index = start;
         while index < lines.len() {
-            let Some((item_ordered, first, column)) = list_marker(lines[index]) else { break };
+            let Some((item_ordered, first, column)) = list_marker(lines[index]) else {
+                break;
+            };
             // A different marker style is a different list: `1.` after `-` is what a
             // document means by ending one list and starting another.
             if item_ordered != ordered {
@@ -237,7 +270,10 @@ impl Parser<'_> {
             let borrowed: Vec<&str> = body.iter().map(String::as_str).collect();
             items.push(self.blocks(&borrowed));
         }
-        (Node::new(self.role("list"), Kind::List { ordered, items }), index)
+        (
+            Node::new(self.role("list"), Kind::List { ordered, items }),
+            index,
+        )
     }
 
     fn paragraph(&self, lines: &[&str], start: usize) -> (Node, usize) {
@@ -292,7 +328,9 @@ fn heading(line: &str) -> Option<(u8, &str)> {
 /// A thematic break: three or more of one of `-`, `*`, `_`, and nothing else.
 fn is_rule(line: &str) -> bool {
     let trimmed = line.trim();
-    let Some(first) = trimmed.chars().next() else { return false };
+    let Some(first) = trimmed.chars().next() else {
+        return false;
+    };
     if !matches!(first, '-' | '*' | '_') {
         return false;
     }
@@ -407,7 +445,10 @@ fn link(text: &str, start: usize) -> Option<(String, String, usize)> {
     let label = &rest[1..label_end];
     let tail = &rest[label_end + 2..];
     let href_end = tail.find(')')?;
-    let href = tail[..href_end].trim().trim_start_matches('<').trim_end_matches('>');
+    let href = tail[..href_end]
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>');
     // A target a client cannot use is not a link: an empty one, one with whitespace or
     // a control character, or one longer than the view will accept.
     if label.is_empty() || href.is_empty() || href.len() > 4096 {
@@ -416,7 +457,11 @@ fn link(text: &str, start: usize) -> Option<(String, String, usize)> {
     if href.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
         return None;
     }
-    Some((normalize(label), href.to_string(), start + label_end + 2 + href_end + 1))
+    Some((
+        normalize(label),
+        href.to_string(),
+        start + label_end + 2 + href_end + 1,
+    ))
 }
 
 #[cfg(test)]
@@ -513,18 +558,32 @@ mod tests {
     #[test]
     fn bullets_and_numbers_become_a_list() {
         let bullets = parse("- one\n- two");
-        assert!(matches!(&bullets[0].kind, Kind::List { ordered: false, items } if items.len() == 2));
+        assert!(
+            matches!(&bullets[0].kind, Kind::List { ordered: false, items } if items.len() == 2)
+        );
         let numbers = parse("1. one\n2. two");
-        assert!(matches!(&numbers[0].kind, Kind::List { ordered: true, items } if items.len() == 2));
-        assert_eq!(parse("1. one\n2) two\n- three").len(), 2, "a style change starts a new list");
+        assert!(
+            matches!(&numbers[0].kind, Kind::List { ordered: true, items } if items.len() == 2)
+        );
+        assert_eq!(
+            parse("1. one\n2) two\n- three").len(),
+            2,
+            "a style change starts a new list"
+        );
     }
 
     #[test]
     fn a_nested_list_is_a_list_inside_an_item() {
         let out = parse("- one\n  - nested\n- two");
-        let Kind::List { items, .. } = &out[0].kind else { panic!("expected a list") };
+        let Kind::List { items, .. } = &out[0].kind else {
+            panic!("expected a list")
+        };
         assert_eq!(items.len(), 2);
-        assert!(items[0].iter().any(|child| matches!(&child.kind, Kind::List { .. })));
+        assert!(
+            items[0]
+                .iter()
+                .any(|child| matches!(&child.kind, Kind::List { .. }))
+        );
         validate(&Node::section("root").children(out)).unwrap();
     }
 
@@ -553,7 +612,11 @@ mod tests {
         assert!(kinds.contains(&SpanKind::Emphasis));
         assert!(kinds.contains(&SpanKind::Code));
         assert!(kinds.contains(&SpanKind::Strikethrough));
-        assert!(kinds.iter().any(|kind| matches!(kind, SpanKind::Link { href } if href == "https://example.com")));
+        assert!(
+            kinds.iter().any(
+                |kind| matches!(kind, SpanKind::Link { href } if href == "https://example.com")
+            )
+        );
     }
 
     #[test]
@@ -564,12 +627,18 @@ mod tests {
 
     #[test]
     fn an_escape_removes_the_marker() {
-        assert_eq!(inline(r"\*not emphasis\*"), vec![Span::plain("*not emphasis*")]);
+        assert_eq!(
+            inline(r"\*not emphasis\*"),
+            vec![Span::plain("*not emphasis*")]
+        );
     }
 
     #[test]
     fn a_target_a_client_cannot_use_is_not_a_link() {
-        assert_eq!(inline("[x](two words)"), vec![Span::plain("[x](two words)")]);
+        assert_eq!(
+            inline("[x](two words)"),
+            vec![Span::plain("[x](two words)")]
+        );
         assert_eq!(inline("[x]()"), vec![Span::plain("[x]()")]);
     }
 
@@ -585,7 +654,11 @@ mod tests {
         let text = "# h\n\ntext\n\n- a\n\n> q\n\n---\n\n```\nc\n```";
         for node in parse(text) {
             for child in std::iter::once(&node).chain(node.children.iter()) {
-                assert!(child.role.starts_with("message.assistant.markdown."), "{}", child.role);
+                assert!(
+                    child.role.starts_with("message.assistant.markdown."),
+                    "{}",
+                    child.role
+                );
             }
         }
     }

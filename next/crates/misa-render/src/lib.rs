@@ -1,4 +1,3 @@
-
 //! Presentation for the linear frontends: text measurement, a role-addressed
 //! theme, and a renderer from the semantic tree to styled lines.
 //!
@@ -16,8 +15,8 @@
 //! Nothing here knows about sessions, the wire, or the agent. It is a function of
 //! `(tree, theme, width)`.
 
-pub mod fact;
 pub mod components;
+pub mod fact;
 pub mod lines;
 pub mod text;
 pub mod theme;

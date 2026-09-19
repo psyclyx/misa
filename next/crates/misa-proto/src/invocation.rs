@@ -128,7 +128,15 @@ pub fn catalog_definition() -> crate::query::Definition {
                         ("id", Schema::String),
                         ("input", Schema::Value),
                         ("result", Schema::Value),
-                        ("preparation", Schema::Choice { values: vec![crate::schema::Literal::String("direct".into()), crate::schema::Literal::String("request".into())] }),
+                        (
+                            "preparation",
+                            Schema::Choice {
+                                values: vec![
+                                    crate::schema::Literal::String("direct".into()),
+                                    crate::schema::Literal::String("request".into()),
+                                ],
+                            },
+                        ),
                     ]
                     .into_iter()
                     .map(|(name, schema)| {
@@ -239,14 +247,20 @@ impl ActionBinding {
 mod tests {
     #[test]
     fn preparation_roundtrips_and_omitted_metadata_defaults_to_direct() {
-        let command = super::Command { id: "respond".into(), input: crate::schema::Schema::Bool,
-            result: crate::schema::Schema::Bool, preparation: super::Preparation::Request };
+        let command = super::Command {
+            id: "respond".into(),
+            input: crate::schema::Schema::Bool,
+            result: crate::schema::Schema::Bool,
+            preparation: super::Preparation::Request,
+        };
         let mut bytes = Vec::new();
         ciborium::ser::into_writer(&command, &mut bytes).unwrap();
         let decoded: super::Command = ciborium::de::from_reader(bytes.as_slice()).unwrap();
         assert_eq!(decoded, command);
         let mut value: misa_value::Value = ciborium::de::from_reader(bytes.as_slice()).unwrap();
-        let misa_value::Value::Map(fields) = &mut value else { panic!() };
+        let misa_value::Value::Map(fields) = &mut value else {
+            panic!()
+        };
         std::sync::Arc::make_mut(fields).remove("preparation");
         bytes.clear();
         ciborium::ser::into_writer(&value, &mut bytes).unwrap();
@@ -299,7 +313,8 @@ mod tests {
     #[test]
     fn input_validation_does_not_echo_secret_values() {
         let command = Command {
-            preparation: Default::default(), id: "answer".into(),
+            preparation: Default::default(),
+            id: "answer".into(),
             input: Schema::Record {
                 fields: BTreeMap::from([(
                     "answer".into(),
@@ -355,7 +370,8 @@ mod tests {
         assert!(
             call.validate(
                 &Command {
-                    preparation: Default::default(), id: "x".into(),
+                    preparation: Default::default(),
+                    id: "x".into(),
                     input: Schema::Bool,
                     result: Schema::Bool
                 },

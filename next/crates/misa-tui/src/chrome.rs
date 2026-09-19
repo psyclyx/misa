@@ -242,11 +242,9 @@ pub fn frame(screen: &Screen, attachments: usize, staging: Option<&str>) -> Fram
         top.truncate(height);
         let available = height.saturating_sub(top.len());
         let dialog = physical(
-            screen.dialogs.lines(
-                &screen.theme,
-                screen.width as usize,
-                &screen.prefs.dialogs,
-            ),
+            screen
+                .dialogs
+                .lines(&screen.theme, screen.width as usize, &screen.prefs.dialogs),
             screen.width as usize,
         );
         let take = dialog.len().min(available);

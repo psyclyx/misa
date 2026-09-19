@@ -14,9 +14,9 @@ wit_bindgen::generate!({
 });
 
 use exports::misa::policy::policy_api::{
-    Descriptor, Effect, Event, Fault, Guest, Op, OptionValue, Patch, QueryRequest,
-    QueryDefinition, QuerySource, ReadContract, Presentation, PresentationVariant,
-    CommandDefinition, ActionBinding,
+    ActionBinding, CommandDefinition, Descriptor, Effect, Event, Fault, Guest, Op, OptionValue,
+    Patch, Presentation, PresentationVariant, QueryDefinition, QueryRequest, QuerySource,
+    ReadContract,
 };
 
 struct Shell;
@@ -92,7 +92,13 @@ impl Guest for Shell {
     /// commits, which is why an unknown event is a fault and not a `panic!`.
     fn handle(event: Event, db: String) -> Result<(Vec<Patch>, Vec<Effect>), Fault> {
         if event.kind == "kernel/log.loaded" {
-            return Ok((vec![Patch { path: "guest.loaded".into(), op: Op::Set(event.data.unwrap_or_else(|| "null".into())) }], vec![]));
+            return Ok((
+                vec![Patch {
+                    path: "guest.loaded".into(),
+                    op: Op::Set(event.data.unwrap_or_else(|| "null".into())),
+                }],
+                vec![],
+            ));
         }
         // The host validated the command before dispatching its installed event.
         if event.kind == "plugin.policy.guest.refresh" {
@@ -136,27 +142,43 @@ impl Guest for Shell {
         read_data: Option<String>,
         _previous: Option<String>,
     ) -> Result<String, Fault> {
-        if request.id == "policy.guest.document" { return document(read_data.unwrap()); }
+        if request.id == "policy.guest.document" {
+            return document(read_data.unwrap());
+        }
         if request.id == "policy.guest.state" {
             return Ok(read_data.unwrap());
         }
         if read_data.is_some() {
-            return Err(Fault { code: "guest.unexpected-data".into(), message: "derived query received database data".into(), event: None });
+            return Err(Fault {
+                code: "guest.unexpected-data".into(),
+                message: "derived query received database data".into(),
+                event: None,
+            });
         }
         if request.id == "policy.guest.copy" {
             return Ok(inputs[0].clone());
         }
         Ok(format!("{{ \"answered\": \"{}\" }}", request.id))
     }
-
 }
 
 fn document(db: String) -> Result<String, Fault> {
-    if db.contains("\"spin\"") { loop { std::hint::black_box(1); } }
-    if db.contains("\"refuse\"") {
-        return Err(Fault { code: "policy.guest.no-view".into(), message: "this plugin cannot draw that".into(), event: None });
+    if db.contains("\"spin\"") {
+        loop {
+            std::hint::black_box(1);
+        }
     }
-    Ok(format!(r#"{{"id":"guest","role":"guest.panel","kind":{{"shape":"section"}},"actions":[{{"id":"policy.guest.refresh","label":"Refresh"}}],"children":[{{"id":"guest.summary","role":"guest.summary","kind":{{"shape":"status","text":"{} bytes of state, drawn for semantic"}}}}]}}"#, db.len()))
+    if db.contains("\"refuse\"") {
+        return Err(Fault {
+            code: "policy.guest.no-view".into(),
+            message: "this plugin cannot draw that".into(),
+            event: None,
+        });
+    }
+    Ok(format!(
+        r#"{{"id":"guest","role":"guest.panel","kind":{{"shape":"section"}},"actions":[{{"id":"policy.guest.refresh","label":"Refresh"}}],"children":[{{"id":"guest.summary","role":"guest.summary","kind":{{"shape":"status","text":"{} bytes of state, drawn for semantic"}}}}]}}"#,
+        db.len()
+    ))
 }
 
 export!(Shell);

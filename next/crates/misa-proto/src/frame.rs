@@ -42,7 +42,8 @@ pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, FrameError> {
 /// Frame one message under a caller's own ceiling.
 pub fn encode_within<T: Serialize>(value: &T, limit: usize) -> Result<Vec<u8>, FrameError> {
     let mut payload = Vec::new();
-    ciborium::ser::into_writer(value, &mut payload).map_err(|err| FrameError::Codec(err.to_string()))?;
+    ciborium::ser::into_writer(value, &mut payload)
+        .map_err(|err| FrameError::Codec(err.to_string()))?;
     if payload.is_empty() {
         return Err(FrameError::Empty);
     }
@@ -77,11 +78,17 @@ pub struct Decoder {
 
 impl Decoder {
     pub fn new() -> Self {
-        Decoder { buffer: Vec::new(), limit: MAX_FRAME }
+        Decoder {
+            buffer: Vec::new(),
+            limit: MAX_FRAME,
+        }
     }
 
     pub fn with_limit(limit: usize) -> Self {
-        Decoder { buffer: Vec::new(), limit }
+        Decoder {
+            buffer: Vec::new(),
+            limit,
+        }
     }
 
     /// Bytes held while a frame is incomplete.
@@ -111,7 +118,12 @@ impl Decoder {
         if self.buffer.len() < HEADER_BYTES {
             return None;
         }
-        let length = u32::from_be_bytes([self.buffer[0], self.buffer[1], self.buffer[2], self.buffer[3]]) as usize;
+        let length = u32::from_be_bytes([
+            self.buffer[0],
+            self.buffer[1],
+            self.buffer[2],
+            self.buffer[3],
+        ]) as usize;
         if length == 0 {
             self.buffer.drain(..HEADER_BYTES);
             return Some(Err(FrameError::Empty));
@@ -137,7 +149,7 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{scoped::ClientMessage, ClientInfo, observation::Handle};
+    use crate::{ClientInfo, observation::Handle, scoped::ClientMessage};
 
     fn hello() -> ClientMessage {
         ClientMessage::Hello {
@@ -156,16 +168,28 @@ mod tests {
 
     #[test]
     fn a_decoder_reassembles_a_message_split_at_every_boundary() {
-        let frame = encode(&ClientMessage::CancelObservation { handle: Handle { id: 1, generation: 1 } }).unwrap();
+        let frame = encode(&ClientMessage::CancelObservation {
+            handle: Handle {
+                id: 1,
+                generation: 1,
+            },
+        })
+        .unwrap();
         // Every byte boundary except the last leaves an incomplete frame, and the
         // next push completes it from whatever arrived.
         for split in 0..frame.len() {
             let mut decoder = Decoder::new();
             decoder.push(&frame[..split]).unwrap();
-            assert!(decoder.next().is_none(), "a partial frame was reported complete at {split}");
+            assert!(
+                decoder.next().is_none(),
+                "a partial frame was reported complete at {split}"
+            );
             decoder.push(&frame[split..]).unwrap();
             let payload = decoder.next().expect("a complete frame").unwrap();
-            assert!(matches!(decode::<ClientMessage>(&payload).unwrap(), ClientMessage::CancelObservation { .. }));
+            assert!(matches!(
+                decode::<ClientMessage>(&payload).unwrap(),
+                ClientMessage::CancelObservation { .. }
+            ));
             assert!(decoder.next().is_none());
             assert!(decoder.is_empty());
         }
@@ -175,16 +199,51 @@ mod tests {
     fn a_decoder_returns_several_frames_from_one_read() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&encode(&hello()).unwrap());
-        bytes.extend_from_slice(&encode(&ClientMessage::CancelObservation { handle: Handle { id: 1, generation: 1 } }).unwrap());
-        bytes.extend_from_slice(&encode(&ClientMessage::CancelObservation { handle: Handle { id: 2, generation: 1 } }).unwrap());
+        bytes.extend_from_slice(
+            &encode(&ClientMessage::CancelObservation {
+                handle: Handle {
+                    id: 1,
+                    generation: 1,
+                },
+            })
+            .unwrap(),
+        );
+        bytes.extend_from_slice(
+            &encode(&ClientMessage::CancelObservation {
+                handle: Handle {
+                    id: 2,
+                    generation: 1,
+                },
+            })
+            .unwrap(),
+        );
         let mut decoder = Decoder::new();
         decoder.push(&bytes).unwrap();
         let first = decoder.next().unwrap().unwrap();
-        assert!(matches!(decode::<ClientMessage>(&first).unwrap(), ClientMessage::Hello { .. }));
+        assert!(matches!(
+            decode::<ClientMessage>(&first).unwrap(),
+            ClientMessage::Hello { .. }
+        ));
         let second = decoder.next().unwrap().unwrap();
-        assert!(matches!(decode::<ClientMessage>(&second).unwrap(), ClientMessage::CancelObservation { handle: Handle { id: 1, generation: 1 } }));
+        assert!(matches!(
+            decode::<ClientMessage>(&second).unwrap(),
+            ClientMessage::CancelObservation {
+                handle: Handle {
+                    id: 1,
+                    generation: 1
+                }
+            }
+        ));
         let third = decoder.next().unwrap().unwrap();
-        assert!(matches!(decode::<ClientMessage>(&third).unwrap(), ClientMessage::CancelObservation { handle: Handle { id: 2, generation: 1 } }));
+        assert!(matches!(
+            decode::<ClientMessage>(&third).unwrap(),
+            ClientMessage::CancelObservation {
+                handle: Handle {
+                    id: 2,
+                    generation: 1
+                }
+            }
+        ));
         assert!(decoder.next().is_none());
     }
 
@@ -216,7 +275,15 @@ mod tests {
     #[test]
     fn an_oversized_message_is_refused_by_the_writer() {
         let payload = "x".repeat(4096);
-        match encode_within(&ClientMessage::CancelObservation { handle: Handle { id: 1, generation: 1 } }, 8) {
+        match encode_within(
+            &ClientMessage::CancelObservation {
+                handle: Handle {
+                    id: 1,
+                    generation: 1,
+                },
+            },
+            8,
+        ) {
             Err(FrameError::TooLarge(_, 8)) => {}
             other => panic!("expected a refusal, got {other:?}"),
         }

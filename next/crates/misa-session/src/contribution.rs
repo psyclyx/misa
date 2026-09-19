@@ -35,39 +35,106 @@ use crate::views;
 pub const PATCH_KIND: &str = "plugin.patch";
 
 fn stage(before: &Value, outcome: &mut misa_reframe::Outcome) -> Result<bool, Fault> {
-    let journal = |effect: &Effect| effect.kind == "kernel.log.append" && effect.get("kind").and_then(Value::as_str) == Some(PATCH_KIND);
-    let records: Vec<_> = outcome.effects.iter().filter(|effect| journal(effect)).collect();
-    let session = before.get("session").ok_or_else(|| Fault::new("composition.state", "Missing session state"))?;
-    let candidate = outcome.changes.last().map(|change| &change.after).unwrap_or(before);
+    let journal = |effect: &Effect| {
+        effect.kind == "kernel.log.append"
+            && effect.get("kind").and_then(Value::as_str) == Some(PATCH_KIND)
+    };
+    let records: Vec<_> = outcome
+        .effects
+        .iter()
+        .filter(|effect| journal(effect))
+        .collect();
+    let session = before
+        .get("session")
+        .ok_or_else(|| Fault::new("composition.state", "Missing session state"))?;
+    let candidate = outcome
+        .changes
+        .last()
+        .map(|change| &change.after)
+        .unwrap_or(before);
     let command = crate::command_operations::staged(candidate);
-    if records.is_empty() && command.is_none() { return Ok(false); }
-    if command.is_some() && outcome.effects.iter().any(|effect| !journal(effect) && effect.kind != "wire.event") {
-        return Err(Fault::new("command.effects", "Transaction commands cannot start external effects; install an operation-aware command handler"));
+    if records.is_empty() && command.is_none() {
+        return Ok(false);
     }
-    if candidate.get("session").and_then(|session| session.get("plugin_write")).is_some_and(|value| !matches!(value, Value::Null)) {
-        return Err(Fault::new("composition.busy", "A contributed state transaction is awaiting journal acknowledgement"));
+    if command.is_some()
+        && outcome
+            .effects
+            .iter()
+            .any(|effect| !journal(effect) && effect.kind != "wire.event")
+    {
+        return Err(Fault::new(
+            "command.effects",
+            "Transaction commands cannot start external effects; install an operation-aware command handler",
+        ));
     }
-    let conversation = records.first().and_then(|effect| effect.get("conversation")).cloned().unwrap_or_else(|| session.get("conversation").cloned().unwrap_or(Value::Null));
-    if records.iter().any(|effect| effect.get("conversation") != Some(&conversation)) {
-        return Err(Fault::new("composition.transaction", "One transaction cannot journal plugin state into different conversations"));
+    if candidate
+        .get("session")
+        .and_then(|session| session.get("plugin_write"))
+        .is_some_and(|value| !matches!(value, Value::Null))
+    {
+        return Err(Fault::new(
+            "composition.busy",
+            "A contributed state transaction is awaiting journal acknowledgement",
+        ));
+    }
+    let conversation = records
+        .first()
+        .and_then(|effect| effect.get("conversation"))
+        .cloned()
+        .unwrap_or_else(|| session.get("conversation").cloned().unwrap_or(Value::Null));
+    if records
+        .iter()
+        .any(|effect| effect.get("conversation") != Some(&conversation))
+    {
+        return Err(Fault::new(
+            "composition.transaction",
+            "One transaction cannot journal plugin state into different conversations",
+        ));
     }
     let mut patches = Vec::new();
     for effect in records {
-        let data = effect.get("data").ok_or_else(|| Fault::new("composition.transaction", "Missing patch record"))?;
-        if let Some(group) = data.get("patches").and_then(Value::as_list) { patches.extend_from_slice(group); }
-        else { patches.push(data.clone()); }
+        let data = effect
+            .get("data")
+            .ok_or_else(|| Fault::new("composition.transaction", "Missing patch record"))?;
+        if let Some(group) = data.get("patches").and_then(Value::as_list) {
+            patches.extend_from_slice(group);
+        } else {
+            patches.push(data.clone());
+        }
     }
-    let sequence = session.get("plugin_sequence").and_then(Value::as_i64).unwrap_or(0).checked_add(1)
-        .ok_or_else(|| Fault::new("composition.transaction", "Plugin transaction sequence exhausted"))?;
+    let sequence = session
+        .get("plugin_sequence")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| {
+            Fault::new(
+                "composition.transaction",
+                "Plugin transaction sequence exhausted",
+            )
+        })?;
     let mut data = if patches.len() == 1 {
         let mut fields = patches[0].as_map().cloned().unwrap_or_default();
         fields.insert("write".into(), Value::Int(sequence));
         Value::Map(Arc::new(fields))
-    } else { Value::map([("write", Value::Int(sequence)), ("patches", Value::list(patches))]) };
-    if let Some(command) = &command { data = crate::command_operations::add_completion(data, command); }
+    } else {
+        Value::map([
+            ("write", Value::Int(sequence)),
+            ("patches", Value::list(patches)),
+        ])
+    };
+    if let Some(command) = &command {
+        data = crate::command_operations::add_completion(data, command);
+    }
     outcome.effects.retain(|effect| !journal(effect));
-    outcome.effects.push(Effect::new("kernel.log.append").with("conversation", conversation).with("kind", Value::str(PATCH_KIND)).with("data", data.clone()));
-    let deferred: std::collections::BTreeSet<_> = std::mem::take(&mut outcome.deferred).into_iter().collect();
+    outcome.effects.push(
+        Effect::new("kernel.log.append")
+            .with("conversation", conversation)
+            .with("kind", Value::str(PATCH_KIND))
+            .with("data", data.clone()),
+    );
+    let deferred: std::collections::BTreeSet<_> =
+        std::mem::take(&mut outcome.deferred).into_iter().collect();
     for (change_index, change) in outcome.changes.iter_mut().enumerate() {
         let mut patch_index = 0;
         change.patches.retain(|_| {
@@ -76,10 +143,22 @@ fn stage(before: &Value, outcome: &mut misa_reframe::Outcome) -> Result<bool, Fa
             retain
         });
     }
-    let change = outcome.changes.last_mut().ok_or_else(|| Fault::new("composition.transaction", "A journal decision needs a state transaction"))?;
-    change.patches.push((Path::parse("session.plugin_sequence").unwrap(), Op::Set(Value::Int(sequence))));
-    change.patches.push((Path::parse("session.plugin_write").unwrap(), Op::Set(data)));
-    if command.is_some() { crate::command_operations::clear_marker(outcome); }
+    let change = outcome.changes.last_mut().ok_or_else(|| {
+        Fault::new(
+            "composition.transaction",
+            "A journal decision needs a state transaction",
+        )
+    })?;
+    change.patches.push((
+        Path::parse("session.plugin_sequence").unwrap(),
+        Op::Set(Value::Int(sequence)),
+    ));
+    change
+        .patches
+        .push((Path::parse("session.plugin_write").unwrap(), Op::Set(data)));
+    if command.is_some() {
+        crate::command_operations::clear_marker(outcome);
+    }
     Ok(true)
 }
 
@@ -107,7 +186,8 @@ impl Handler for Confined {
         // A patch with no root at all (`[0].text`) fails this too, which is right: there is no root
         // to have declared, and the database would refuse the path a moment later anyway.
         for (path, _) in &tx.patches()[before..] {
-            let declared = Op::root_of(path).is_some_and(|root| self.roots.iter().any(|declared| declared == root));
+            let declared = Op::root_of(path)
+                .is_some_and(|root| self.roots.iter().any(|declared| declared == root));
             if !declared {
                 return Err(Fault::new(
                     "composition.root",
@@ -121,14 +201,26 @@ impl Handler for Confined {
         // Collected before anything is queued: an effect is a mutable borrow and the patches are
         // being read. Every patch is in a declared root by now, so this list is the whole of what
         // the composition wrote.
-        let recorded = tx.patches()[before..].iter().map(|(path, op)| {
-            Value::map([("path", Value::str(path.to_string())), ("patch", op.to_value())])
-        }).collect::<Vec<_>>();
+        let recorded = tx.patches()[before..]
+            .iter()
+            .map(|(path, op)| {
+                Value::map([
+                    ("path", Value::str(path.to_string())),
+                    ("patch", op.to_value()),
+                ])
+            })
+            .collect::<Vec<_>>();
         if !recorded.is_empty() {
             tx.defer_patches_from(before);
-            let data = if recorded.len() == 1 { recorded[0].clone() } else { Value::map([("patches", Value::list(recorded))]) };
-            tx.fx(Effect::new("kernel.log.append").with("conversation", Value::str(&conversation))
-                .with("kind", Value::str(PATCH_KIND)).with("data", data));
+            let data = if recorded.len() == 1 {
+                recorded[0].clone()
+            } else {
+                Value::map([("patches", Value::list(recorded))])
+            };
+            tx.fx(Effect::new("kernel.log.append")
+                .with("conversation", Value::str(&conversation))
+                .with("kind", Value::str(PATCH_KIND))
+                .with("data", data));
         }
         Ok(())
     }
@@ -148,39 +240,83 @@ mod transaction_tests {
     #[test]
     fn acknowledgement_can_publish_old_writes_and_stage_new_ones() {
         let contribution = Contribution::default()
-            .with_root("counter", Value::map([("value", Value::Int(0))])).unwrap()
-            .with_handler("counter/increment", 0, Arc::new(misa_reframe::FnHandler::new("increment", |tx: &mut Tx<'_>, _: &Event| {
-                tx.set("counter.value", Value::Int(tx.int("counter.value") + 1))
-            })))
-            .with_handler("kernel/log.appended", 100, Arc::new(misa_reframe::FnHandler::new("after-ack", |tx: &mut Tx<'_>, event: &Event| {
-                if event.get("kind").and_then(Value::as_str) == Some(PATCH_KIND)
-                    && event.get("data").and_then(|data| data.get("write")).and_then(Value::as_i64) == Some(1) {
-                    tx.set("counter.value", Value::Int(tx.int("counter.value") + 1))?;
-                }
-                Ok(())
-            })));
-        let mut owner = misa_reframe::Loop::new(Arc::new(contribution.registry(crate::agent::registry())), Arc::new(crate::AcceptedEffects), contribution.initial_state("test", "scripted", "model", 0));
+            .with_root("counter", Value::map([("value", Value::Int(0))]))
+            .unwrap()
+            .with_handler(
+                "counter/increment",
+                0,
+                Arc::new(misa_reframe::FnHandler::new(
+                    "increment",
+                    |tx: &mut Tx<'_>, _: &Event| {
+                        tx.set("counter.value", Value::Int(tx.int("counter.value") + 1))
+                    },
+                )),
+            )
+            .with_handler(
+                "kernel/log.appended",
+                100,
+                Arc::new(misa_reframe::FnHandler::new(
+                    "after-ack",
+                    |tx: &mut Tx<'_>, event: &Event| {
+                        if event.get("kind").and_then(Value::as_str) == Some(PATCH_KIND)
+                            && event
+                                .get("data")
+                                .and_then(|data| data.get("write"))
+                                .and_then(Value::as_i64)
+                                == Some(1)
+                        {
+                            tx.set("counter.value", Value::Int(tx.int("counter.value") + 1))?;
+                        }
+                        Ok(())
+                    },
+                )),
+            );
+        let mut owner = misa_reframe::Loop::new(
+            Arc::new(contribution.registry(crate::agent::registry())),
+            Arc::new(crate::AcceptedEffects),
+            contribution.initial_state("test", "scripted", "model", 0),
+        );
         let first = owner.dispatch(Event::new("counter/increment"));
         let acknowledge = |outcome: &misa_reframe::Outcome, seq| {
-            let effect = outcome.effects.iter().find(|effect| effect.get("kind").and_then(Value::as_str) == Some(PATCH_KIND)).unwrap();
-            Event::new("kernel/log.appended").with("conversation", effect.get("conversation").unwrap().clone())
-                .with("kind", Value::str(PATCH_KIND)).with("data", effect.get("data").unwrap().clone()).with("seq", Value::Int(seq))
+            let effect = outcome
+                .effects
+                .iter()
+                .find(|effect| effect.get("kind").and_then(Value::as_str) == Some(PATCH_KIND))
+                .unwrap();
+            Event::new("kernel/log.appended")
+                .with("conversation", effect.get("conversation").unwrap().clone())
+                .with("kind", Value::str(PATCH_KIND))
+                .with("data", effect.get("data").unwrap().clone())
+                .with("seq", Value::Int(seq))
         };
         let second = owner.dispatch(acknowledge(&first, 1));
         assert!(second.committed(), "{:?}", second.as_faults());
-        assert_eq!(owner.db().get("counter").unwrap().get("value"), Some(&Value::Int(1)), "the acknowledged write must survive staging the listener's write");
+        assert_eq!(
+            owner.db().get("counter").unwrap().get("value"),
+            Some(&Value::Int(1)),
+            "the acknowledged write must survive staging the listener's write"
+        );
         let final_result = owner.dispatch(acknowledge(&second, 2));
         assert!(final_result.committed());
-        assert_eq!(owner.db().get("counter").unwrap().get("value"), Some(&Value::Int(2)));
+        assert_eq!(
+            owner.db().get("counter").unwrap().get("value"),
+            Some(&Value::Int(2))
+        );
     }
 
     #[test]
     fn journal_staging_preserves_sequential_handler_reads() {
-        let increment = |name| Arc::new(misa_reframe::FnHandler::new(name, |tx: &mut Tx<'_>, _: &Event| {
-            tx.set("counter.value", Value::Int(tx.int("counter.value") + 1))
-        })) as Arc<dyn Handler>;
+        let increment = |name| {
+            Arc::new(misa_reframe::FnHandler::new(
+                name,
+                |tx: &mut Tx<'_>, _: &Event| {
+                    tx.set("counter.value", Value::Int(tx.int("counter.value") + 1))
+                },
+            )) as Arc<dyn Handler>
+        };
         let contribution = Contribution::default()
-            .with_root("counter", Value::map([("value", Value::Int(0))])).unwrap()
+            .with_root("counter", Value::map([("value", Value::Int(0))]))
+            .unwrap()
             .with_handler("counter/increment", 0, increment("first"))
             .with_handler("counter/increment", 1, increment("second"));
         let mut owner = misa_reframe::Loop::new(
@@ -190,7 +326,11 @@ mod transaction_tests {
         );
         let result = owner.dispatch(Event::new("counter/increment"));
         assert!(result.committed(), "{:?}", result.as_faults());
-        assert_eq!(owner.db().get("counter").unwrap().get("value"), Some(&Value::Int(0)), "publication waits for durable acknowledgement");
+        assert_eq!(
+            owner.db().get("counter").unwrap().get("value"),
+            Some(&Value::Int(0)),
+            "publication waits for durable acknowledgement"
+        );
         let competing = owner.dispatch(Event::new("counter/increment"));
         assert!(!competing.committed());
         assert_eq!(competing.faults[0].code, "composition.busy");
@@ -198,32 +338,87 @@ mod transaction_tests {
         // Apply the durable decisions exactly as replay would. Handler two must
         // have read handler one's working state, even before any journal ack.
         let mut replay = contribution.initial_state("test", "scripted", "model", 0);
-        for effect in result.effects.iter().filter(|effect| effect.kind == "kernel.log.append") {
+        for effect in result
+            .effects
+            .iter()
+            .filter(|effect| effect.kind == "kernel.log.append")
+        {
             let data = effect.get("data").unwrap();
-            let records = data.get("patches").and_then(Value::as_list).map(<[Value]>::to_vec).unwrap_or_else(|| vec![data.clone()]);
+            let records = data
+                .get("patches")
+                .and_then(Value::as_list)
+                .map(<[Value]>::to_vec)
+                .unwrap_or_else(|| vec![data.clone()]);
             for record in records {
                 let (path, operation) = recorded(&record).unwrap();
                 replay = misa_value::apply_one(&replay, &path, &operation).unwrap();
             }
         }
-        assert_eq!(replay.get("counter").unwrap().get("value"), Some(&Value::Int(2)));
-        let record = result.effects.iter().find(|effect| effect.get("kind").and_then(Value::as_str) == Some(PATCH_KIND)).unwrap();
-        let ack = Event::new("kernel/log.appended").with("conversation", record.get("conversation").unwrap().clone())
-            .with("kind", Value::str(PATCH_KIND)).with("data", record.get("data").unwrap().clone()).with("seq", Value::Int(1));
+        assert_eq!(
+            replay.get("counter").unwrap().get("value"),
+            Some(&Value::Int(2))
+        );
+        let record = result
+            .effects
+            .iter()
+            .find(|effect| effect.get("kind").and_then(Value::as_str) == Some(PATCH_KIND))
+            .unwrap();
+        let ack = Event::new("kernel/log.appended")
+            .with("conversation", record.get("conversation").unwrap().clone())
+            .with("kind", Value::str(PATCH_KIND))
+            .with("data", record.get("data").unwrap().clone())
+            .with("seq", Value::Int(1));
         assert!(owner.dispatch(ack.clone()).committed());
-        assert_eq!(owner.db().get("counter").unwrap().get("value"), Some(&Value::Int(2)));
+        assert_eq!(
+            owner.db().get("counter").unwrap().get("value"),
+            Some(&Value::Int(2))
+        );
         assert!(owner.dispatch(ack).committed());
-        assert_eq!(owner.db().get("counter").unwrap().get("value"), Some(&Value::Int(2)), "duplicate acknowledgement cannot apply twice");
+        assert_eq!(
+            owner.db().get("counter").unwrap().get("value"),
+            Some(&Value::Int(2)),
+            "duplicate acknowledgement cannot apply twice"
+        );
         let next = owner.dispatch(Event::new("counter/increment"));
         assert!(next.committed());
-        let next_record = next.effects.iter().find(|effect| effect.get("kind").and_then(Value::as_str) == Some(PATCH_KIND)).unwrap();
-        let failure = |data| Event::new("kernel/log.failed").with("conversation", next_record.get("conversation").unwrap().clone())
-            .with("kind", Value::str(PATCH_KIND)).with("data", data).with("message", Value::str("disk refused write"));
-        assert!(owner.dispatch(failure(record.get("data").unwrap().clone())).committed());
-        assert!(!owner.dispatch(Event::new("counter/increment")).committed(), "old failure cannot release a newer decision");
-        assert!(owner.dispatch(failure(next_record.get("data").unwrap().clone())).committed());
-        assert_eq!(owner.db().get("counter").unwrap().get("value"), Some(&Value::Int(2)), "failed persistence publishes no candidate state");
-        assert!(owner.dispatch(Event::new("counter/increment")).committed(), "exact failure releases admission");
+        let next_record = next
+            .effects
+            .iter()
+            .find(|effect| effect.get("kind").and_then(Value::as_str) == Some(PATCH_KIND))
+            .unwrap();
+        let failure = |data| {
+            Event::new("kernel/log.failed")
+                .with(
+                    "conversation",
+                    next_record.get("conversation").unwrap().clone(),
+                )
+                .with("kind", Value::str(PATCH_KIND))
+                .with("data", data)
+                .with("message", Value::str("disk refused write"))
+        };
+        assert!(
+            owner
+                .dispatch(failure(record.get("data").unwrap().clone()))
+                .committed()
+        );
+        assert!(
+            !owner.dispatch(Event::new("counter/increment")).committed(),
+            "old failure cannot release a newer decision"
+        );
+        assert!(
+            owner
+                .dispatch(failure(next_record.get("data").unwrap().clone()))
+                .committed()
+        );
+        assert_eq!(
+            owner.db().get("counter").unwrap().get("value"),
+            Some(&Value::Int(2)),
+            "failed persistence publishes no candidate state"
+        );
+        assert!(
+            owner.dispatch(Event::new("counter/increment")).committed(),
+            "exact failure releases admission"
+        );
     }
 }
 
@@ -268,15 +463,41 @@ impl std::fmt::Debug for Contribution {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Contribution")
-            .field("handlers", &self.handlers.iter().map(|(kind, priority, handler)| (kind.clone(), *priority, handler.id().to_string())).collect::<Vec<_>>())
-            .field("subscriptions", &self.subscriptions.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>())
-            .field("roots", &self.roots.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>())
+            .field(
+                "handlers",
+                &self
+                    .handlers
+                    .iter()
+                    .map(|(kind, priority, handler)| {
+                        (kind.clone(), *priority, handler.id().to_string())
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .field(
+                "subscriptions",
+                &self
+                    .subscriptions
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .field(
+                "roots",
+                &self
+                    .roots
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
 
 impl Contribution {
-    pub fn with_tool(mut self, tool:misa_proto::tool::Binding)->Self {self.tools.push(tool);self}
+    pub fn with_tool(mut self, tool: misa_proto::tool::Binding) -> Self {
+        self.tools.push(tool);
+        self
+    }
     pub fn with_binding(mut self, binding: misa_proto::invocation::Binding) -> Self {
         self.bindings.push(binding);
         self
@@ -285,7 +506,10 @@ impl Contribution {
         self.commands.push(command);
         self
     }
-    pub fn with_presentation(mut self, presentation: misa_proto::presentation::Presentation) -> Self {
+    pub fn with_presentation(
+        mut self,
+        presentation: misa_proto::presentation::Presentation,
+    ) -> Self {
         self.presentations.push(presentation);
         self
     }
@@ -293,12 +517,19 @@ impl Contribution {
         self.query_exports.push(definition);
         self
     }
-    pub fn with_indicator(mut self, indicator: crate::indicators::Indicator) -> Result<Self, misa_proto::Fault> {
+    pub fn with_indicator(
+        mut self,
+        indicator: crate::indicators::Indicator,
+    ) -> Result<Self, misa_proto::Fault> {
         let mut catalog = crate::indicators::builtins();
         for entry in &self.indicators {
-            catalog.register(entry.clone()).map_err(|message| misa_proto::Fault::new("composition.indicator", message))?;
+            catalog
+                .register(entry.clone())
+                .map_err(|message| misa_proto::Fault::new("composition.indicator", message))?;
         }
-        catalog.register(indicator.clone()).map_err(|message| misa_proto::Fault::new("composition.indicator", message))?;
+        catalog
+            .register(indicator.clone())
+            .map_err(|message| misa_proto::Fault::new("composition.indicator", message))?;
         self.indicators.push(indicator);
         Ok(self)
     }
@@ -317,7 +548,11 @@ impl Contribution {
         self
     }
 
-    pub fn with_subscription(mut self, name: impl Into<String>, subscription: Subscription) -> Contribution {
+    pub fn with_subscription(
+        mut self,
+        name: impl Into<String>,
+        subscription: Subscription,
+    ) -> Contribution {
         self.subscriptions.push((name.into(), subscription));
         self
     }
@@ -363,7 +598,11 @@ impl Contribution {
     ///
     /// The name must be plain — a root is one top-level name, not a path — and it is
     /// [`views::Ownership::Plugin`]: not a kernel fact, and not a client's presentation.
-    pub fn with_root(mut self, name: &str, initial: Value) -> Result<Contribution, misa_proto::Fault> {
+    pub fn with_root(
+        mut self,
+        name: &str,
+        initial: Value,
+    ) -> Result<Contribution, misa_proto::Fault> {
         if name.is_empty() || name.contains(['.', '[', ']']) {
             return Err(misa_proto::Fault::argument("composition", "root", None));
         }
@@ -402,8 +641,10 @@ impl Contribution {
         for (kind, priority, handler) in &self.handlers {
             // Wrapped even when it declared no roots: "declares nothing" and "may write anything" are
             // not the same statement, and the composition that declared nothing may write nothing.
-            let handler: std::sync::Arc<dyn Handler> =
-                std::sync::Arc::new(Confined { inner: handler.clone(), roots: roots.clone() });
+            let handler: std::sync::Arc<dyn Handler> = std::sync::Arc::new(Confined {
+                inner: handler.clone(),
+                roots: roots.clone(),
+            });
             registry = registry.on(kind.clone(), *priority, handler);
         }
         for (name, subscription) in &self.subscriptions {
@@ -411,24 +652,46 @@ impl Contribution {
         }
         registry = registry.finalize(stage);
         {
-            registry = registry.on_fn("kernel/log.failed", -100, "composition.journal.failed", |tx, event| {
-                if event.get("kind").and_then(Value::as_str) != Some(PATCH_KIND)
-                    || event.get("conversation").and_then(Value::as_str) != Some(tx.text("session.conversation").as_str())
-                    || event.get("data") != tx.get("session.plugin_write") { return Ok(()); }
-                tx.set("session.plugin_write", Value::Null)?;
-                crate::command_operations::settle(tx, event.get("data").unwrap(), "failed")?;
-                let message = event.get("message").and_then(Value::as_str).unwrap_or("Plugin state could not be recorded");
-                tx.fx(Effect::new("wire.event").with("event", crate::wire::render(&crate::SessionEvent::Notice {
-                    level: crate::Level::Error, text: message.into(),
-                })));
-                Ok(())
-            });
+            registry = registry.on_fn(
+                "kernel/log.failed",
+                -100,
+                "composition.journal.failed",
+                |tx, event| {
+                    if event.get("kind").and_then(Value::as_str) != Some(PATCH_KIND)
+                        || event.get("conversation").and_then(Value::as_str)
+                            != Some(tx.text("session.conversation").as_str())
+                        || event.get("data") != tx.get("session.plugin_write")
+                    {
+                        return Ok(());
+                    }
+                    tx.set("session.plugin_write", Value::Null)?;
+                    crate::command_operations::settle(tx, event.get("data").unwrap(), "failed")?;
+                    let message = event
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Plugin state could not be recorded");
+                    tx.fx(Effect::new("wire.event").with(
+                        "event",
+                        crate::wire::render(&crate::SessionEvent::Notice {
+                            level: crate::Level::Error,
+                            text: message.into(),
+                        }),
+                    ));
+                    Ok(())
+                },
+            );
         }
         registry
     }
 
     /// The database a session starts from: the shipped state, plus these roots.
-    pub(crate) fn initial_state(&self, id: &str, provider: &str, model: &str, created_ms: i64) -> Value {
+    pub(crate) fn initial_state(
+        &self,
+        id: &str,
+        provider: &str,
+        model: &str,
+        created_ms: i64,
+    ) -> Value {
         let mut state = views::initial_state(id, provider, model, created_ms);
         if self.roots.is_empty() {
             return state;
@@ -439,13 +702,21 @@ impl Contribution {
         }
         state = Value::Map(Arc::new(fields));
         let defaults = Value::Map(Arc::new(self.roots.iter().cloned().collect()));
-        state = misa_value::apply_one(&state, &Path::parse("session.plugin_defaults").unwrap(), &Op::Set(defaults))
-            .expect("plugin defaults belong to session metadata");
+        state = misa_value::apply_one(
+            &state,
+            &Path::parse("session.plugin_defaults").unwrap(),
+            &Op::Set(defaults),
+        )
+        .expect("plugin defaults belong to session metadata");
         // The affordances a composition declared are state, because that is the only thing a
         // handler can read: `agent::on_action` consults this list to tell an action it does not
         // know from one somebody else is handling.
         if !self.actions.is_empty() {
-            let mut session = state.get("session").and_then(Value::as_map).cloned().unwrap_or_default();
+            let mut session = state
+                .get("session")
+                .and_then(Value::as_map)
+                .cloned()
+                .unwrap_or_default();
             session.insert(
                 "actions".to_string(),
                 Value::list(self.actions.iter().map(Value::str).collect::<Vec<_>>()),

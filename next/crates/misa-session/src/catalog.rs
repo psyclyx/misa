@@ -167,7 +167,11 @@ fn metadata_from_row(row: &Value) -> Option<ChoiceMetadata> {
 fn model_metadata(model: &Model) -> ChoiceMetadata {
     ChoiceMetadata {
         context_window: Some(model.context_window),
-        efforts: model.efforts.iter().map(|effort| (*effort).into()).collect(),
+        efforts: model
+            .efforts
+            .iter()
+            .map(|effort| (*effort).into())
+            .collect(),
         pricing: (model.input_micros > 0 || model.output_micros > 0).then_some(ChoicePricing {
             input_micros_per_thousand: Some(model.input_micros),
             output_micros_per_thousand: Some(model.output_micros),
@@ -185,14 +189,18 @@ fn pricing_from_row(row: &Value) -> Option<ChoicePricing> {
     let cache_read = row.get("cache_read_micros").and_then(Value::as_i64);
     let cache_write = row.get("cache_write_micros").and_then(Value::as_i64);
     let request = row.get("request_micros").and_then(Value::as_i64);
-    (input.is_some() || output.is_some() || cache_read.is_some() || cache_write.is_some() || request.is_some())
-        .then_some(ChoicePricing {
-            input_micros_per_thousand: input,
-            output_micros_per_thousand: output,
-            cache_read_micros_per_thousand: cache_read,
-            cache_write_micros_per_thousand: cache_write,
-            request_micros: request,
-        })
+    (input.is_some()
+        || output.is_some()
+        || cache_read.is_some()
+        || cache_write.is_some()
+        || request.is_some())
+    .then_some(ChoicePricing {
+        input_micros_per_thousand: input,
+        output_micros_per_thousand: output,
+        cache_read_micros_per_thousand: cache_read,
+        cache_write_micros_per_thousand: cache_write,
+        request_micros: request,
+    })
 }
 
 fn peak_from_value(value: Option<&Value>) -> Option<ChoicePeak> {
@@ -205,7 +213,10 @@ fn peak_from_value(value: Option<&Value>) -> Option<ChoicePeak> {
         .filter_map(|window| {
             let start = window.get("start_hour").and_then(Value::as_i64)?;
             let end = window.get("end_hour").and_then(Value::as_i64)?;
-            Some(ChoicePeakWindow { start_hour: start, end_hour: end })
+            Some(ChoicePeakWindow {
+                start_hour: start,
+                end_hour: end,
+            })
         })
         .collect::<Vec<_>>();
     let days = peak
@@ -222,12 +233,18 @@ fn peak_from_value(value: Option<&Value>) -> Option<ChoicePeak> {
 
 fn format_rate(rate: i64) -> String {
     let value = format!("{:.6}", rate as f64 / 1_000.0);
-    value.trim_end_matches('0').trim_end_matches('.').to_string()
+    value
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
 }
 
 fn format_money(micros: i64) -> String {
     let value = format!("{:.6}", micros as f64 / 1_000_000.0);
-    value.trim_end_matches('0').trim_end_matches('.').to_string()
+    value
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
 }
 
 fn discovered_price_detail(row: &Value) -> Option<String> {
@@ -581,16 +598,20 @@ pub fn discovered_cost_micros_at(
 }
 
 fn token_cost(tokens: i64, rate: Option<i64>, multiplier: i64) -> i64 {
-    let Some(rate) = rate else { return 0; };
-    ((tokens.max(0) as i128 * rate.max(0) as i128 * multiplier.max(0) as i128)
-        / 1_000
-        / 1_000_000)
+    let Some(rate) = rate else {
+        return 0;
+    };
+    ((tokens.max(0) as i128 * rate.max(0) as i128 * multiplier.max(0) as i128) / 1_000 / 1_000_000)
         .min(i64::MAX as i128) as i64
 }
 
 fn peak_multiplier(peak: Option<&Value>, started_ms: Option<i64>) -> i64 {
-    let Some(peak) = peak else { return 1_000_000; };
-    let Some(started_ms) = started_ms else { return 1_000_000; };
+    let Some(peak) = peak else {
+        return 1_000_000;
+    };
+    let Some(started_ms) = started_ms else {
+        return 1_000_000;
+    };
     let multiplier = peak
         .get("multiplier_ppm")
         .and_then(Value::as_i64)
@@ -603,10 +624,7 @@ fn peak_multiplier(peak: Option<&Value>, started_ms: Option<i64>) -> i64 {
     let weekday_allowed = peak
         .get("weekdays")
         .and_then(Value::as_list)
-        .is_none_or(|days| {
-            days.iter()
-                .any(|day| day.as_i64() == Some(weekday))
-        });
+        .is_none_or(|days| days.iter().any(|day| day.as_i64() == Some(weekday)));
     let in_window = peak
         .get("windows")
         .and_then(Value::as_list)
@@ -615,7 +633,9 @@ fn peak_multiplier(peak: Option<&Value>, started_ms: Option<i64>) -> i64 {
         .any(|window| {
             let start = window.get("start_hour").and_then(Value::as_i64);
             let end = window.get("end_hour").and_then(Value::as_i64);
-            let (Some(start), Some(end)) = (start, end) else { return false; };
+            let (Some(start), Some(end)) = (start, end) else {
+                return false;
+            };
             if end < start {
                 hour >= start || hour < end
             } else {
@@ -1032,7 +1052,10 @@ mod tests {
             ("id", Value::str("deepseek-flash")),
             ("label", Value::str("DeepSeek Flash")),
             ("context_window", Value::Int(64_000)),
-            ("efforts", Value::list([Value::str("low"), Value::str("high")])),
+            (
+                "efforts",
+                Value::list([Value::str("low"), Value::str("high")]),
+            ),
             ("input_micros", Value::Int(150)),
             ("output_micros", Value::Int(600)),
             ("cache_read_micros", Value::Int(3)),
@@ -1057,7 +1080,10 @@ mod tests {
         let metadata = choice.metadata.expect("model facts");
         assert_eq!(metadata.context_window, Some(64_000));
         assert_eq!(metadata.efforts, ["low", "high"]);
-        assert_eq!(metadata.pricing.unwrap().input_micros_per_thousand, Some(150));
+        assert_eq!(
+            metadata.pricing.unwrap().input_micros_per_thousand,
+            Some(150)
+        );
         let peak = metadata.peak.expect("peak schedule");
         assert_eq!(peak.multiplier_ppm, 2_000_000);
         assert_eq!(peak.weekdays, [5]);

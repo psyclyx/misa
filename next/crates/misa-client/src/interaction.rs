@@ -225,9 +225,9 @@ mod tests {
     use super::*;
     use misa_proto::{
         observation::{Scope, ScopeId},
+        preparation::{Arg, SourceKind},
         query::{Definition, ResultContract},
         schema::Schema,
-        preparation::{Arg, SourceKind},
     };
 
     fn interaction() -> Interaction {
@@ -252,7 +252,8 @@ mod tests {
                 commands: BTreeMap::from([(
                     "model.select".into(),
                     Command {
-                        preparation: Default::default(), id: "model.select".into(),
+                        preparation: Default::default(),
+                        id: "model.select".into(),
                         input: Schema::String,
                         result: Schema::Value,
                     },

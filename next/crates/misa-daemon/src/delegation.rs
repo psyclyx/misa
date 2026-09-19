@@ -1350,7 +1350,8 @@ pub fn install(mut contribution: Contribution, directory: Weak<Directory>) -> Co
         contribution = contribution
             .with_command(CommandRegistration::new(
                 Command {
-                    preparation: Default::default(), id: command.into(),
+                    preparation: Default::default(),
+                    id: command.into(),
                     input: work_input(),
                     result: Schema::Value,
                 },

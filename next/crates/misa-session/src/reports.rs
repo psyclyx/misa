@@ -24,7 +24,9 @@ impl Pending {
     }
 }
 fn busy(faults: &[Fault]) -> bool {
-    faults.iter().any(|fault| matches!(fault.code.as_str(), "composition.busy" | "admission.busy"))
+    faults
+        .iter()
+        .any(|fault| matches!(fault.code.as_str(), "composition.busy" | "admission.busy"))
 }
 fn size(value: &Value) -> usize {
     let payload = match value {

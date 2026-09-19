@@ -8,7 +8,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
-            "--ticket" | "-t" | "--daemon" | "-d" => tickets.push(arguments.next().ok_or("A daemon address or ticket is required")?),
+            "--ticket" | "-t" | "--daemon" | "-d" => tickets.push(
+                arguments
+                    .next()
+                    .ok_or("A daemon address or ticket is required")?,
+            ),
             "--listen" | "-l" => listen = arguments.next().unwrap_or(listen),
             other => return Err(format!("unknown argument `{other}`").into()),
         }

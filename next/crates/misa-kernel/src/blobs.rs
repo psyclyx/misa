@@ -50,7 +50,11 @@ pub fn check(len: usize, held: u64, adding: u64) -> Result<(), Refused> {
         return Err(Refused::TooLarge { len, max: MAX_BLOB });
     }
     if held + adding > MAX_STORE {
-        return Err(Refused::Full { held, adding, max: MAX_STORE });
+        return Err(Refused::Full {
+            held,
+            adding,
+            max: MAX_STORE,
+        });
     }
     Ok(())
 }
@@ -58,7 +62,9 @@ pub fn check(len: usize, held: u64, adding: u64) -> Result<(), Refused> {
 impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Refused::TooLarge { len, max } => write!(f, "{len} bytes is larger than the {max} byte bound"),
+            Refused::TooLarge { len, max } => {
+                write!(f, "{len} bytes is larger than the {max} byte bound")
+            }
             Refused::Full { held, adding, max } => write!(
                 f,
                 "the blob store holds {held} of {max} bytes; {adding} more would not fit"
@@ -121,9 +127,15 @@ impl Blobs {
         // actually be *added*: re-storing bytes the store already holds costs nothing and
         // is never refused for being full.
         let hash = hash_of(&bytes);
-        let adding = if self.has(&hash) { 0 } else { bytes.len() as u64 };
+        let adding = if self.has(&hash) {
+            0
+        } else {
+            bytes.len() as u64
+        };
         check(bytes.len(), self.bytes(), adding).map_err(|refused| refused.to_string())?;
-        let media = media.map(str::to_string).or_else(|| sniff(&bytes).map(str::to_string));
+        let media = media
+            .map(str::to_string)
+            .or_else(|| sniff(&bytes).map(str::to_string));
         if let Some(root) = &self.root {
             let path = root.join(format!("{hash}.bin"));
             if !path.exists() {
@@ -143,18 +155,31 @@ impl Blobs {
                 .map_err(|_| "the blob store is poisoned".to_string())?
                 .insert(hash.clone(), bytes);
         }
-        let mut index = self.index.lock().map_err(|_| "the blob index is poisoned".to_string())?;
+        let mut index = self
+            .index
+            .lock()
+            .map_err(|_| "the blob index is poisoned".to_string())?;
         index.insert(hash.clone(), (len, media.clone()));
         Ok(BlobRef { hash, len, media })
     }
 
     /// Metadata for a stored, well-formed content name. No path crosses this boundary.
     pub fn describe(&self, hash: &str) -> Option<BlobRef> {
-        if !valid_hash(hash) { return None; }
+        if !valid_hash(hash) {
+            return None;
+        }
         let len = if let Some(root) = &self.root {
-            std::fs::metadata(root.join(format!("{hash}.bin"))).ok()?.len()
-        } else { self.index.lock().ok()?.get(hash)?.0 };
-        Some(BlobRef { hash: hash.to_string(), len, media: self.media(hash) })
+            std::fs::metadata(root.join(format!("{hash}.bin")))
+                .ok()?
+                .len()
+        } else {
+            self.index.lock().ok()?.get(hash)?.0
+        };
+        Some(BlobRef {
+            hash: hash.to_string(),
+            len,
+            media: self.media(hash),
+        })
     }
 
     /// Read bytes back, from memory or from the store.
@@ -189,15 +214,26 @@ impl Blobs {
                 return Some(media.to_string());
             }
         }
-        self.index.lock().ok()?.get(hash).and_then(|(_, media)| media.clone())
+        self.index
+            .lock()
+            .ok()?
+            .get(hash)
+            .and_then(|(_, media)| media.clone())
     }
 
     pub fn has(&self, hash: &str) -> bool {
         if !valid_hash(hash) {
             return false;
         }
-        self.index.lock().map(|index| index.contains_key(hash)).unwrap_or(false)
-            || self.memory.lock().map(|memory| memory.contains_key(hash)).unwrap_or(false)
+        self.index
+            .lock()
+            .map(|index| index.contains_key(hash))
+            .unwrap_or(false)
+            || self
+                .memory
+                .lock()
+                .map(|memory| memory.contains_key(hash))
+                .unwrap_or(false)
     }
 
     /// The total size of everything held, which is what the store's own bound is about.
@@ -257,7 +293,21 @@ pub fn sniff(bytes: &[u8]) -> Option<&'static str> {
         [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
         [0xff, 0xd8, 0xff, ..] => Some("image/jpeg"),
         [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
-        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => Some("image/webp"),
         [0x25, b'P', b'D', b'F', ..] => Some("application/pdf"),
         _ => None,
     }
@@ -284,11 +334,18 @@ mod tests {
     #[test]
     fn the_media_type_comes_from_the_bytes_rather_than_from_a_caller() {
         let blobs = Blobs::in_memory();
-        assert_eq!(blobs.put(PNG, None).unwrap().media.as_deref(), Some("image/png"));
+        assert_eq!(
+            blobs.put(PNG, None).unwrap().media.as_deref(),
+            Some("image/png")
+        );
         assert_eq!(blobs.put(b"just text", None).unwrap().media, None);
         // A caller that knows better may say so.
         assert_eq!(
-            blobs.put(b"just text", Some("text/plain")).unwrap().media.as_deref(),
+            blobs
+                .put(b"just text", Some("text/plain"))
+                .unwrap()
+                .media
+                .as_deref(),
             Some("text/plain")
         );
     }
@@ -299,7 +356,10 @@ mod tests {
         blobs.put(b"x", None).unwrap();
         assert!(blobs.get("../../etc/shadow").is_none());
         assert!(!blobs.has("../../etc/shadow"));
-        assert!(blobs.get(&"A".repeat(64)).is_none(), "an uppercase hash is not one of ours");
+        assert!(
+            blobs.get(&"A".repeat(64)).is_none(),
+            "an uppercase hash is not one of ours"
+        );
         assert!(blobs.get(&"a".repeat(63)).is_none());
     }
 
@@ -312,7 +372,10 @@ mod tests {
             blobs.put(PNG, None).unwrap()
         };
         let reopened = Blobs::at(&root).unwrap();
-        assert!(reopened.has(&stored.hash), "a blob was lost across a reopen");
+        assert!(
+            reopened.has(&stored.hash),
+            "a blob was lost across a reopen"
+        );
         assert_eq!(reopened.get(&stored.hash).as_deref(), Some(PNG));
         assert_eq!(reopened.media(&stored.hash).as_deref(), Some("image/png"));
         assert!(reopened.path(&stored.hash).is_some());
@@ -348,7 +411,10 @@ mod tests {
     fn the_store_holds_the_bounds_it_says_it_does() {
         // The bounds themselves, checked as arithmetic rather than by filling a disk to
         // reach them: this is the function `put` calls.
-        assert!(matches!(check(MAX_BLOB + 1, 0, 0), Err(Refused::TooLarge { .. })));
+        assert!(matches!(
+            check(MAX_BLOB + 1, 0, 0),
+            Err(Refused::TooLarge { .. })
+        ));
         assert!(check(MAX_BLOB, 0, MAX_BLOB as u64).is_ok());
         assert!(matches!(check(1, MAX_STORE, 1), Err(Refused::Full { .. })));
         // Bytes the store already holds are not bytes it has to find room for, so a store
@@ -356,8 +422,16 @@ mod tests {
         assert!(check(1, MAX_STORE, 0).is_ok());
         // A store with a byte of room takes a one-byte blob and not a two-byte one.
         assert!(check(1, MAX_STORE - 1, 1).is_ok());
-        assert!(matches!(check(2, MAX_STORE - 1, 2), Err(Refused::Full { .. })));
-        let message = Refused::Full { held: 10, adding: 10, max: MAX_STORE }.to_string();
+        assert!(matches!(
+            check(2, MAX_STORE - 1, 2),
+            Err(Refused::Full { .. })
+        ));
+        let message = Refused::Full {
+            held: 10,
+            adding: 10,
+            max: MAX_STORE,
+        }
+        .to_string();
         assert!(message.contains("would not fit"), "{message}");
     }
 }

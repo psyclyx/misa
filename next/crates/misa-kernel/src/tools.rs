@@ -104,7 +104,10 @@ impl Tool for Echo {
 }
 
 fn arg_text(args: &Value, key: &str) -> String {
-    args.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    args.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn arg_int(args: &Value, key: &str) -> Option<i64> {
@@ -157,7 +160,10 @@ impl Tool for ReadFile {
             // A binary file is worth saying so about rather than failing on: the
             // model can then decide to use the shell instead.
             Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
-                return Ok(format!("{} is not text; read it another way", path.display()));
+                return Ok(format!(
+                    "{} is not text; read it another way",
+                    path.display()
+                ));
             }
             Err(err) => return Ok(format!("could not read {}: {err}", path.display())),
         };
@@ -197,7 +203,10 @@ impl Tool for WriteFile {
         };
         let content = arg_text(args, "content");
         if content.len() > MAX_BYTES {
-            return Ok(format!("refusing to write {} bytes; the bound is {MAX_BYTES}", content.len()));
+            return Ok(format!(
+                "refusing to write {} bytes; the bound is {MAX_BYTES}",
+                content.len()
+            ));
         }
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
@@ -206,7 +215,11 @@ impl Tool for WriteFile {
             return Ok(format!("could not create {}: {err}", parent.display()));
         }
         match tokio::fs::write(&path, content.as_bytes()).await {
-            Ok(()) => Ok(format!("wrote {} bytes to {}", content.len(), path.display())),
+            Ok(()) => Ok(format!(
+                "wrote {} bytes to {}",
+                content.len(),
+                path.display()
+            )),
             Err(err) => Ok(format!("could not write {}: {err}", path.display())),
         }
     }
@@ -277,20 +290,28 @@ pub struct Shell {
     seq: AtomicU64,
 }
 
-fn kill_group(pid:u32) {
+fn kill_group(pid: u32) {
     #[cfg(unix)]
-    if let Ok(pid)=i32::try_from(pid) {if pid>0 {
-        // The child created its own process group and has not yet been reaped.
-        unsafe {libc::kill(-pid,libc::SIGKILL);}
-    }}
+    if let Ok(pid) = i32::try_from(pid) {
+        if pid > 0 {
+            // The child created its own process group and has not yet been reaped.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
     #[cfg(not(unix))]
-    let _=pid;
+    let _ = pid;
 }
 
 impl Shell {
     /// A shell whose logs live in `dir` and whose finished commands are reported to `events`.
     pub fn at(dir: impl Into<PathBuf>, events: mpsc::UnboundedSender<KernelEvent>) -> Shell {
-        Shell { dir: dir.into(), events, seq: AtomicU64::new(0) }
+        Shell {
+            dir: dir.into(),
+            events,
+            seq: AtomicU64::new(0),
+        }
     }
 
     /// A name for one run's log: numbered, and readable enough to find in a directory.
@@ -307,21 +328,41 @@ impl Tool for Shell {
     }
 
     async fn run(&self, args: &Value) -> Result<String, String> {
-        self.run_in(args,crate::ToolContext{reports:self.events.clone(),cancelled:None}).await
+        self.run_in(
+            args,
+            crate::ToolContext {
+                reports: self.events.clone(),
+                cancelled: None,
+            },
+        )
+        .await
     }
 
-    async fn run_in(&self,args:&Value,context:crate::ToolContext)->Result<String,String> {
-        if context.cancelled.as_ref().is_some_and(|cancelled|*cancelled.borrow()) {return Err("owning session closed".into())}
+    async fn run_in(&self, args: &Value, context: crate::ToolContext) -> Result<String, String> {
+        if context
+            .cancelled
+            .as_ref()
+            .is_some_and(|cancelled| *cancelled.borrow())
+        {
+            return Err("owning session closed".into());
+        }
         let command = arg_text(args, "command");
         if command.trim().is_empty() {
             return Ok("no `command` was given".into());
         }
-        let background = args.get("background").and_then(Value::as_bool).unwrap_or(false);
+        let background = args
+            .get("background")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let wait = Duration::from_millis(
-            arg_int(args, "wait_ms").unwrap_or(DEFAULT_WAIT_MS).clamp(0, MAX_WAIT_MS) as u64,
+            arg_int(args, "wait_ms")
+                .unwrap_or(DEFAULT_WAIT_MS)
+                .clamp(0, MAX_WAIT_MS) as u64,
         );
         let deadline = Duration::from_millis(
-            arg_int(args, "timeout_ms").unwrap_or(DEFAULT_TIMEOUT_MS).clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS) as u64,
+            arg_int(args, "timeout_ms")
+                .unwrap_or(DEFAULT_TIMEOUT_MS)
+                .clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS) as u64,
         );
 
         let log = self.dir.join(format!("{}.log", self.next_name(&command)));
@@ -330,7 +371,11 @@ impl Tool for Shell {
         }
         // Appended by everyone who writes here: the command, its children, and the closing line
         // the watcher adds when it is over.
-        let file = match std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+        let file = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+        {
             Ok(file) => file,
             Err(err) => return Ok(format!("could not open {}: {err}", log.display())),
         };
@@ -341,12 +386,14 @@ impl Tool for Shell {
         // `sh -lc` explicitly, never a string handed to a shell by a library that meant to exec
         // a program. The previous system put the same translation in its tool and the same note
         // beside it: isolation belongs to the launcher, not the tool.
-        let mut process=tokio::process::Command::new("sh");
-        #[cfg(unix)] {
+        let mut process = tokio::process::Command::new("sh");
+        #[cfg(unix)]
+        {
             use std::os::unix::process::CommandExt;
             process.as_std_mut().process_group(0);
         }
-        let spawned = process.arg("-lc")
+        let spawned = process
+            .arg("-lc")
             .arg(&command)
             .stdout(std::process::Stdio::from(file))
             .stderr(std::process::Stdio::from(stderr))
@@ -369,7 +416,7 @@ impl Tool for Shell {
         let (claimed_tx, claimed_rx) = tokio::sync::oneshot::channel::<()>();
         let (status_tx, status_rx) = tokio::sync::oneshot::channel::<Outcome>();
         let events = context.reports;
-        let mut cancelled=context.cancelled;
+        let mut cancelled = context.cancelled;
         let report = log.clone();
         let named = command.clone();
         tokio::spawn(async move {
@@ -426,11 +473,16 @@ impl Tool for Shell {
                 let (tail, bytes) = tail_of(&log).await;
                 Ok(finished(&log, &outcome, bytes, &tail))
             }
-            Ok(Err(_)) => Ok("the command could not be waited for, so its status is unknown".into()),
+            Ok(Err(_)) => {
+                Ok("the command could not be waited for, so its status is unknown".into())
+            }
             Err(_) => {
                 let (tail, bytes) = tail_of(&log).await;
                 let mut out = running(
-                    &format!("still running, pid {pid}, after {}", seconds_text(wait.as_secs_f64())),
+                    &format!(
+                        "still running, pid {pid}, after {}",
+                        seconds_text(wait.as_secs_f64())
+                    ),
                     &log,
                     bytes,
                     &tail,
@@ -468,7 +520,10 @@ fn close_the_log(log: &Path, outcome: &Outcome) {
 /// How a command ended, in words.
 fn ending(outcome: &Outcome) -> String {
     match (outcome.killed, outcome.exit) {
-        (true, _) => format!("stopped at its deadline after {}", seconds_text(outcome.seconds)),
+        (true, _) => format!(
+            "stopped at its deadline after {}",
+            seconds_text(outcome.seconds)
+        ),
         (false, Some(code)) => format!("exit {code} after {}", seconds_text(outcome.seconds)),
         (false, None) => format!("ended by a signal after {}", seconds_text(outcome.seconds)),
     }
@@ -476,7 +531,12 @@ fn ending(outcome: &Outcome) -> String {
 
 /// A finished command's answer: its status, where the whole output is, and the end of it.
 fn finished(log: &Path, outcome: &Outcome, bytes: u64, tail: &str) -> String {
-    let mut out = format!("{}\nlog: {} ({})\n", ending(outcome), log.display(), bytes_text(bytes));
+    let mut out = format!(
+        "{}\nlog: {} ({})\n",
+        ending(outcome),
+        log.display(),
+        bytes_text(bytes)
+    );
     out.push_str(&tail_section(tail, bytes));
     out
 }
@@ -497,7 +557,11 @@ fn tail_section(tail: &str, bytes: u64) -> String {
         return "(the command has printed nothing yet)\n".to_string();
     }
     let mut out = if bytes > TAIL_BYTES {
-        format!("--- last {} of {} ---\n", bytes_text(TAIL_BYTES), bytes_text(bytes))
+        format!(
+            "--- last {} of {} ---\n",
+            bytes_text(TAIL_BYTES),
+            bytes_text(bytes)
+        )
     } else {
         "--- output ---\n".to_string()
     };
@@ -537,7 +601,9 @@ fn read_tail(path: &Path) -> (String, u64) {
     let text = if start == 0 {
         text
     } else {
-        text.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or(text)
+        text.split_once('\n')
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or(text)
     };
     (text, bytes)
 }
@@ -599,14 +665,16 @@ pub async fn exists(path: &Path) -> bool {
 mod tests {
     use super::*;
 
-
     struct Temp(std::path::PathBuf);
 
     impl Temp {
         async fn new(name: &str) -> Temp {
-            let path = std::env::temp_dir().join(format!("misa-tools-{name}-{}", std::process::id()));
+            let path =
+                std::env::temp_dir().join(format!("misa-tools-{name}-{}", std::process::id()));
             let _ = tokio::fs::remove_dir_all(&path).await;
-            tokio::fs::create_dir_all(&path).await.expect("a temp directory");
+            tokio::fs::create_dir_all(&path)
+                .await
+                .expect("a temp directory");
             Temp(path)
         }
     }
@@ -671,7 +739,10 @@ mod tests {
     async fn a_missing_file_is_a_result_and_not_a_failure() {
         let temp = Temp::new("missing").await;
         let read = ReadFile
-            .run(&Value::map([("path", Value::str(temp.0.join("nope").to_string_lossy()))]))
+            .run(&Value::map([(
+                "path",
+                Value::str(temp.0.join("nope").to_string_lossy()),
+            )]))
             .await
             .expect("a result, not an error");
         assert!(read.contains("could not read"), "{read}");
@@ -687,9 +758,14 @@ mod tests {
     async fn a_directory_listing_is_sorted_and_marks_directories() {
         let temp = Temp::new("listing").await;
         tokio::fs::create_dir(temp.0.join("beta")).await.unwrap();
-        tokio::fs::write(temp.0.join("alpha.txt"), b"x").await.unwrap();
+        tokio::fs::write(temp.0.join("alpha.txt"), b"x")
+            .await
+            .unwrap();
         let listing = ListDirectory
-            .run(&Value::map([("path", Value::str(temp.0.to_string_lossy()))]))
+            .run(&Value::map([(
+                "path",
+                Value::str(temp.0.to_string_lossy()),
+            )]))
             .await
             .unwrap();
         let lines: Vec<&str> = listing.lines().collect();
@@ -702,7 +778,8 @@ mod tests {
     /// through it: the answer says "still running", and the report says how it ended.
     fn shell_named(name: &str) -> (Shell, mpsc::UnboundedReceiver<KernelEvent>) {
         let (events, reports) = mpsc::unbounded_channel();
-        let dir = std::env::temp_dir().join(format!("misa-tools-shell-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("misa-tools-shell-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         (Shell::at(dir, events), reports)
     }
@@ -717,15 +794,26 @@ mod tests {
 
     /// The log a shell answer named, so a test can read what the command actually printed.
     fn log_of(answer: &str) -> PathBuf {
-        let line = answer.lines().find(|line| line.starts_with("log: ")).expect("a log line");
-        PathBuf::from(line.trim_start_matches("log: ").split(" (").next().expect("a path"))
+        let line = answer
+            .lines()
+            .find(|line| line.starts_with("log: "))
+            .expect("a log line");
+        PathBuf::from(
+            line.trim_start_matches("log: ")
+                .split(" (")
+                .next()
+                .expect("a path"),
+        )
     }
 
     #[tokio::test]
     async fn a_shell_command_reports_its_status_its_output_and_where_the_output_is() {
         let (shell, _reports) = shell_named("finished");
         let result = shell
-            .run(&Value::map([("command", Value::str("echo hello; echo oops >&2"))]))
+            .run(&Value::map([(
+                "command",
+                Value::str("echo hello; echo oops >&2"),
+            )]))
             .await
             .expect("a result");
         assert!(result.contains("exit 0"), "{result}");
@@ -745,7 +833,10 @@ mod tests {
         let (shell, mut reports) = shell_named("running");
         let result = shell
             .run(&Value::map([
-                ("command", Value::str("echo starting; sleep 1; echo finished")),
+                (
+                    "command",
+                    Value::str("echo starting; sleep 1; echo finished"),
+                ),
                 ("wait_ms", Value::Int(200)),
                 ("timeout_ms", Value::Int(5_000)),
             ]))
@@ -761,15 +852,27 @@ mod tests {
         // It was not killed when the call gave up waiting, which is the whole point.
         let report = report(&mut reports).await;
         match report {
-            KernelEvent::ProcessFinished { exit, killed, log: reported, command, .. } => {
+            KernelEvent::ProcessFinished {
+                exit,
+                killed,
+                log: reported,
+                command,
+                ..
+            } => {
                 assert_eq!(exit, Some(0));
-                assert!(!killed, "a command that finished on its own was reported as killed");
+                assert!(
+                    !killed,
+                    "a command that finished on its own was reported as killed"
+                );
                 assert_eq!(command, "echo starting; sleep 1; echo finished");
                 assert_eq!(PathBuf::from(reported), log);
             }
             other => panic!("a background command reported `{}`", other.kind()),
         }
-        assert!(std::fs::read_to_string(&log).unwrap().contains("finished"), "the log lost the end");
+        assert!(
+            std::fs::read_to_string(&log).unwrap().contains("finished"),
+            "the log lost the end"
+        );
     }
 
     #[tokio::test]
@@ -784,11 +887,20 @@ mod tests {
             .await
             .expect("a result");
         assert!(result.contains("started in the background"), "{result}");
-        assert!(started.elapsed() < Duration::from_millis(900), "a background call blocked");
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "a background call blocked"
+        );
         assert!(result.contains("pid "), "{result}");
 
         match report(&mut reports).await {
-            KernelEvent::ProcessFinished { exit, killed, seconds, log, .. } => {
+            KernelEvent::ProcessFinished {
+                exit,
+                killed,
+                seconds,
+                log,
+                ..
+            } => {
                 assert_eq!(exit, Some(0));
                 assert!(!killed);
                 assert!(seconds > 0.5, "the report says it took {seconds}s");
@@ -813,8 +925,16 @@ mod tests {
         assert!(result.contains("still running"), "{result}");
         let log = log_of(&result);
         match report(&mut reports).await {
-            KernelEvent::ProcessFinished { killed, exit, log: reported, .. } => {
-                assert!(killed, "a command past its deadline was not reported as stopped");
+            KernelEvent::ProcessFinished {
+                killed,
+                exit,
+                log: reported,
+                ..
+            } => {
+                assert!(
+                    killed,
+                    "a command past its deadline was not reported as stopped"
+                );
                 // A signal ends it, and `sh` reports the status of what it waited for; what
                 // matters is that the answer says it was the kernel that stopped it.
                 let _ = exit;
@@ -834,11 +954,17 @@ mod tests {
             .run(&Value::map([("command", Value::str("seq 1 40000"))]))
             .await
             .expect("a result");
-        assert!(result.contains("--- last "), "a large answer was not bounded:\n{result}");
+        assert!(
+            result.contains("--- last "),
+            "a large answer was not bounded:\n{result}"
+        );
         // The end is what an answer carries, because the end is where a failure says what went
         // wrong — and the file is named, so nothing is lost.
         assert!(result.contains("40000"), "{result}");
-        assert!(!result.contains("\n1\n"), "the answer carried the beginning it did not need");
+        assert!(
+            !result.contains("\n1\n"),
+            "the answer carried the beginning it did not need"
+        );
         let log = log_of(&result);
         let bytes = std::fs::metadata(&log).expect("the log").len();
         assert!(bytes > 200_000, "the log is only {bytes} bytes");
@@ -856,8 +982,14 @@ mod tests {
             .await
             .expect("a result");
         assert_ne!(log_of(&first), log_of(&second), "two runs shared a log");
-        assert!(log_of(&first).to_string_lossy().contains("p1-echo-one"), "{first}");
-        assert!(log_of(&second).to_string_lossy().contains("p2-echo-two"), "{second}");
+        assert!(
+            log_of(&first).to_string_lossy().contains("p1-echo-one"),
+            "{first}"
+        );
+        assert!(
+            log_of(&second).to_string_lossy().contains("p2-echo-two"),
+            "{second}"
+        );
     }
 
     #[tokio::test]
@@ -883,7 +1015,10 @@ mod tests {
             .await
             .unwrap();
         assert!(result.contains("refusing to write"), "{result}");
-        assert!(!exists(&file).await, "a refused write created the file anyway");
+        assert!(
+            !exists(&file).await,
+            "a refused write created the file anyway"
+        );
     }
 
     #[test]
@@ -892,7 +1027,9 @@ mod tests {
         for tool in shipped(&default_shell_dir(), &events) {
             assert!(!tool.name().is_empty());
             assert!(
-                tool.name().chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'),
+                tool.name()
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch == '_'),
                 "`{}` is not a name a tool schema would use",
                 tool.name()
             );

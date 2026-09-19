@@ -1252,9 +1252,9 @@ impl Kernel for Daemon {
                     return;
                 };
                 let Some(http) = self.http.clone().or_else(|| adapter.http()) else {
-                    let _ = out.send(message(
-                        format!("`{provider}` does not expose model discovery in this composition"),
-                    ));
+                    let _ = out.send(message(format!(
+                        "`{provider}` does not expose model discovery in this composition"
+                    )));
                     return;
                 };
                 // The adapter is asked rather than a table, because where a service lists its
@@ -1553,7 +1553,15 @@ impl Kernel for Daemon {
                         Ok(()) => (true, format!("stored a credential for `{slot}`")),
                         Err(message) => (false, message),
                     };
-                    report_credential(&self.credentials, &model_providers(&self.providers), id, ok, message, Some(slot), out);
+                    report_credential(
+                        &self.credentials,
+                        &model_providers(&self.providers),
+                        id,
+                        ok,
+                        message,
+                        Some(slot),
+                        out,
+                    );
                 }
                 CredentialAction::Delete { slot } => {
                     let (ok, message) = match self.credentials.delete(&slot) {
@@ -1561,7 +1569,15 @@ impl Kernel for Daemon {
                         Ok(false) => (true, format!("there was no credential for `{slot}`")),
                         Err(message) => (false, message),
                     };
-                    report_credential(&self.credentials, &model_providers(&self.providers), id, ok, message, Some(slot), out);
+                    report_credential(
+                        &self.credentials,
+                        &model_providers(&self.providers),
+                        id,
+                        ok,
+                        message,
+                        Some(slot),
+                        out,
+                    );
                 }
                 CredentialAction::DeleteAccount { slot, account } => {
                     let (ok, message) = match self.credentials.delete_account(&slot, &account) {
@@ -1572,7 +1588,15 @@ impl Kernel for Daemon {
                         ),
                         Err(message) => (false, message),
                     };
-                    report_credential(&self.credentials, &model_providers(&self.providers), id, ok, message, Some(slot), out);
+                    report_credential(
+                        &self.credentials,
+                        &model_providers(&self.providers),
+                        id,
+                        ok,
+                        message,
+                        Some(slot),
+                        out,
+                    );
                 }
                 CredentialAction::Select { slot, account } => {
                     let (ok, message) = match self.credentials.select(&slot, &account) {
@@ -1583,11 +1607,25 @@ impl Kernel for Daemon {
                         ),
                         Err(message) => (false, message),
                     };
-                    report_credential(&self.credentials, &model_providers(&self.providers), id, ok, message, Some(slot), out);
+                    report_credential(
+                        &self.credentials,
+                        &model_providers(&self.providers),
+                        id,
+                        ok,
+                        message,
+                        Some(slot),
+                        out,
+                    );
                 }
-                CredentialAction::List => {
-                    report_credential(&self.credentials, &model_providers(&self.providers), id, true, String::new(), None, out)
-                }
+                CredentialAction::List => report_credential(
+                    &self.credentials,
+                    &model_providers(&self.providers),
+                    id,
+                    true,
+                    String::new(),
+                    None,
+                    out,
+                ),
             },
             Request::BlobPut { id, bytes, media } => match self.blobs.put(&bytes, media.as_deref())
             {
