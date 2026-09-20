@@ -36,6 +36,8 @@
 //! hard-wrapped its output meant it too. Structure comes from blank lines, which is
 //! what separates one block from the next.
 
+use std::collections::BTreeMap;
+
 use misa_proto::view::{Kind, Node, Span, SpanKind};
 
 /// Parse a message body into block nodes, each role under `prefix`.
@@ -43,13 +45,15 @@ use misa_proto::view::{Kind, Node, Span, SpanKind};
 /// The result is empty when the text has nothing in it, and every node it does return
 /// passes [`misa_proto::view::validate`].
 pub fn blocks(prefix: &str, text: &str) -> Vec<Node> {
-    parse_lines(prefix, text, false).0
-}
-
-/// Parse `text` into blocks, and each block's byte start in `text`.
-fn parse_lines(prefix: &str, text: &str, partial: bool) -> (Vec<Node>, Vec<usize>) {
     let lines: Vec<&str> = text.split('\n').collect();
-    Parser { prefix, partial }.blocks_tracked(&lines)
+    let references = collect_references(&lines);
+    Parser {
+        prefix,
+        partial: false,
+        references: &references,
+    }
+    .blocks_tracked(&lines)
+    .0
 }
 
 /// A parsed Markdown document, kept so a later, longer text can reuse its prefix.
@@ -80,16 +84,40 @@ pub fn document(prefix: &str, text: &str, previous: Option<&Document>) -> Docume
             return previous.clone();
         }
         if text.starts_with(&previous.source) {
-            // Keep all but the last two blocks; `retained` is the index of the first
-            // block that must be reparsed, and where it starts is where the suffix
-            // begins. An empty `previous` reparses from the top.
-            let retained = previous.blocks.len().saturating_sub(2);
-            blocks.extend(previous.blocks[..retained].iter().cloned());
-            starts.extend(previous.starts[..retained].iter().copied());
-            from = previous.starts.get(retained).copied().unwrap_or(0);
+            // A link reference definition is document state, so a new one can change a
+            // block the prefix retained. When the appended text could define one, the
+            // prefix is not reusable and the whole document is reparsed.
+            let appended = &text[previous.source.len()..];
+            // A definition split across the append boundary (`[a` then `]: url`) is
+            // still a new definition, so a `]:` that starts the appended text counts,
+            // and extending an existing definition line changes its target.
+            let tail = previous.source.rsplit('\n').next().unwrap_or("");
+            let defines = appended.split('\n').any(is_definition_candidate)
+                || appended.starts_with("]:")
+                || (tail.trim_start().starts_with('[') && tail.contains("]:"));
+            if !defines {
+                // Keep all but the last two blocks; `retained` is the index of the first
+                // block that must be reparsed, and where it starts is where the suffix
+                // begins. An empty `previous` reparses from the top.
+                let retained = previous.blocks.len().saturating_sub(2);
+                blocks.extend(previous.blocks[..retained].iter().cloned());
+                starts.extend(previous.starts[..retained].iter().copied());
+                from = previous.starts.get(retained).copied().unwrap_or(0);
+            }
         }
     }
-    let (suffix, suffix_starts) = parse_lines(prefix, &text[from..], true);
+    // The suffix is parsed against the *whole* document's definitions, not just its
+    // own, so a reference that points at a definition in the retained prefix still
+    // resolves; the two parses are then identical.
+    let all_lines: Vec<&str> = text.split('\n').collect();
+    let references = collect_references(&all_lines);
+    let suffix_lines: Vec<&str> = text[from..].split('\n').collect();
+    let (suffix, suffix_starts) = Parser {
+        prefix,
+        partial: true,
+        references: &references,
+    }
+    .blocks_tracked(&suffix_lines);
     blocks.extend(suffix);
     starts.extend(suffix_starts.into_iter().map(|offset| from + offset));
     Document {
@@ -104,13 +132,14 @@ pub fn document(prefix: &str, text: &str, previous: Option<&Document>) -> Docume
 /// Public because a producer that already knows its blocks — a tool result, a panel's
 /// field — may want the inline rules without the block ones.
 pub fn inline(text: &str) -> Vec<Span> {
-    inline_inner(text, false)
+    inline_inner(text, false, &BTreeMap::new())
 }
 
 /// Parse inline runs, treating an unclosed opener as if it closed at the end of
 /// the text. Only the streaming path sets `partial`; a settled body requires its
-/// closers and keeps an unclosed marker literal.
-fn inline_inner(text: &str, partial: bool) -> Vec<Span> {
+/// closers and keeps an unclosed marker literal. `references` are the document's
+/// collected link definitions, so a reference link can resolve.
+fn inline_inner(text: &str, partial: bool, references: &BTreeMap<String, String>) -> Vec<Span> {
     let mut out = Vec::new();
     let mut plain = String::new();
     let mut index = 0;
@@ -129,12 +158,28 @@ fn inline_inner(text: &str, partial: bool) -> Vec<Span> {
             index += 1 + next.len_utf8();
             continue;
         }
-        if ch == '`'
-            && let Some((inner, next)) = delimited(text, index, "`")
-        {
-            flush(&mut out, &mut plain);
-            out.push(Span::code(inner));
-            index = next;
+        if ch == '`' {
+            if let Some((inner, next)) = code_span(text, index) {
+                flush(&mut out, &mut plain);
+                out.push(Span::code(inner));
+                index = next;
+                continue;
+            }
+            // A streaming parse styles the rest of an unclosed run; otherwise the
+            // whole run is literal and a shorter run inside it is not an opener.
+            if partial && let Some((inner, kind)) = presumptive(rest) {
+                flush(&mut out, &mut plain);
+                out.push(Span {
+                    text: inner.to_string(),
+                    kind,
+                });
+                break;
+            }
+            let ticks = rest.chars().take_while(|ch| *ch == '`').count();
+            for _ in 0..ticks {
+                plain.push('`');
+            }
+            index += ticks;
             continue;
         }
         if (rest.starts_with("***") || rest.starts_with("___"))
@@ -170,6 +215,17 @@ fn inline_inner(text: &str, partial: bool) -> Vec<Span> {
             index = next;
             continue;
         }
+        if rest.starts_with("==")
+            && let Some((inner, next)) = delimited(text, index, "==")
+        {
+            flush(&mut out, &mut plain);
+            out.push(Span {
+                text: inner,
+                kind: SpanKind::Highlight,
+            });
+            index = next;
+            continue;
+        }
         if (ch == '*' || ch == '_')
             && let Some((inner, next)) = delimited(text, index, &rest[..1])
         {
@@ -181,9 +237,74 @@ fn inline_inner(text: &str, partial: bool) -> Vec<Span> {
             index = next;
             continue;
         }
+        // A single `~` is subscript, but only after `~~` had its chance; the run of
+        // two is strikethrough whether or not it closed.
+        if ch == '~'
+            && !rest.starts_with("~~")
+            && let Some((inner, next)) = delimited(text, index, "~")
+        {
+            flush(&mut out, &mut plain);
+            out.push(Span {
+                text: inner,
+                kind: SpanKind::Subscript,
+            });
+            index = next;
+            continue;
+        }
+        if ch == '^'
+            && let Some((inner, next)) = delimited(text, index, "^")
+        {
+            flush(&mut out, &mut plain);
+            out.push(Span {
+                text: inner,
+                kind: SpanKind::Superscript,
+            });
+            index = next;
+            continue;
+        }
         if ch == '['
             && let Some((label, href, next)) = link(text, index)
         {
+            flush(&mut out, &mut plain);
+            out.push(Span::link(label, href));
+            index = next;
+            continue;
+        }
+        if ch == '['
+            && let Some((label, href, next)) = reference_link(text, index, references)
+        {
+            flush(&mut out, &mut plain);
+            out.push(Span::link(label, href));
+            index = next;
+            continue;
+        }
+        if ch == '<'
+            && let Some((piece, next)) = inline_html(text, index)
+        {
+            flush(&mut out, &mut plain);
+            match piece {
+                InlineHtml::Break => plain.push('\n'),
+                InlineHtml::Span { inner, kind } => out.push(Span { text: inner, kind }),
+            }
+            index = next;
+            continue;
+        }
+        if ch == '<'
+            && let Some((label, href, next)) = autolink(text, index)
+        {
+            flush(&mut out, &mut plain);
+            out.push(Span::link(label, href));
+            index = next;
+            continue;
+        }
+        if ch == ':'
+            && let Some((emoji, next)) = emoji_shortcode(text, index)
+        {
+            plain.push_str(emoji);
+            index = next;
+            continue;
+        }
+        if let Some((label, href, next)) = bare_url(text, index) {
             flush(&mut out, &mut plain);
             out.push(Span::link(label, href));
             index = next;
@@ -220,6 +341,7 @@ fn presumptive(rest: &str) -> Option<(&str, SpanKind)> {
         ("**", SpanKind::Strong),
         ("__", SpanKind::Strong),
         ("~~", SpanKind::Strikethrough),
+        ("==", SpanKind::Highlight),
     ] {
         if let Some(inner) = rest.strip_prefix(delimiter)
             && !inner.is_empty()
@@ -232,6 +354,12 @@ fn presumptive(rest: &str) -> Option<(&str, SpanKind)> {
     if (ch == '*' || ch == '_') && !inner.starts_with(char::is_whitespace) && !inner.is_empty() {
         return Some((inner, SpanKind::Emphasis));
     }
+    if ch == '~' && !rest.starts_with("~~") && !inner.is_empty() {
+        return Some((inner, SpanKind::Subscript));
+    }
+    if ch == '^' && !inner.is_empty() {
+        return Some((inner, SpanKind::Superscript));
+    }
     if ch == '`' {
         let ticks = rest.len() - rest.trim_start_matches('`').len();
         let inner = &rest[ticks..];
@@ -242,10 +370,242 @@ fn presumptive(rest: &str) -> Option<(&str, SpanKind)> {
     None
 }
 
+/// An inline code span opened by a run of backticks at `start`.
+///
+/// The closing run must be exactly as long as the opening one, so a longer run
+/// inside the span is content and a shorter one cannot close it.
+fn code_span(text: &str, start: usize) -> Option<(String, usize)> {
+    let rest = text.get(start..)?;
+    let ticks = rest.chars().take_while(|ch| *ch == '`').count();
+    if ticks == 0 {
+        return None;
+    }
+    let after = start + ticks;
+    let body = &text[after..];
+    let mut search = 0;
+    while let Some(offset) = body[search..].find('`') {
+        let at = search + offset;
+        let run = body[at..].chars().take_while(|ch| *ch == '`').count();
+        if run == ticks {
+            return Some((normalize(&body[..at]), after + at + ticks));
+        }
+        search = at + run;
+    }
+    None
+}
+
+/// A reference link: `[text][label]`, `[label][]`, or the shortcut `[label]`.
+fn reference_link(
+    text: &str,
+    start: usize,
+    references: &BTreeMap<String, String>,
+) -> Option<(String, String, usize)> {
+    let rest = text.get(start..)?;
+    let label_end = rest.find(']')?;
+    let first = &rest[1..label_end];
+    if first.is_empty() {
+        return None;
+    }
+    let after = &rest[label_end + 1..];
+    if let Some(tail) = after.strip_prefix('[') {
+        let second_end = tail.find(']')?;
+        let second = &tail[..second_end];
+        let next = start + label_end + 2 + second_end + 1;
+        let key = if second.is_empty() { first } else { second };
+        let href = references.get(&key.to_ascii_lowercase())?;
+        return Some((normalize(first), href.clone(), next));
+    }
+    let href = references.get(&first.to_ascii_lowercase())?;
+    Some((normalize(first), href.clone(), start + label_end + 1))
+}
+
+enum InlineHtml {
+    Break,
+    Span { inner: String, kind: SpanKind },
+}
+
+/// An inline HTML tag the parser understands, and the index after it.
+///
+/// Only the tags that map onto a run are recognised; anything else is raw text,
+/// which is what keeps a stray `<` in prose from eating the rest of the line.
+fn inline_html(text: &str, start: usize) -> Option<(InlineHtml, usize)> {
+    let rest = text.get(start..)?;
+    let end = rest.find('>')?;
+    let tag = rest[1..end].trim();
+    // `<br/>` and `<br />` are the same void break as `<br>`.
+    let tag = tag.strip_suffix('/').map(str::trim_end).unwrap_or(tag);
+    if tag.eq_ignore_ascii_case("br") {
+        return Some((InlineHtml::Break, start + end + 1));
+    }
+    let (name, kind) = match tag.to_ascii_lowercase().as_str() {
+        "kbd" => ("kbd", SpanKind::Kbd),
+        "mark" => ("mark", SpanKind::Highlight),
+        "u" => ("u", SpanKind::Underline),
+        "sub" => ("sub", SpanKind::Subscript),
+        "sup" => ("sup", SpanKind::Superscript),
+        _ => return None,
+    };
+    let after = start + end + 1;
+    let close = format!("</{name}>");
+    // `to_ascii_lowercase` preserves byte offsets, so the found index is valid in
+    // the original text.
+    let lower = text[after..].to_ascii_lowercase();
+    let close_at = lower.find(&close)?;
+    let inner = normalize(&text[after..after + close_at]);
+    Some((
+        InlineHtml::Span { inner, kind },
+        after + close_at + close.len(),
+    ))
+}
+
+/// An angle-bracket autolink, `<https://…>` or `<mail@example.com>`.
+fn autolink(text: &str, start: usize) -> Option<(String, String, usize)> {
+    let rest = text.get(start..)?;
+    let end = rest.find('>')?;
+    let inner = &rest[1..end];
+    if inner.is_empty() || inner.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let next = start + end + 1;
+    if is_url(inner) {
+        return Some((inner.to_string(), inner.to_string(), next));
+    }
+    if is_email(inner) {
+        return Some((inner.to_string(), format!("mailto:{inner}"), next));
+    }
+    None
+}
+
+fn is_url(value: &str) -> bool {
+    value.starts_with("http://") || value.starts_with("https://")
+}
+
+fn is_email(value: &str) -> bool {
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '@' | '.' | '_' | '-' | '+' | '%'))
+}
+
+/// An emoji shortcode `:name:` at `start`, and the index after it.
+fn emoji_shortcode(text: &str, start: usize) -> Option<(&'static str, usize)> {
+    let rest = text.get(start + 1..)?;
+    let end = rest.find(':')?;
+    if end == 0 || end > 64 {
+        return None;
+    }
+    let name = &rest[..end];
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '+'))
+    {
+        return None;
+    }
+    let value = emoji(name)?;
+    Some((value, start + 1 + end + 1))
+}
+
+/// The small builtin emoji table. An unknown name is not an emoji.
+fn emoji(name: &str) -> Option<&'static str> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "smile" => "😄",
+        "smiley" => "😃",
+        "laughing" | "satisfied" => "😆",
+        "joy" => "😂",
+        "sob" => "😭",
+        "thinking" => "🤔",
+        "heart" => "❤️",
+        "heart_eyes" => "😍",
+        "thumbsup" | "+1" => "👍",
+        "thumbsdown" | "-1" => "👎",
+        "rocket" => "🚀",
+        "warning" => "⚠️",
+        "checkered_flag" => "🏁",
+        "tada" => "🎉",
+        "fire" => "🔥",
+        "star" => "⭐",
+        "eyes" => "👀",
+        "ok_hand" => "👌",
+        "clap" => "👏",
+        "bulb" => "💡",
+        "zap" => "⚡",
+        "bug" => "🐛",
+        "white_check_mark" | "heavy_check_mark" => "✅",
+        "x" => "❌",
+        "sparkles" => "✨",
+        "wave" => "👋",
+        "pray" => "🙏",
+        "hundred" => "💯",
+        "lock" => "🔒",
+        "key" => "🔑",
+        "coffee" => "☕",
+        "sunglasses" => "😎",
+        "robot" => "🤖",
+        "skull" => "💀",
+        "ghost" => "👻",
+        "trophy" => "🏆",
+        "dart" => "🎯",
+        "book" => "📖",
+        "memo" => "📝",
+        "pushpin" => "📌",
+        "link" => "🔗",
+        "mag" => "🔍",
+        "bell" => "🔔",
+        "calendar" => "📅",
+        "clock" => "🕐",
+        "hourglass" => "⏳",
+        "gear" => "⚙️",
+        "wrench" => "🔧",
+        "shield" => "🛡️",
+        "package" => "📦",
+        "mail" => "📧",
+        "computer" => "💻",
+        _ => return None,
+    })
+}
+
+/// A bare URL in running text: `https://…`, stopping at whitespace.
+///
+/// A trailing `.`, `,`, `;`, or `)` is punctuation around the URL, not part of it.
+fn bare_url(text: &str, start: usize) -> Option<(String, String, usize)> {
+    let rest = text.get(start..)?;
+    if !is_url(rest) {
+        return None;
+    }
+    if start > 0 {
+        let previous = text[..start].chars().next_back()?;
+        if previous.is_alphanumeric() {
+            return None;
+        }
+    }
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let mut url = &rest[..end];
+    while let Some(last) = url.chars().next_back() {
+        if matches!(last, '.' | ',' | ';' | ')') {
+            url = &url[..url.len() - last.len_utf8()];
+        } else {
+            break;
+        }
+    }
+    if url.len() <= 7 {
+        return None;
+    }
+    Some((url.to_string(), url.to_string(), start + url.len()))
+}
+
 struct Parser<'a> {
     prefix: &'a str,
     /// Streaming parse: an unclosed opener styles the rest of the text.
     partial: bool,
+    /// Link reference definitions collected from the whole document.
+    references: &'a BTreeMap<String, String>,
 }
 
 impl Parser<'_> {
@@ -255,7 +615,7 @@ impl Parser<'_> {
 
     /// Parse inline runs for this document's mode (settled or streaming).
     fn inline(&self, text: &str) -> Vec<Span> {
-        inline_inner(text, self.partial)
+        inline_inner(text, self.partial, self.references)
     }
 
     fn blocks(&self, lines: &[&str]) -> Vec<Node> {
@@ -283,9 +643,15 @@ impl Parser<'_> {
                 index += 1;
                 continue;
             }
+            // A link reference definition is document state, not a block; it is
+            // collected up front and skipped here.
+            if is_reference_definition(line) {
+                index += 1;
+                continue;
+            }
             let start = line_starts[index];
-            let (node, next) = if let Some(lang) = fence(line) {
-                self.code(lines, index, lang)
+            let (node, next) = if let Some(opening) = fence(line) {
+                self.code(lines, index, opening)
             } else if let Some((level, body)) = heading(line) {
                 (
                     Node::new(
@@ -312,6 +678,12 @@ impl Parser<'_> {
                 (Node::new(self.role("rule"), Kind::Rule), index + 1)
             } else if is_table(lines, index) {
                 self.table(lines, index)
+            } else if is_details(line) {
+                self.details(lines, index)
+            } else if is_html_block(line) {
+                self.html_block(lines, index)
+            } else if indent_of(line) >= 4 {
+                self.indented_code(lines, index)
             } else if quote_line(line).is_some() {
                 self.quote(lines, index)
             } else if list_marker(line).is_some() {
@@ -326,11 +698,11 @@ impl Parser<'_> {
         (out, starts)
     }
 
-    fn code(&self, lines: &[&str], start: usize, lang: Option<String>) -> (Node, usize) {
+    fn code(&self, lines: &[&str], start: usize, opening: Fence) -> (Node, usize) {
         let mut body = String::new();
         let mut index = start + 1;
         while index < lines.len() {
-            if fence(lines[index]).is_some() {
+            if is_closing_fence(lines[index], &opening) {
                 index += 1;
                 break;
             }
@@ -339,6 +711,7 @@ impl Parser<'_> {
             index += 1;
         }
         let text = body.trim_end_matches('\n').to_string();
+        let lang = opening.lang;
         // A fence that says `diff` is a diff, and the role is how that reaches a frontend:
         // the block is still `Kind::Code`, because a diff *is* code — what it needs is to be
         // laid out line by line, and the role is what says so.
@@ -364,8 +737,111 @@ impl Parser<'_> {
                 None => break,
             }
         }
+        // A GitHub alert is a quote whose first line is a marker. The role names the
+        // kind and the marker line is not part of the body; the node stays a `Quote`,
+        // so every frontend already knows how to draw one.
+        let alert = inner.first().and_then(|first| alert_kind(first));
+        if alert.is_some() {
+            inner.remove(0);
+        }
+        let role = match alert {
+            Some(kind) => self.role(&format!("alert.{kind}")),
+            None => self.role("quote"),
+        };
         (
-            Node::new(self.role("quote"), Kind::Quote).children(self.blocks(&inner)),
+            Node::new(role, Kind::Quote).children(self.blocks(&inner)),
+            index,
+        )
+    }
+
+    /// A run of lines each indented at least four columns, with the indent stripped.
+    fn indented_code(&self, lines: &[&str], start: usize) -> (Node, usize) {
+        let mut body = String::new();
+        let mut index = start;
+        while index < lines.len() {
+            let line = lines[index];
+            if line.trim().is_empty() {
+                body.push('\n');
+                index += 1;
+                continue;
+            }
+            if indent_of(line) < 4 {
+                break;
+            }
+            body.push_str(&normalize(&dedent(line, 4)));
+            body.push('\n');
+            index += 1;
+        }
+        let text = body.trim_end_matches('\n').to_string();
+        (
+            Node::new(self.role("code"), Kind::Code { lang: None, text }),
+            index,
+        )
+    }
+
+    /// A `<details>` block: a summary and the blocks it hides.
+    fn details(&self, lines: &[&str], start: usize) -> (Node, usize) {
+        let mut raw = String::new();
+        let mut index = start;
+        while index < lines.len() {
+            raw.push_str(lines[index]);
+            raw.push('\n');
+            index += 1;
+            if raw.to_ascii_lowercase().contains("</details>") {
+                break;
+            }
+        }
+        // Lowercasing the ASCII preserves byte offsets, so the found positions index
+        // the original text.
+        let lower = raw.to_ascii_lowercase();
+        let summary_open = lower.find("<summary");
+        let summary = summary_open.and_then(|open| {
+            let content_start = open + lower[open..].find('>')? + 1;
+            let content_end = content_start + lower[content_start..].find("</summary>")?;
+            Some(
+                normalize(&raw[content_start..content_end])
+                    .trim()
+                    .to_string(),
+            )
+        });
+        let body_start = if summary.is_some() {
+            let open = summary_open.expect("a found summary has an opening tag");
+            open + lower[open..].find("</summary>").expect("summary was found") + "</summary>".len()
+        } else {
+            lower.find('>').map_or(0, |gt| gt + 1)
+        };
+        let body_end = lower
+            .rfind("</details>")
+            .unwrap_or(raw.len())
+            .max(body_start);
+        let body_lines: Vec<&str> = raw[body_start..body_end].split('\n').collect();
+        let spans = summary.map_or_else(Vec::new, |summary| self.inline(&summary));
+        let children = self.blocks(&body_lines);
+        (
+            Node::new(self.role("details"), Kind::Collapsible { summary: spans })
+                .children(children),
+            index,
+        )
+    }
+
+    /// A block of raw HTML the parser has no shape for: kept as code a client can show.
+    fn html_block(&self, lines: &[&str], start: usize) -> (Node, usize) {
+        let mut body = String::new();
+        let mut index = start;
+        while index < lines.len() && !lines[index].trim().is_empty() {
+            body.push_str(&normalize(lines[index]));
+            body.push('\n');
+            index += 1;
+        }
+        let text = body.trim_end_matches('\n').to_string();
+        (
+            Node::new(
+                self.role("html"),
+                Kind::Code {
+                    lang: Some("html".into()),
+                    text,
+                },
+            ),
             index,
         )
     }
@@ -491,15 +967,167 @@ fn is_block_start(line: &str) -> bool {
     fence(line).is_some()
         || heading(line).is_some()
         || is_rule(line)
+        || is_reference_definition(line)
+        || is_details(line)
+        || is_html_block(line)
         || quote_line(line).is_some()
         || list_marker(line).is_some()
 }
 
-/// The language of a fenced code block, if this line opens or closes one.
-fn fence(line: &str) -> Option<Option<String>> {
-    let rest = line.trim_start().strip_prefix("```")?;
-    let lang = rest.trim();
-    Some((!lang.is_empty()).then(|| lang.to_string()))
+/// An opening code fence: the run that opened it, its length, and its info string.
+struct Fence {
+    marker: char,
+    len: usize,
+    lang: Option<String>,
+}
+
+/// The opening fence of a line, if it is one.
+///
+/// Both backtick and tilde fences are recognised. A backtick fence's info string
+/// may not contain a backtick, which is what keeps inline code out of the way.
+fn fence(line: &str) -> Option<Fence> {
+    let rest = line.trim_start();
+    let marker = rest.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let len = rest.chars().take_while(|ch| *ch == marker).count();
+    if len < 3 {
+        return None;
+    }
+    let info = rest[len..].trim();
+    if marker == '`' && info.contains('`') {
+        return None;
+    }
+    Some(Fence {
+        marker,
+        len,
+        lang: (!info.is_empty()).then(|| info.to_string()),
+    })
+}
+
+/// Whether a line closes `opening`: the same marker, at least as long, nothing else.
+fn is_closing_fence(line: &str, opening: &Fence) -> bool {
+    let trimmed = line.trim_start();
+    let run = trimmed
+        .chars()
+        .take_while(|ch| *ch == opening.marker)
+        .count();
+    run >= opening.len && run > 0 && trimmed[run..].trim().is_empty()
+}
+
+/// Whether a line opens a `<details>` element.
+fn is_details(line: &str) -> bool {
+    starts_with_tag(line, "details")
+}
+
+/// Whether a line opens a tag the parser has no shape for, so it is kept raw.
+///
+/// The inline tags map onto runs inside a paragraph and are deliberately excluded,
+/// and a URL or an email (`<https://…>`, `<mail@example.com>`) has a `:` or `@`
+/// where a tag would have `>` or whitespace.
+fn is_html_block(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(rest) = trimmed.strip_prefix('<') else {
+        return false;
+    };
+    if rest.starts_with('/') || rest.starts_with('!') || rest.starts_with('?') {
+        return false;
+    }
+    let name: String = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+        .collect();
+    if !name
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic())
+    {
+        return false;
+    }
+    match rest[name.len()..].chars().next() {
+        None | Some('>') | Some('/') => {}
+        Some(ch) if ch.is_whitespace() => {}
+        _ => return false,
+    }
+    !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "kbd" | "mark" | "u" | "sub" | "sup" | "br"
+    )
+}
+
+/// Whether a line opens a tag with the given name.
+fn starts_with_tag(line: &str, name: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(rest) = trimmed.strip_prefix('<') else {
+        return false;
+    };
+    let lower = rest.to_ascii_lowercase();
+    if !lower.starts_with(name) {
+        return false;
+    }
+    match lower[name.len()..].chars().next() {
+        None | Some('>') | Some('/') => true,
+        Some(ch) => ch.is_whitespace(),
+    }
+}
+
+/// The GitHub-alert kind of a blockquote's first line, if it names one.
+fn alert_kind(line: &str) -> Option<&'static str> {
+    Some(match line.trim().to_ascii_lowercase().as_str() {
+        "[!note]" => "note",
+        "[!tip]" => "tip",
+        "[!important]" => "important",
+        "[!warning]" => "warning",
+        "[!caution]" => "caution",
+        _ => return None,
+    })
+}
+
+/// A link reference definition line: `[label]: url`.
+fn reference_definition(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix('[')?;
+    let close = rest.find("]:")?;
+    let label = &rest[..close];
+    if label.is_empty() || label.contains('[') || label.contains(']') {
+        return None;
+    }
+    let raw = rest[close + 2..].trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let url = if let Some(inner) = raw.strip_prefix('<') {
+        inner.split_once('>')?.0
+    } else {
+        raw.split_whitespace().next()?
+    };
+    if url.is_empty() {
+        return None;
+    }
+    Some((label, url))
+}
+
+/// Whether a line is a link reference definition, so a block parser skips it.
+fn is_reference_definition(line: &str) -> bool {
+    reference_definition(line).is_some()
+}
+
+/// Whether a line could be a definition, for the incremental guard. Deliberately
+/// loose: a false positive costs one extra parse, a false negative is a wrong tree.
+fn is_definition_candidate(line: &str) -> bool {
+    line.trim_start().starts_with('[') && line.contains("]:")
+}
+
+/// Every link reference definition in the document, keyed by its lowercased label.
+fn collect_references(lines: &[&str]) -> BTreeMap<String, String> {
+    let mut references = BTreeMap::new();
+    for line in lines {
+        if let Some((label, url)) = reference_definition(line) {
+            references.insert(label.to_ascii_lowercase(), url.to_string());
+        }
+    }
+    references
 }
 
 /// A table separator row: every cell is dashes with optional alignment colons.
@@ -1027,6 +1655,324 @@ mod tests {
             vec![Span::plain("[x](two words)")]
         );
         assert_eq!(inline("[x]()"), vec![Span::plain("[x]()")]);
+    }
+
+    #[test]
+    fn inline_builds_highlight_subscript_and_superscript() {
+        assert_eq!(
+            inline("a ==b== c"),
+            vec![
+                Span::plain("a "),
+                Span {
+                    text: "b".into(),
+                    kind: SpanKind::Highlight,
+                },
+                Span::plain(" c"),
+            ]
+        );
+        assert_eq!(
+            inline("H~2~O"),
+            vec![
+                Span::plain("H"),
+                Span {
+                    text: "2".into(),
+                    kind: SpanKind::Subscript,
+                },
+                Span::plain("O"),
+            ]
+        );
+        assert_eq!(
+            inline("x^2^"),
+            vec![
+                Span::plain("x"),
+                Span {
+                    text: "2".into(),
+                    kind: SpanKind::Superscript,
+                },
+            ]
+        );
+        // `~~` is strikethrough; a single `~` is subscript. The doubled run wins.
+        let strike = inline("a ~~b~~ c");
+        assert!(
+            strike
+                .iter()
+                .any(|span| span.kind == SpanKind::Strikethrough && span.text == "b"),
+            "{strike:?}"
+        );
+    }
+
+    #[test]
+    fn inline_html_maps_known_tags_and_keeps_the_rest_literal() {
+        let find = |text: &str, kind: SpanKind| {
+            inline(text)
+                .into_iter()
+                .find(|span| span.kind == kind)
+                .map(|span| span.text)
+        };
+        assert_eq!(
+            find("<kbd>Ctrl</kbd>", SpanKind::Kbd).as_deref(),
+            Some("Ctrl")
+        );
+        assert_eq!(
+            find("<mark>hi</mark>", SpanKind::Highlight).as_deref(),
+            Some("hi")
+        );
+        assert_eq!(
+            find("<u>hi</u>", SpanKind::Underline).as_deref(),
+            Some("hi")
+        );
+        assert_eq!(
+            find("<sub>2</sub>", SpanKind::Subscript).as_deref(),
+            Some("2")
+        );
+        assert_eq!(
+            find("<sup>2</sup>", SpanKind::Superscript).as_deref(),
+            Some("2")
+        );
+        // `<br>` is a line break, not a run.
+        assert_eq!(text_of(&inline("a<br>b")), "a\nb");
+        assert_eq!(text_of(&inline("a<BR/>b")), "a\nb");
+        // A tag the parser has no shape for is raw text.
+        assert_eq!(
+            inline("<span>x</span>"),
+            vec![Span::plain("<span>x</span>")]
+        );
+    }
+
+    #[test]
+    fn autolinks_become_links() {
+        assert_eq!(
+            inline("<https://example.com>"),
+            vec![Span::link("https://example.com", "https://example.com")]
+        );
+        assert_eq!(
+            inline("<mail@example.com>"),
+            vec![Span::link("mail@example.com", "mailto:mail@example.com")]
+        );
+        // A bare URL links, and trailing sentence punctuation is not part of it.
+        assert_eq!(
+            inline("see https://example.com/x, then"),
+            vec![
+                Span::plain("see "),
+                Span::link("https://example.com/x", "https://example.com/x"),
+                Span::plain(", then"),
+            ]
+        );
+        assert_eq!(
+            inline("(https://example.com)"),
+            vec![
+                Span::plain("("),
+                Span::link("https://example.com", "https://example.com"),
+                Span::plain(")"),
+            ]
+        );
+        // A URL glued to a word is not a link.
+        assert_eq!(
+            inline("xhttps://example.com"),
+            vec![Span::plain("xhttps://example.com")]
+        );
+    }
+
+    #[test]
+    fn emoji_shortcodes_replace_known_names_and_leave_unknown_ones() {
+        assert_eq!(inline(":rocket:"), vec![Span::plain("🚀")]);
+        assert_eq!(text_of(&inline(":HEART:")), "❤️");
+        assert!(text_of(&inline("hi :smile:")).contains('😄'));
+        // An unknown shortcode stays literal, and a bare colon is not one.
+        assert_eq!(text_of(&inline(":nope:")), ":nope:");
+        assert_eq!(text_of(&inline("10:30")), "10:30");
+    }
+
+    #[test]
+    fn multi_backtick_code_spans() {
+        assert_eq!(
+            inline("``code with ` inside``"),
+            vec![Span::code("code with ` inside")]
+        );
+        // A shorter run inside a longer one is content.
+        assert_eq!(inline("```a `` b```"), vec![Span::code("a `` b")]);
+        // An unmatched run is literal, and a suffix of it is not a new opener.
+        assert_eq!(inline("``a`"), vec![Span::plain("``a`")]);
+    }
+
+    #[test]
+    fn an_indented_run_becomes_a_code_block() {
+        let out = parse("intro\n\n    let x = 1;\n    let y = 2;\n\nafter");
+        assert_eq!(
+            roles(&out),
+            vec![
+                "message.assistant.markdown.paragraph",
+                "message.assistant.markdown.code",
+                "message.assistant.markdown.paragraph",
+            ]
+        );
+        match &out[1].kind {
+            Kind::Code { lang, text } => {
+                assert!(lang.is_none());
+                assert_eq!(text, "let x = 1;\nlet y = 2;");
+            }
+            other => panic!("expected code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_html_block_is_kept_as_raw_code() {
+        let out = parse("<div class=\"x\">\nraw\n</div>\n\nafter");
+        assert_eq!(
+            roles(&out),
+            vec![
+                "message.assistant.markdown.html",
+                "message.assistant.markdown.paragraph",
+            ]
+        );
+        match &out[0].kind {
+            Kind::Code { lang, text } => {
+                assert_eq!(lang.as_deref(), Some("html"));
+                assert_eq!(text, "<div class=\"x\">\nraw\n</div>");
+            }
+            other => panic!("expected code, got {other:?}"),
+        }
+        // A known inline tag at the start of a line is still parsed inline.
+        let inline_tag = parse("<kbd>Ctrl</kbd>");
+        assert_eq!(
+            roles(&inline_tag),
+            vec!["message.assistant.markdown.paragraph"]
+        );
+    }
+
+    #[test]
+    fn a_github_alert_is_a_quote_with_a_role() {
+        let out = parse("> [!WARNING]\n> be careful\n> indeed");
+        assert_eq!(
+            roles(&out),
+            vec!["message.assistant.markdown.alert.warning"]
+        );
+        assert!(matches!(&out[0].kind, Kind::Quote));
+        match &out[0].children[0].kind {
+            Kind::Text { spans } => assert_eq!(text_of(spans), "be careful\nindeed"),
+            other => panic!("expected text, got {other:?}"),
+        }
+        assert_eq!(
+            roles(&parse("> [!note]\n> x")),
+            vec!["message.assistant.markdown.alert.note"]
+        );
+        // An ordinary quote keeps the plain role and its body.
+        assert_eq!(
+            roles(&parse("> hello")),
+            vec!["message.assistant.markdown.quote"]
+        );
+    }
+
+    #[test]
+    fn a_details_block_becomes_a_collapsible() {
+        let out = parse("<details>\n<summary>More</summary>\n\nhidden **text**\n\n</details>");
+        assert_eq!(roles(&out), vec!["message.assistant.markdown.details"]);
+        match &out[0].kind {
+            Kind::Collapsible { summary } => assert_eq!(text_of(summary), "More"),
+            other => panic!("expected a collapsible, got {other:?}"),
+        }
+        assert!(
+            out[0]
+                .children
+                .iter()
+                .any(|child| matches!(child.kind, Kind::Text { .. })),
+            "{:?}",
+            out[0].children
+        );
+    }
+
+    #[test]
+    fn reference_links_resolve_from_definitions_anywhere() {
+        let out = parse(
+            "See [the docs][docs] and [docs][] and [docs].\n\n[docs]: https://example.com/docs",
+        );
+        match &out[0].kind {
+            Kind::Text { spans } => {
+                let hrefs: Vec<&str> = spans
+                    .iter()
+                    .filter_map(|span| match &span.kind {
+                        SpanKind::Link { href } => Some(href.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(hrefs, vec!["https://example.com/docs"; 3]);
+            }
+            other => panic!("expected text, got {other:?}"),
+        }
+        // The definition line is not a block of its own.
+        assert_eq!(out.len(), 1, "{:?}", roles(&out));
+    }
+
+    #[test]
+    fn tilde_fences_and_longer_fences() {
+        let out = parse("~~~rust\nlet x = 1;\n~~~");
+        match &out[0].kind {
+            Kind::Code { lang, text } => {
+                assert_eq!(lang.as_deref(), Some("rust"));
+                assert_eq!(text, "let x = 1;");
+            }
+            other => panic!("expected code, got {other:?}"),
+        }
+        // A longer opening fence is not closed by a shorter run.
+        let out = parse("````\n```\nstill code\n````");
+        match &out[0].kind {
+            Kind::Code { text, .. } => assert_eq!(text, "```\nstill code"),
+            other => panic!("expected code, got {other:?}"),
+        }
+        // A backtick fence whose info string contains a backtick is not a fence.
+        assert!(matches!(
+            &parse("```a`b\nx\n```")[0].kind,
+            Kind::Text { .. }
+        ));
+    }
+
+    #[test]
+    fn an_appended_definition_reparses_the_prefix_it_changes() {
+        let previous = document("message.assistant", "[docs]\n\nbody", None);
+        // Before the definition arrives the shortcut is literal...
+        match &previous.blocks[0].kind {
+            Kind::Text { spans } => assert_eq!(spans, &vec![Span::plain("[docs]")]),
+            other => panic!("expected text, got {other:?}"),
+        }
+        // ...and once it is appended, a full parse and the incremental one agree.
+        let next = assert_incremental(
+            "[docs]\n\nbody\n\n[docs]: https://example.com/docs",
+            &previous,
+        );
+        match &next.blocks[0].kind {
+            Kind::Text { spans } => assert!(
+                spans.iter().any(|span| matches!(
+                    &span.kind,
+                    SpanKind::Link { href } if href == "https://example.com/docs"
+                )),
+                "{spans:?}"
+            ),
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extending_a_definition_line_reparses_the_retained_prefix() {
+        // Four blocks plus a trailing definition, so the shortcut in the first block
+        // sits in the retained prefix, not the reparsed suffix.
+        let previous = document(
+            "message.assistant",
+            "[docs]\n\nb1\n\nb2\n\nb3\n\n[docs]: http",
+            None,
+        );
+        // Appending to the definition changes its target without introducing a new
+        // `[label]:` line, so the guard has to notice the tail's own definition.
+        let next = assert_incremental("[docs]\n\nb1\n\nb2\n\nb3\n\n[docs]: https://x", &previous);
+        match &next.blocks[0].kind {
+            Kind::Text { spans } => assert!(
+                spans.iter().any(|span| matches!(
+                    &span.kind,
+                    SpanKind::Link { href } if href == "https://x"
+                )),
+                "{spans:?}"
+            ),
+            other => panic!("expected text, got {other:?}"),
+        }
     }
 
     #[test]

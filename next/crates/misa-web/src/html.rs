@@ -306,6 +306,11 @@ fn span_tags(kind: &SpanKind) -> (String, String) {
         SpanKind::StrongEmphasis => ("strong><em".into(), "em></strong".into()),
         SpanKind::Emphasis => ("em".into(), "em".into()),
         SpanKind::Strikethrough => ("del".into(), "del".into()),
+        SpanKind::Underline => ("u".into(), "u".into()),
+        SpanKind::Highlight => ("mark".into(), "mark".into()),
+        SpanKind::Subscript => ("sub".into(), "sub".into()),
+        SpanKind::Superscript => ("sup".into(), "sup".into()),
+        SpanKind::Kbd => ("kbd".into(), "kbd".into()),
         SpanKind::Code => ("code".into(), "code".into()),
         SpanKind::Link { href } => (format!("a href=\"{}\"", escape(href)), "a".into()),
     }

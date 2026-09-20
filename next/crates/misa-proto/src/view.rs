@@ -239,6 +239,16 @@ pub enum SpanKind {
     StrongEmphasis,
     Emphasis,
     Strikethrough,
+    /// Underline, from `<u>`.
+    Underline,
+    /// A highlighted run, from `==x==` or `<mark>`.
+    Highlight,
+    /// A lowered run, from `~x~` or `<sub>`.
+    Subscript,
+    /// A raised run, from `^x^` or `<sup>`.
+    Superscript,
+    /// A key or chord, from `<kbd>`.
+    Kbd,
     Code,
     Link {
         href: String,

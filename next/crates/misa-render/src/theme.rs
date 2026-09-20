@@ -171,6 +171,18 @@ impl ThemeOverrides {
     }
 }
 
+/// The global role a GitHub-alert quote resolves through, when `role` names one.
+///
+/// The parser prefixes every role it emits with the containing message's role
+/// (`message.assistant.markdown.alert.note`), and dotted lookup walks *prefixes*,
+/// so a theme's `markdown.alert.note` is never reached on its own. A renderer
+/// extracts the suffix here and folds it in explicitly, the same way it does for
+/// a heading level's `markdown.heading.<level>`.
+pub fn alert_role(role: &str) -> Option<&str> {
+    let index = role.find("markdown.alert.")?;
+    Some(&role[index..])
+}
+
 /// A state's name, which is how an override reaches one.
 fn state_from_name(name: &str) -> Option<State> {
     match name {
@@ -486,7 +498,21 @@ impl Theme {
         );
         set("code", Style::fg(palette.property));
         set("link", Style::fg(palette.accent).underline());
+        // Inline semantic modifiers the parser emits as span kinds. Highlight is a
+        // background so it sits over whatever foreground the containing role chose;
+        // a cell grid cannot raise or lower a run, so sub/superscript stay distinct
+        // by dimming the lowered one rather than by geometry.
+        set("highlight", Style::PLAIN.on(palette.selection));
+        set("subscript", Style::PLAIN.dim());
+        set("superscript", Style::PLAIN);
         set("quote", Style::PLAIN.dim());
+        // A GitHub alert is still a quote; its role names the kind, and these globals
+        // are what a renderer folds in for the marker and the body.
+        set("markdown.alert.note", Style::fg(palette.accent));
+        set("markdown.alert.tip", Style::fg(palette.success));
+        set("markdown.alert.important", Style::fg(palette.thinking));
+        set("markdown.alert.warning", Style::fg(palette.tool));
+        set("markdown.alert.caution", Style::fg(palette.error));
         // Markdown vocabulary. The parser emits prefixed roles
         // (`message.assistant.markdown.heading`), so a theme names these globals
         // once and every message's markdown follows; naming the fully qualified

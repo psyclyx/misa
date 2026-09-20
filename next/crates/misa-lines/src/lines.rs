@@ -360,9 +360,11 @@ impl<'a> Renderer<'a> {
                 // The marker is the medium's, not the theme's: a quote has to read as a
                 // quote in a theme that named nothing at all. A theme can still colour it
                 // through the `quote` modifier or the node's own `…quote.marker` role.
-                // The marker's cells are the block's prefix, so a quote inside a rail
-                // lands at the rail's column instead of being pushed right by an indent.
-                let marker = self.merged(style, &node.role, "marker", "quote");
+                // A GitHub alert is still this shape, so its role names the kind and the
+                // theme's global `markdown.alert.<kind>` is folded in the same way a
+                // heading level's global is.
+                let global = misa_render::alert_role(&node.role).unwrap_or("quote");
+                let marker = self.merged(style, &node.role, "marker", global);
                 let chrome = Chrome {
                     prefix: Prefix::uniform(vec![(marker, "▏ ".to_string())]),
                     padding: Padding::NONE,
@@ -839,6 +841,11 @@ impl<'a> Renderer<'a> {
                 .over(self.theme.role("italic")),
             SpanKind::Emphasis => base.over(self.theme.role("italic")),
             SpanKind::Strikethrough => base.over(self.theme.role("strikethrough")),
+            SpanKind::Underline => base.over(self.theme.role("underline")),
+            SpanKind::Highlight => base.over(self.theme.role("highlight")),
+            SpanKind::Subscript => base.over(self.theme.role("subscript")),
+            SpanKind::Superscript => base.over(self.theme.role("superscript")),
+            SpanKind::Kbd => base.over(self.theme.role("keybinding")),
             SpanKind::Code => base.over(self.theme.role("code")),
             SpanKind::Link { .. } => base.over(self.theme.role("link")),
         }
@@ -1206,7 +1213,7 @@ pub fn value_text(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use misa_proto::view::{Action, ActionOn, Field, FieldKind, State};
+    use misa_proto::view::{Action, ActionOn, Field, FieldKind, SpanKind, State};
     use misa_render::Color;
 
     fn theme() -> Theme {
@@ -1705,6 +1712,61 @@ mod tests {
         let line = &render(&heading(4), &specific, 40)[0];
         assert_eq!(line.spans[0].0.fg, Color::Rgb(9, 8, 7));
         assert!(line.spans[0].0.italic, "the level's own italic is retained");
+    }
+
+    #[test]
+    fn a_span_kind_resolves_through_its_theme_role() {
+        let theme = Theme::dark();
+        let text = |kind| {
+            Node::text(
+                "message.assistant.markdown.paragraph",
+                [Span {
+                    text: "x".into(),
+                    kind,
+                }],
+            )
+        };
+        // Highlight is a background, so it sits over whatever the role chose.
+        assert_ne!(
+            render(&text(SpanKind::Highlight), &theme, 40)[0].spans[0]
+                .0
+                .bg,
+            Color::Default
+        );
+        assert_eq!(
+            render(&text(SpanKind::Kbd), &theme, 40)[0].spans[0].0,
+            theme
+                .role("message.assistant")
+                .over(theme.role("keybinding"))
+        );
+        assert!(
+            render(&text(SpanKind::Underline), &theme, 40)[0].spans[0]
+                .0
+                .underline
+        );
+        // A cell grid cannot raise or lower a run, but the two stay distinct.
+        let sub = render(&text(SpanKind::Subscript), &theme, 40)[0].spans[0].0;
+        let sup = render(&text(SpanKind::Superscript), &theme, 40)[0].spans[0].0;
+        assert!(sub.dim);
+        assert_ne!(sub, sup);
+    }
+
+    #[test]
+    fn an_alert_quote_takes_its_kind_from_the_role() {
+        let theme = Theme::dark();
+        let node =
+            Node::new("message.assistant.markdown.alert.warning", Kind::Quote).child(Node::text(
+                "message.assistant.markdown.paragraph",
+                [Span::plain("careful")],
+            ));
+        let lines = render(&node, &theme, 40);
+        assert_eq!(lines[0].spans[0].0, theme.role("markdown.alert.warning"));
+        // An ordinary quote still dims rather than borrowing an alert colour.
+        let plain = Node::new("message.assistant.markdown.quote", Kind::Quote).child(Node::text(
+            "message.assistant.markdown.paragraph",
+            [Span::plain("q")],
+        ));
+        assert!(render(&plain, &theme, 40)[0].spans[0].0.dim);
     }
 
     #[test]

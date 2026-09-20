@@ -120,6 +120,11 @@ pub(crate) fn span_style(theme: &Theme, span: &Span, base: Style) -> Style {
         SpanKind::StrongEmphasis => base.over(theme.role("bold")).over(theme.role("italic")),
         SpanKind::Emphasis => base.over(theme.role("italic")),
         SpanKind::Strikethrough => base.over(theme.role("strikethrough")),
+        SpanKind::Underline => base.over(theme.role("underline")),
+        SpanKind::Highlight => base.over(theme.role("highlight")),
+        SpanKind::Subscript => base.over(theme.role("subscript")),
+        SpanKind::Superscript => base.over(theme.role("superscript")),
+        SpanKind::Kbd => base.over(theme.role("keybinding")),
         SpanKind::Code => base.over(theme.role("code")),
         SpanKind::Link { .. } => base.over(theme.role("link")).underline(),
     }
@@ -446,7 +451,13 @@ impl Builder<'_> {
                 self.spans(indent, spans, base);
             }
             Kind::Quote => {
-                self.prefixes.push((base.dim(), "▏ ".to_string()));
+                // An alert is still a quote; its role names the kind, and the theme's
+                // global `markdown.alert.<kind>` recolours the marker if it names one.
+                let base = match misa_render::alert_role(&node.role) {
+                    Some(role) => base.over(self.theme.role(role)),
+                    None => base.dim(),
+                };
+                self.prefixes.push((base, "▏ ".to_string()));
                 self.children(node, indent);
                 self.prefixes.pop();
             }

@@ -814,6 +814,29 @@ fn a_link_closes_as_an_anchor_and_a_combined_mark_nests() {
 }
 
 #[test]
+fn the_new_inline_span_kinds_pick_their_html_tags() {
+    use misa_proto::view::SpanKind;
+    for (kind, open, close) in [
+        (SpanKind::Highlight, "<mark>", "</mark>"),
+        (SpanKind::Underline, "<u>", "</u>"),
+        (SpanKind::Subscript, "<sub>", "</sub>"),
+        (SpanKind::Superscript, "<sup>", "</sup>"),
+        (SpanKind::Kbd, "<kbd>", "</kbd>"),
+    ] {
+        let node = Node::text(
+            "message.assistant",
+            [Span {
+                text: "x".into(),
+                kind,
+            }],
+        );
+        let html = render_scoped(&node, "");
+        assert!(html.contains(open), "{html}");
+        assert!(html.contains(close), "{html}");
+    }
+}
+
+#[test]
 fn a_task_list_renders_its_ballot_box() {
     let node = Node::new(
         "items",

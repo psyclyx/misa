@@ -69,13 +69,15 @@ pub fn wrap_spans(spans: &[Span], columns: usize) -> Vec<Vec<Span>> {
     }
     let mut out = Lines::new(columns);
     // Whitespace at the end of one run separates it from the first word of the
-    // next; that boundary is data, not padding, so it is carried across runs.
-    let mut space = false;
+    // next; that boundary is data, not padding, so it is carried across runs —
+    // together with the kind of the run it came from, so `a **bold**` does not
+    // paint the space before `bold` bold.
+    let mut pending: Option<SpanKind> = None;
     for span in spans {
-        for piece in split_pieces(&span.text, &mut space) {
+        for piece in split_pieces(&span.text, &span.kind, &mut pending) {
             match piece {
                 Piece::Break => out.break_line(),
-                Piece::Word { text, space_before } => out.word(&text, space_before, &span.kind),
+                Piece::Word { text, space } => out.word(&text, space.as_ref(), &span.kind),
             }
         }
     }
@@ -153,15 +155,22 @@ mod styled_tests {
 
 enum Piece {
     Break,
-    Word { text: String, space_before: bool },
+    Word {
+        text: String,
+        /// The kind of the whitespace that separated this word from the one before
+        /// it, when there was any. It belongs to the run the space came from.
+        space: Option<SpanKind>,
+    },
 }
 
-/// Split a run into words, remembering which had whitespace before them.
+/// Split a run into words, remembering which had whitespace before them and which
+/// run that whitespace came from.
 ///
-/// `space` is threaded in and out so that a run boundary is not a word boundary:
+/// `pending` is threaded in and out so that a run boundary is not a word boundary:
 /// `hello *world*` keeps the space between its plain and emphasised runs, and
-/// `a**b**` does not gain one.
-fn split_pieces(text: &str, space: &mut bool) -> Vec<Piece> {
+/// `a**b**` does not gain one. A space that ends a run keeps that run's kind as it
+/// crosses into the next, which is what keeps `a **bold**`'s space plain.
+fn split_pieces(text: &str, kind: &SpanKind, pending: &mut Option<SpanKind>) -> Vec<Piece> {
     let mut out = Vec::new();
     for (index, segment) in text.split('\n').enumerate() {
         if index > 0 {
@@ -171,7 +180,7 @@ fn split_pieces(text: &str, space: &mut bool) -> Vec<Piece> {
         while !rest.is_empty() {
             let trimmed = rest.trim_start_matches(char::is_whitespace);
             if trimmed.len() != rest.len() {
-                *space = true;
+                *pending = Some(kind.clone());
                 rest = trimmed;
             }
             if rest.is_empty() {
@@ -180,9 +189,8 @@ fn split_pieces(text: &str, space: &mut bool) -> Vec<Piece> {
             let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
             out.push(Piece::Word {
                 text: rest[..end].to_string(),
-                space_before: *space,
+                space: pending.take(),
             });
-            *space = false;
             rest = &rest[end..];
         }
     }
@@ -211,12 +219,14 @@ impl Lines {
         self.used = 0;
     }
 
-    fn word(&mut self, text: &str, space_before: bool, kind: &SpanKind) {
+    fn word(&mut self, text: &str, space: Option<&SpanKind>, kind: &SpanKind) {
         let size = width(text);
-        let separator = usize::from(space_before && self.used > 0);
+        let separator = usize::from(space.is_some() && self.used > 0);
         if self.used + separator + size <= self.columns {
             if separator == 1 {
-                self.push(" ", kind);
+                // The separator keeps the kind of the run it came from rather than
+                // the kind of the word that follows it.
+                self.push(" ", space.expect("a separator has a kind"));
             }
             self.push(text, kind);
             self.used += separator + size;
@@ -426,6 +436,37 @@ mod tests {
             80,
         );
         assert_eq!(text_of(&lines), vec!["abc"]);
+    }
+
+    #[test]
+    fn the_space_before_a_styled_run_keeps_the_kind_of_its_own_run() {
+        // `a **bold**` is a plain run that owns the trailing space followed by a bold
+        // run that owns none of it; the space must not be painted bold.
+        let lines = wrap_spans(
+            &[
+                plain("a "),
+                Span {
+                    text: "bold".into(),
+                    kind: SpanKind::Strong,
+                },
+            ],
+            80,
+        );
+        assert_eq!(text_of(&lines), vec!["a bold"]);
+        let bold = lines[0]
+            .iter()
+            .find(|span| span.kind == SpanKind::Strong)
+            .expect("a bold run");
+        assert_eq!(bold.text, "bold");
+        assert!(!bold.text.starts_with(' '), "{:?}", lines[0]);
+        // The space and the word it precedes are not glued into the bold run.
+        assert!(
+            lines[0]
+                .iter()
+                .any(|span| span.kind == SpanKind::Plain && span.text == "a "),
+            "{:?}",
+            lines[0]
+        );
     }
 
     #[test]
