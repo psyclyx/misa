@@ -52,6 +52,7 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = crossterm::execute!(
             std::io::stdout(),
+            event::DisableMouseCapture,
             event::DisableBracketedPaste,
             crossterm::terminal::LeaveAlternateScreen
         );
@@ -84,7 +85,8 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
     crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EnterAlternateScreen,
-        event::EnableBracketedPaste
+        event::EnableBracketedPaste,
+        event::EnableMouseCapture
     )
     .map_err(|error| error.to_string())?;
     let (sender, receiver) = mpsc::channel(64);
@@ -183,8 +185,10 @@ async fn drive_with_clipboard(
         let rendered =
             retained.frame_with(screen, staging.as_deref(), &extra_document, &extra_footer);
         // The viewport resolved a physical first row from the semantic anchor; keep
-        // `scroll` at that row so the next reader delta is relative to what was shown.
+        // `scroll` at that row so the next reader delta is relative to what was shown,
+        // and mirror back whether a scroll reached the tail and resumed following.
         screen.scroll = retained.resolved_scroll();
+        screen.follow = retained.following();
         let mut lines = rendered.lines;
         if retained.has_turn() {
             // Activity owns the working animation. The frames are registered data;
@@ -338,6 +342,21 @@ async fn drive_with_clipboard(
                     }
                 } else {
                     paste(screen, &text, &commands);
+                }
+                retained.local(screen);
+                continue;
+            }
+            Event::Mouse(mouse) => {
+                // The wheel is transcript scroll, three rows per notch, through the
+                // same handler the keyboard scroll actions use.
+                match mouse.kind {
+                    event::MouseEventKind::ScrollUp => {
+                        let _ = screen.key(crate::Key::ScrollPage(-3));
+                    }
+                    event::MouseEventKind::ScrollDown => {
+                        let _ = screen.key(crate::Key::ScrollPage(3));
+                    }
+                    _ => continue,
                 }
                 retained.local(screen);
                 continue;

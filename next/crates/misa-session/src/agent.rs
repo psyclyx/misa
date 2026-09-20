@@ -451,6 +451,8 @@ fn begin_turn(
         ("operation", operation),
         ("text", Value::str(text)),
         ("state", Value::str("done")),
+        // UTC milliseconds on the wire; the client owns local-time formatting.
+        ("at_ms", Value::Int(now_ms())),
         ("attachments", attachments),
     ]);
     tx.set("session.turn", Value::Int(turn))?;

@@ -189,7 +189,11 @@ impl Canonical {
                 ViewOp::Insert {
                     parent: "transcript".into(),
                     before: None,
-                    node: views::finish_group(group, None),
+                    node: views::finish_group(
+                        group,
+                        message.get("attempt").cloned(),
+                        Some(message),
+                    ),
                 },
                 out,
             );
@@ -197,9 +201,9 @@ impl Canonical {
         } else {
             let (id, count) = self.groups.last_mut().unwrap();
             *count += 1;
-            let (id, count) = (id.clone(), *count);
+            let id = id.clone();
             let footer = format!("{id}.footer");
-            let before = self.tree.contains(&footer).then_some(footer);
+            let before = self.tree.contains(&footer).then_some(footer.clone());
             for node in nodes {
                 self.emit(
                     ViewOp::Insert {
@@ -210,9 +214,14 @@ impl Canonical {
                     out,
                 );
             }
+            // A settled attempt replaces the opener's separator so the group keeps
+            // exactly one footer and the timing facts stay last.
             if message.get("role").and_then(Value::as_str) == Some("assistant")
                 && let Some(attempt) = message.get("attempt")
             {
+                if self.tree.contains(&footer) {
+                    self.emit(ViewOp::Remove { id: footer.clone() }, out);
+                }
                 self.emit(
                     ViewOp::Insert {
                         parent: id.clone(),
@@ -222,7 +231,6 @@ impl Canonical {
                     out,
                 );
             }
-            let _ = count;
         }
     }
 

@@ -475,6 +475,8 @@ pub fn duration(value: &Value) -> String {
 
 /// Unix milliseconds as the compact wall-clock fact used by transcript boundaries.
 /// The reference intentionally displays the instant's compact UTC clock portion.
+/// Follow-up: the session sends UTC integers and local-time rendering belongs to the
+/// client, but there is no client-side timezone facility yet, so this stays UTC for now.
 pub fn timestamp(value: &Value) -> String {
     let Some(millis) = value.as_i64() else {
         return plain(value);

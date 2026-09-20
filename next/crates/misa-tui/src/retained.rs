@@ -168,6 +168,10 @@ pub struct Retained {
     /// The first row the last frame resolved to; the event loop writes it back to
     /// `Screen::scroll` so the next delta is relative to what was shown.
     resolved_scroll: usize,
+    /// Whether the viewport is showing the tail. It mirrors `Screen::follow` and
+    /// is also set when a reader scrolls to the last page, so new output keeps
+    /// arriving in view once they catch up.
+    following: bool,
     pub work: Work,
 }
 impl Retained {
@@ -198,6 +202,7 @@ impl Retained {
             revealed_head: None,
             layout_epoch: 0,
             resolved_scroll: 0,
+            following: screen.follow,
             work: Work::default(),
         };
         out.order = out.build(view, 0, 0, screen);
@@ -550,17 +555,28 @@ impl Retained {
     /// anchoring never walks the document on the animation tick.
     fn viewport_start(&mut self, screen: &Screen, room: usize) -> usize {
         let total = self.rows.total();
+        // The last page starts here, so the final row sits on the viewport's last
+        // line. Clamping to `total - 1` would leave most of a short page blank and
+        // let the composer ride up with the transcript.
+        let bottom = total.saturating_sub(room);
         if screen.follow {
+            self.following = true;
+        }
+        let user_scrolled = self.last_intent != screen.scroll_intent;
+        if user_scrolled {
+            // A reader who scrolls to or past the last page has caught up, so
+            // following resumes and later output stays visible.
+            self.following = screen.scroll >= bottom;
+        }
+        if self.following {
             self.anchor = None;
             self.last_intent = screen.scroll_intent;
-            self.anchor_row = total.saturating_sub(room);
+            self.anchor_row = bottom;
             self.anchor_epoch = self.layout_epoch;
-            self.resolved_scroll = self.anchor_row;
-            return self.anchor_row;
+            self.resolved_scroll = bottom;
+            return bottom;
         }
-        let bottom = total.saturating_sub(1);
         let intent = screen.scroll.min(bottom);
-        let user_scrolled = self.last_intent != screen.scroll_intent;
         if user_scrolled || self.anchor.is_none() {
             self.last_intent = screen.scroll_intent;
             self.anchor = Some(self.anchor_at(intent));
@@ -600,6 +616,12 @@ impl Retained {
     /// `Screen::scroll` so scroll deltas are relative to the resolved position.
     pub fn resolved_scroll(&self) -> usize {
         self.resolved_scroll
+    }
+
+    /// Whether the viewport is showing (and staying on) the tail. The event loop
+    /// mirrors it back into `Screen::follow` so every frame agrees.
+    pub fn following(&self) -> bool {
+        self.following
     }
     fn current(&mut self, stream: Stream, screen: &Screen) {
         let id = stream.id.clone();
@@ -973,7 +995,12 @@ impl Retained {
             .min((screen.height as usize / 2).max(1))
             .min(available);
         let input = crate::chrome::composer_with_budget(screen, editor_rows);
-        let remaining = available.saturating_sub(editor_rows);
+        // One blank row separates the transcript (and its dock) from the composer.
+        // It is reserved before the transcript so the composer's rows are fixed.
+        let separator = usize::from(available > editor_rows);
+        let remaining = available
+            .saturating_sub(editor_rows)
+            .saturating_sub(separator);
         let dock = &dock[..dock.len().min(remaining.saturating_sub(1))];
         let remaining = remaining.saturating_sub(dock.len());
         let completions = screen
@@ -1026,8 +1053,12 @@ impl Retained {
         let cursor_row = top.len()
             + lines.len()
             + dock.len()
+            + separator
             + input.cursor_row.min(editor_rows.saturating_sub(1));
         lines.extend_from_slice(dock);
+        if separator > 0 {
+            lines.push(Line::default());
+        }
         lines.extend(input.lines.into_iter().take(editor_rows));
         lines.extend(completions.into_iter().take(completion_count));
         let mut frame_lines = top;
@@ -1385,6 +1416,95 @@ mod tests {
         assert!(screen.follow);
         assert_eq!(retained.viewport_start(&screen, 3), total.saturating_sub(3));
         assert!(retained.anchor.is_none());
+    }
+
+    #[test]
+    fn a_scroll_clamps_to_the_last_page_and_resumes_following_at_the_bottom() {
+        let mut screen = Screen::new(40, 12);
+        let mut retained = Retained::new(document(20), &screen);
+        let room = 4;
+        let total = retained.rows.total();
+        let bottom = total.saturating_sub(room);
+        screen.follow = false;
+        // A scroll well past the end lands on the last full page, never on
+        // `total - 1` with a nearly empty viewport.
+        screen.scroll = total + 5;
+        screen.scroll_intent = 1;
+        assert_eq!(retained.viewport_start(&screen, room), bottom);
+        assert!(
+            retained.following(),
+            "reaching the bottom must resume following"
+        );
+        // New output then tracks the tail, because following is back on.
+        retained
+            .op(
+                &ViewOp::Insert {
+                    parent: "transcript".into(),
+                    before: None,
+                    node: text("extra", "extra"),
+                },
+                &screen,
+            )
+            .unwrap();
+        retained.reindex();
+        let grown = retained.rows.total();
+        assert_eq!(
+            retained.viewport_start(&screen, room),
+            grown.saturating_sub(room)
+        );
+    }
+
+    #[test]
+    fn the_wheel_scroll_handler_clamps_at_the_ends_and_resumes_following() {
+        // The mouse wheel maps to `Key::ScrollPage`, the same handler the keyboard
+        // scroll path uses. Driving it here is driving the wheel.
+        let mut screen = Screen::new(40, 12);
+        let mut retained = Retained::new(document(20), &screen);
+        let room = 4;
+        let total = retained.rows.total();
+        let bottom = total.saturating_sub(room);
+        screen.follow = false;
+        // A wheel-up at the top cannot scroll past row zero.
+        screen.key(crate::Key::ScrollPage(-30));
+        assert_eq!(retained.viewport_start(&screen, room), 0);
+        assert!(!retained.following());
+        // Walking down to the last page resumes following.
+        loop {
+            screen.key(crate::Key::ScrollPage(3));
+            let start = retained.viewport_start(&screen, room);
+            screen.scroll = start;
+            if start == bottom {
+                break;
+            }
+        }
+        assert!(retained.following());
+        // One more notch stays clamped to the last page.
+        screen.key(crate::Key::ScrollPage(3));
+        assert_eq!(retained.viewport_start(&screen, room), bottom);
+    }
+
+    #[test]
+    fn the_composer_keeps_its_row_when_the_transcript_scrolls() {
+        let mut screen = Screen::new(40, 16);
+        screen.editor.set_text("DRAFT");
+        let mut retained = Retained::new(document(50), &screen);
+        let composer_row = |frame: &crate::chrome::Frame| {
+            frame
+                .lines
+                .iter()
+                .position(|line| line.text().contains("DRAFT"))
+                .expect("the composer")
+        };
+        let following = composer_row(&retained.frame(&screen, None));
+        // Scrolling up and then back to the tail must not move the composer: it
+        // is reserved at the bottom before the transcript gets its room.
+        screen.follow = false;
+        screen.scroll = 4;
+        screen.scroll_intent = 1;
+        assert_eq!(composer_row(&retained.frame(&screen, None)), following);
+        screen.scroll = retained.rows.total();
+        screen.scroll_intent = 2;
+        assert_eq!(composer_row(&retained.frame(&screen, None)), following);
     }
 
     #[test]
@@ -2046,9 +2166,10 @@ mod review_tests {
             &frame.lines[top.len()..top.len() + expected.len()],
             expected.as_slice()
         );
+        // The transcript, the blank separator, and then the composer.
         assert_eq!(
             frame.lines.len(),
-            expected.len() + top.len() + crate::chrome::composer(&screen).lines.len()
+            expected.len() + top.len() + 1 + crate::chrome::composer(&screen).lines.len()
         );
     }
 }

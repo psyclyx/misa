@@ -385,6 +385,9 @@ pub(crate) fn transcript(db: &Value) -> Node {
     let mut node = Node::section("transcript").id("transcript");
     let mut group: Option<Node> = None;
     let mut attempt: Option<Value> = None;
+    // The message that opened the group. Its timestamp is the footer's when the
+    // group has no attempt yet, so every group carries a separator.
+    let mut opener: Option<Value> = None;
     for message in messages.iter() {
         let nodes = message_nodes(message);
         if nodes.is_empty() {
@@ -392,8 +395,13 @@ pub(crate) fn transcript(db: &Value) -> Node {
         }
         if text_at(message, "role") == "user" || group.is_none() {
             if let Some(previous) = group.take() {
-                node.children.push(finish_group(previous, attempt.take()));
+                node.children.push(finish_group(
+                    previous,
+                    attempt.take(),
+                    opener.take().as_ref(),
+                ));
             }
+            opener = Some(message.clone());
             let id = format!(
                 "group.{}",
                 message.get("seq").and_then(Value::as_i64).unwrap_or(0)
@@ -410,7 +418,8 @@ pub(crate) fn transcript(db: &Value) -> Node {
             .extend(nodes);
     }
     if let Some(group) = group {
-        node.children.push(finish_group(group, attempt));
+        node.children
+            .push(finish_group(group, attempt, opener.as_ref()));
     }
     if node.children.is_empty() {
         node.children.push(Node::new(
@@ -447,11 +456,54 @@ pub(crate) fn message_nodes(message: &Value) -> Vec<Node> {
 }
 
 /// A message group's footer is shared semantic accounting, not an operation log.
-pub(crate) fn finish_group(mut group: Node, attempt: Option<Value>) -> Node {
-    if let Some(attempt) = attempt {
-        group.children.push(attempt_footer(&group.id, &attempt));
-    }
+///
+/// Every group carries one. An assistant attempt supplies the timing and spend;
+/// a group that only has its opening user message falls back to that message's
+/// own instant, so the transcript still has a turn boundary.
+pub(crate) fn finish_group(
+    mut group: Node,
+    attempt: Option<Value>,
+    opener: Option<&Value>,
+) -> Node {
+    let footer = match &attempt {
+        Some(attempt) => attempt_footer(&group.id, attempt),
+        None => message_footer(&group.id, opener),
+    };
+    group.children.push(footer);
     group
+}
+
+/// A message's own separator footer, used until an assistant attempt owns the
+/// group's accounting. The instant is the UTC millisecond integer the session
+/// stored; turning it into a wall clock belongs to the client.
+pub(crate) fn message_footer(group_id: &str, message: Option<&Value>) -> Node {
+    let mut footer = Node::new("message.group.footer", Kind::Rule).id(format!("{group_id}.footer"));
+    if let Some(at) = message
+        .and_then(|message| message.get("at_ms"))
+        .and_then(Value::as_i64)
+    {
+        footer.children.push(Node::new(
+            "value.timestamp",
+            Kind::Fact {
+                value: Value::Int(at),
+            },
+        ));
+    }
+    // Marginal token facts, when the log happens to carry them.
+    for key in ["input_tokens", "output_tokens"] {
+        if let Some(tokens) = message
+            .and_then(|message| message.get(key))
+            .and_then(Value::as_i64)
+        {
+            footer.children.push(Node::new(
+                "value.tokens",
+                Kind::Fact {
+                    value: Value::Int(tokens),
+                },
+            ));
+        }
+    }
+    footer
 }
 
 /// Build the settled-attempt facts independently so incremental and snapshot views
@@ -492,6 +544,12 @@ pub(crate) fn attempt_footer(group_id: &str, attempt: &Value) -> Node {
         )),
         _ => {}
     }
+    // A throughput number is only meaningful once the attempt has stopped
+    // producing tokens; a streaming rate is a guess that the next frame undoes.
+    let settled = !matches!(
+        attempt.get("status").and_then(Value::as_str),
+        Some("streaming" | "running")
+    );
     if let Some(elapsed) = attempt.get("elapsed_ms").and_then(Value::as_i64) {
         footer.children.push(Node::new(
             "value.duration",
@@ -503,7 +561,7 @@ pub(crate) fn attempt_footer(group_id: &str, attempt: &Value) -> Node {
             .get("output_tokens")
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        if elapsed > 0 && output > 0 {
+        if settled && elapsed > 0 && output > 0 {
             footer.children.push(Node::new(
                 "value.rate",
                 Kind::Fact {
@@ -995,21 +1053,15 @@ pub(crate) fn cancel(db: &Value) -> Option<Node> {
     if status == "idle" {
         return None;
     }
-    Some(
-        Node::new(
-            "turn",
-            Kind::Status {
-                text: format!("working ({status})"),
-            },
-        )
-        .id("turn")
-        .action(Action {
-            id: "turn.cancel".into(),
-            on: ActionOn::Click,
-            label: Some("Stop".into()),
-            args: Value::Null,
-        }),
-    )
+    // The activity indicator already says "working" and animates. The turn node
+    // survives only as the cancel affordance and the redraw tick's identity; a
+    // section with no text renders no redundant line.
+    Some(Node::section("turn").id("turn").action(Action {
+        id: "turn.cancel".into(),
+        on: ActionOn::Click,
+        label: Some("Stop".into()),
+        args: Value::Null,
+    }))
 }
 
 /// The blocks of a settled message body.
@@ -1326,6 +1378,66 @@ mod tests {
     }
 
     #[test]
+    fn a_user_group_carries_its_own_timestamp_separator() {
+        // A group with no assistant attempt still needs a turn boundary, and its
+        // instant is the message's own UTC millisecond value.
+        let base = state();
+        let state = misa_value::apply_one(
+            &base,
+            &misa_value::Path::parse("messages").unwrap(),
+            &misa_value::Op::Set(Value::list([Value::map([
+                ("seq", Value::Int(1)),
+                ("role", Value::str("user")),
+                ("text", Value::str("hello")),
+                ("state", Value::str("done")),
+                ("at_ms", Value::Int(1_758_067_200_000)),
+            ])])),
+        )
+        .unwrap();
+        let node = document(&state, &[]);
+        let group = &find(&node, "transcript").unwrap().children[0];
+        let footer = group.children.last().expect("a group footer");
+        assert_eq!(footer.role, "message.group.footer");
+        assert_eq!(footer.children[0].role, "value.timestamp");
+        assert_eq!(
+            footer.children[0].kind,
+            Kind::Fact {
+                value: Value::Int(1_758_067_200_000)
+            }
+        );
+    }
+
+    #[test]
+    fn a_rate_fact_is_emitted_only_once_the_attempt_is_settled() {
+        let attempt = |status| {
+            Value::map([
+                ("status", Value::str(status)),
+                ("elapsed_ms", Value::Int(2_000)),
+                ("output_tokens", Value::Int(100)),
+            ])
+        };
+        let streaming = attempt_footer("group.1", &attempt("streaming"));
+        assert!(
+            !streaming
+                .children
+                .iter()
+                .any(|child| child.role == "value.rate")
+        );
+        let settled = attempt_footer("group.1", &attempt("done"));
+        let rate = settled
+            .children
+            .iter()
+            .find(|child| child.role == "value.rate")
+            .expect("a settled rate");
+        assert_eq!(
+            rate.kind,
+            Kind::Fact {
+                value: Value::Float(50.0)
+            }
+        );
+    }
+
+    #[test]
     fn a_provider_failure_is_an_error_block_in_the_same_transcript() {
         let base = initial_state("demo", "openrouter", "stealth/union-alpha", 0);
         let state = Value::map([
@@ -1509,6 +1621,22 @@ mod tests {
     fn there_is_no_cancel_action_when_nothing_is_running() {
         let idle = document(&initial_state("demo", "p", "m", 0), &[]);
         assert!(find(&idle, "turn").is_none());
+    }
+
+    #[test]
+    fn a_running_turn_keeps_cancel_without_a_redundant_status_line() {
+        // The activity indicator already says "working"; the turn node survives
+        // only as the cancel affordance and must render no line of its own.
+        let state = misa_value::apply_one(
+            &state(),
+            &misa_value::Path::parse("session.status").unwrap(),
+            &misa_value::Op::Set(Value::str("thinking")),
+        )
+        .unwrap();
+        let node = document(&state, &[]);
+        let turn = find(&node, "turn").expect("a cancel affordance");
+        assert!(matches!(turn.kind, Kind::Section));
+        assert!(turn.actions.iter().any(|action| action.id == "turn.cancel"));
     }
 
     #[test]
