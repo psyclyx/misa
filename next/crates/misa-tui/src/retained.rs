@@ -1074,7 +1074,6 @@ impl Retained {
 
 /// Resolved presentation of one live stream at the current terminal width.
 struct Paint {
-    style: Style,
     rail: Option<(String, Style)>,
     surface: Option<Style>,
     width: usize,
@@ -1088,29 +1087,9 @@ impl Paint {
             .map_or(0, |(glyph, _)| misa_render::width(glyph));
         Self {
             surface: screen.theme.surface(role),
-            style: screen.theme.role(role),
             rail,
             width: (screen.width as usize).saturating_sub(inset).max(1),
         }
-    }
-}
-
-/// Append the word-aware rows of one segment, railed and surfaced like the block
-/// the stream will settle into.
-fn wrap_into(lines: &mut Vec<Line>, text: &str, paint: &Paint, id: &str) {
-    let spans = [misa_proto::view::Span::plain(text)];
-    for row in misa_render::wrap_spans(&spans, paint.width) {
-        let mut rendered = Vec::new();
-        if let Some((glyph, rail_style)) = &paint.rail {
-            rendered.push((*rail_style, glyph.clone()));
-        }
-        rendered.extend(row.into_iter().map(|span| (paint.style, span.text)));
-        lines.push(Line {
-            surface: paint.surface,
-            indent: 0,
-            node: Some(id.to_string()),
-            spans: rendered,
-        });
     }
 }
 
@@ -1118,14 +1097,9 @@ impl Live {
     fn append(&mut self, text: &str, screen: &Screen) {
         self.stream.text.push_str(text);
         let paint = Paint::of(screen, &self.stream.role);
-        match self.tail {
-            // A collapsed thinking stream is a window onto its own tail: only the
-            // last few rows are derived, from a bounded suffix.
-            Some(limit) => self.tail_rows(&paint, limit),
-            // Everything else is parsed as markdown and rendered through the same
-            // renderer a settled body uses, with the parser reusing unchanged blocks.
-            None => self.markdown(&paint, &screen.theme),
-        }
+        // Every live stream, collapsed thinking included, renders through the
+        // markdown path a settled body uses. The tail is a view over the result.
+        self.markdown(&paint, &screen.theme);
     }
 
     /// Parse the in-flight text as markdown and lay it out, reusing the previous
@@ -1169,6 +1143,13 @@ impl Live {
                 .collect();
             self.rendered = rendered;
             self.rendered_width = width;
+            // A collapsed thinking stream is a window onto the tail of the same
+            // lines every other stream renders. Keeping only the last rows here
+            // means the window holds no rows the viewport can scroll to.
+            if let Some(limit) = self.tail {
+                let skip = self.lines.len().saturating_sub(limit);
+                self.lines.drain(..skip);
+            }
             self.last_nonblank = self
                 .lines
                 .iter()
@@ -1178,40 +1159,6 @@ impl Live {
         self.document = Some(document);
         self.stream.text = text;
     }
-
-    /// Re-derive the last `limit` rows of the stream from a bounded suffix.
-    fn tail_rows(&mut self, paint: &Paint, limit: usize) {
-        if self.stream.text.is_empty() {
-            self.lines.clear();
-            self.last_nonblank = 0;
-            return;
-        }
-        // A suffix of (limit + 1) * width columns cannot wrap to fewer than
-        // limit + 1 rows, so its last `limit` rows are the stream's true tail.
-        let suffix = suffix_of_width(&self.stream.text, (limit + 1) * paint.width);
-        let mut lines = Vec::new();
-        wrap_into(&mut lines, suffix, paint, &self.stream.id);
-        if lines.len() > limit {
-            lines.drain(..lines.len() - limit);
-        }
-        self.last_nonblank = lines.len();
-        self.lines = lines;
-    }
-}
-
-/// The longest suffix of `text` no wider than `max_width` display columns.
-fn suffix_of_width(text: &str, max_width: usize) -> &str {
-    let mut used = 0usize;
-    let mut start = text.len();
-    for (index, character) in text.char_indices().rev() {
-        let cells = misa_render::width(&character.to_string());
-        if used + cells > max_width {
-            break;
-        }
-        used += cells;
-        start = index;
-    }
-    &text[start..]
 }
 
 #[cfg(test)]
@@ -1746,6 +1693,77 @@ mod tests {
             live.lines.iter().map(Line::text).collect::<Vec<_>>(),
             vec!["┃ alpha beta", "┃ gamma delta"]
         );
+    }
+
+    #[test]
+    fn a_collapsed_thinking_tail_renders_markdown_like_the_expanded_stream() {
+        let text = "intro line one\nintro line two\n\na **bold** word\n\n```rust\nlet x = 1;\n```";
+        let stream = || Stream {
+            id: "msg1.thinking".into(),
+            role: "message.assistant.thinking".into(),
+            text: text.into(),
+        };
+        let screen = Screen::new(40, 20);
+        let mut collapsed = Retained::new(Node::section("session").id("session"), &screen);
+        collapsed.current(stream(), &screen);
+        collapsed.reindex();
+        let tail = all(&collapsed);
+
+        let mut opened = Screen::new(40, 20);
+        opened.prefs.opened = vec!["msg1.thinking".into()];
+        let mut expanded = Retained::new(Node::section("session").id("session"), &opened);
+        expanded.current(stream(), &opened);
+        expanded.reindex();
+        let full = all(&expanded);
+        // The collapsed window is exactly the last rows of the same rendering.
+        assert_eq!(tail, full[full.len() - THINKING_TAIL_LINES..].to_vec());
+        assert_eq!(tail.len(), THINKING_TAIL_LINES);
+        // The window still carries markdown: the bold run is styled.
+        assert!(
+            tail.iter().any(|line| line
+                .spans
+                .iter()
+                .any(|(style, text)| style.bold && text.trim() == "bold")),
+            "{tail:?}"
+        );
+        // And the fenced block is laid out, language label and code row included.
+        let rows: Vec<String> = tail.iter().map(Line::text).collect();
+        assert!(rows.iter().any(|row| row.contains("rust")), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.contains("let x = 1;")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn resizing_a_collapsed_markdown_tail_reflows_and_keeps_the_last_rows() {
+        let text = "```rust\nlet x = 1;\n```\n\nalpha **bold** beta gamma delta epsilon zeta eta theta iota kappa";
+        let stream = || Stream {
+            id: "msg1.thinking".into(),
+            role: "message.assistant.thinking".into(),
+            text: text.into(),
+        };
+        let mut screen = Screen::new(40, 20);
+        let mut retained = Retained::new(Node::section("session").id("session"), &screen);
+        retained.current(stream(), &screen);
+        retained.reindex();
+        let wide = all(&retained);
+
+        // A narrower terminal rewraps the unified rendering and re-applies the
+        // window, so the visible rows are still the most recent reasoning.
+        screen.width = 24;
+        retained.local(&screen);
+        let narrow = all(&retained);
+        assert_ne!(wide, narrow, "the stream must reflow at the new width");
+        assert_eq!(narrow.len(), THINKING_TAIL_LINES);
+
+        let mut opened = Screen::new(24, 20);
+        opened.prefs.opened = vec!["msg1.thinking".into()];
+        let mut expanded = Retained::new(Node::section("session").id("session"), &opened);
+        expanded.current(stream(), &opened);
+        expanded.reindex();
+        let full = all(&expanded);
+        assert_eq!(narrow, full[full.len() - THINKING_TAIL_LINES..].to_vec());
     }
 
     #[test]
