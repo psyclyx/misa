@@ -1031,6 +1031,17 @@ impl Session for ScopedRemote {
                     }
                 });
             }
+            SessionRequest::Download { reference } => {
+                let blobs = self.daemon.blobs.clone();
+                self.pending.spawn(async move {
+                    let result = blobs.download(&reference).await.map(|blob| blob.bytes);
+                    PendingReply {
+                        reply: Some(SessionReply::Downloaded { reference, result }),
+                        operation: None,
+                        kind: WorkKind::Background,
+                    }
+                });
+            }
             SessionRequest::Save { node, destination } => {
                 let daemon = self.daemon.clone();
                 self.pending.spawn(async move {

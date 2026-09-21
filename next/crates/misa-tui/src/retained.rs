@@ -8,6 +8,79 @@ use misa_proto::view::{ActionOn, Kind};
 use misa_render::{Style, Theme};
 use std::collections::HashMap;
 
+/// Rows an image may occupy in the current view. The verbose transcript lets an
+/// image use more of the viewport; otherwise it stays a compact thumbnail so a
+/// single screenshot cannot push the whole conversation off screen.
+fn image_max_rows(screen: &Screen) -> u16 {
+    if screen.prefs.is_open("*") {
+        crate::graphics::VERBOSE_ROWS
+    } else {
+        crate::graphics::COMPACT_ROWS
+    }
+}
+
+/// The native pixel dimensions of every image node in a resolved subtree.
+fn collect_image_dims(node: &Node, out: &mut HashMap<String, (u32, u32)>) {
+    if let Kind::Image { width, height, .. } = &node.kind {
+        out.insert(node.id.clone(), (*width, *height));
+    }
+    for child in &node.children {
+        collect_image_dims(child, out);
+    }
+}
+
+/// Replace each rendered image placeholder with the rows its placement needs.
+///
+/// The linear renderer produces one row for a `Kind::Image`. The terminal knows
+/// the cell size and the column budget, so it owns how many rows the placement
+/// actually consumes; the first row keeps the alt/dimension label and the rest
+/// are blank rows the image will cover.
+fn reserve_image_rows(node: &Node, lines: Vec<Line>, screen: &Screen) -> Vec<Line> {
+    if !screen.graphics.enabled() {
+        return lines;
+    }
+    let mut images = HashMap::new();
+    collect_image_dims(node, &mut images);
+    if images.is_empty() {
+        return lines;
+    }
+    let max_rows = image_max_rows(screen);
+    let mut expanded = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        let Some(id) = line.node.as_deref() else {
+            out.push(line);
+            continue;
+        };
+        let Some(&(width, height)) = images.get(id) else {
+            out.push(line);
+            continue;
+        };
+        // A component may draw more than one row for one image node; only the
+        // first anchors a placement, so only the first reserves rows.
+        if !expanded.insert(id.to_string()) {
+            out.push(line);
+            continue;
+        }
+        let plan = screen.graphics.plan(
+            width,
+            height,
+            screen.width.saturating_sub(line.indent as u16),
+            max_rows,
+        );
+        out.push(line.clone());
+        for _ in 1..plan.rows {
+            out.push(Line {
+                indent: line.indent,
+                surface: line.surface,
+                node: Some(id.to_string()),
+                spans: Vec::new(),
+            });
+        }
+    }
+    out
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Work {
     pub formatted_nodes: usize,
@@ -242,6 +315,48 @@ impl Retained {
     pub fn has_turn(&self) -> bool {
         self.tree.contains("turn")
     }
+    /// The blob references the current tree names. The client fetches these off
+    /// the render path; until the pixels are cached the image keeps its placeholder.
+    pub fn image_blobs(&self) -> Vec<misa_proto::view::BlobRef> {
+        self.tree
+            .nodes()
+            .filter_map(|node| match &node.kind {
+                Kind::Image { blob, .. } => Some(blob.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+    /// Kitty placements for the image rows present in a finished frame.
+    ///
+    /// Only the first reserved row of an image anchors it, so a placement is
+    /// emitted once per image however many rows it covers. Rows outside the frame
+    /// produce no placement, which is how a scrolled-away image is deleted.
+    fn image_placements(&self, screen: &Screen, lines: &[Line]) -> Vec<crate::graphics::Placement> {
+        if !screen.graphics.enabled() {
+            return Vec::new();
+        }
+        let max_rows = image_max_rows(screen);
+        let mut seen = std::collections::HashSet::new();
+        lines
+            .iter()
+            .enumerate()
+            .filter_map(|(row, line)| {
+                let id = line.node.as_deref()?;
+                if !seen.insert(id) {
+                    return None;
+                }
+                let Kind::Image { blob, .. } = &self.tree.node(id)?.kind else {
+                    return None;
+                };
+                screen.graphics.place(
+                    &blob.hash,
+                    (row as u16, line.indent as u16),
+                    screen.width.saturating_sub(line.indent as u16),
+                    max_rows,
+                )
+            })
+            .collect()
+    }
     pub fn selection_key(
         &mut self,
         screen: &mut Screen,
@@ -322,6 +437,10 @@ impl Retained {
         let lines = component.unwrap_or_else(|| {
             misa_lines::render_block(&resolved, &screen.theme, screen.width as usize, depth)
         });
+        // The linear renderer degrades an image to one placeholder row. The
+        // terminal knows the placement height, so reserve the extra rows here: the
+        // viewport's row arithmetic then accounts for the space the image needs.
+        let lines = reserve_image_rows(&resolved, lines, screen);
         self.owners.insert(
             id.clone(),
             Owner {
@@ -486,7 +605,7 @@ impl Retained {
             let rows = self.lines(&self.segments[index]);
             let trimmed = rows
                 .iter()
-                .rposition(|line| !line.is_blank())
+                .rposition(|line| self.line_occupied(line))
                 .map_or(0, |at| at + 1);
             self.lengths[index] = trimmed;
             if trimmed > 0 {
@@ -501,6 +620,18 @@ impl Retained {
             Segment::Owner(id) => &self.owners[id].lines,
             Segment::Live(id) => &self.live[id].lines,
         }
+    }
+
+    /// Whether a row holds something that must survive trailing-whitespace
+    /// trimming. A reserved image row is blank but occupied: the terminal draws
+    /// the image over it, so trimming it would let the image overrun what follows.
+    fn line_occupied(&self, line: &Line) -> bool {
+        !line.is_blank()
+            || line.node.as_deref().is_some_and(|id| {
+                self.tree
+                    .node(id)
+                    .is_some_and(|node| matches!(&node.kind, Kind::Image { .. }))
+            })
     }
 
     /// The line at a physical row, or `None` for a row outside the document.
@@ -880,10 +1011,12 @@ impl Retained {
             let mut lines = top;
             lines.extend(middle);
             lines.extend(status);
+            let images = self.image_placements(screen, &lines);
             return crate::chrome::Frame {
                 lines,
                 cursor_row,
                 cursor_column,
+                images,
             };
         }
         if screen
@@ -949,10 +1082,12 @@ impl Retained {
             lines.extend(status);
             let mut frame_lines = top;
             frame_lines.extend(lines);
+            let images = self.image_placements(screen, &frame_lines);
             return crate::chrome::Frame {
                 lines: frame_lines,
                 cursor_row,
                 cursor_column,
+                images,
             };
         }
         let preferred_input = crate::chrome::composer(screen);
@@ -1064,10 +1199,12 @@ impl Retained {
         let mut frame_lines = top;
         frame_lines.extend(lines);
         frame_lines.extend(status);
+        let images = self.image_placements(screen, &frame_lines);
         crate::chrome::Frame {
             lines: frame_lines,
             cursor_row,
             cursor_column: input.cursor_column,
+            images,
         }
     }
 }
@@ -1253,6 +1390,56 @@ mod tests {
                 &screen.theme,
                 screen.width as usize
             )
+        );
+    }
+    fn image_node(width: u32, height: u32) -> Node {
+        Node::new(
+            "screenshot",
+            Kind::Image {
+                blob: misa_proto::view::BlobRef {
+                    hash: "b".repeat(64),
+                    len: 1,
+                    media: Some("image/png".into()),
+                },
+                alt: "a wide chart".into(),
+                width,
+                height,
+            },
+        )
+        .id("picture")
+    }
+    #[test]
+    fn a_supported_image_reserves_its_placement_rows() {
+        let mut screen = Screen::new(80, 24);
+        screen.graphics = crate::graphics::Kitty::new(
+            true,
+            crate::graphics::CellSize {
+                width: 10,
+                height: 20,
+            },
+        );
+        let hash = "b".repeat(64);
+        screen.graphics.insert(
+            &hash,
+            image::RgbaImage::from_raw(400, 100, vec![0; 400 * 100 * 4]).unwrap(),
+        );
+        let mut retained = Retained::new(image_node(400, 100), &screen);
+        // 400px at 10px/cell is 40 columns wide, 100px at 20px/cell is 5 rows.
+        assert_eq!(retained.rows.total(), 5);
+        let frame = retained.frame(&screen, None);
+        assert_eq!(frame.images.len(), 1);
+        assert_eq!(frame.images[0].rows, 5);
+        assert!(frame.images[0].escape.contains("a=T"));
+    }
+    #[test]
+    fn an_unsupported_image_keeps_its_single_placeholder_row() {
+        let screen = Screen::new(80, 24);
+        let retained = Retained::new(image_node(400, 100), &screen);
+        assert_eq!(retained.rows.total(), 1);
+        assert!(
+            all(&retained)
+                .iter()
+                .any(|line| line.text().contains("[image: a wide chart]"))
         );
     }
     #[test]

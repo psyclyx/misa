@@ -142,6 +142,11 @@ impl IndexedTree {
     pub fn node(&self, id: &str) -> Option<&Node> {
         self.nodes.get(id).map(|entry| &entry.node)
     }
+    /// Every stored node, in no particular order. Content addressed work such as
+    /// finding the blobs a tree refers to does not need document order.
+    pub fn nodes(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.values().map(|entry| &entry.node)
+    }
     pub fn parent(&self, id: &str) -> Option<&str> {
         self.nodes.get(id)?.parent.as_deref()
     }

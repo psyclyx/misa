@@ -80,6 +80,20 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
         screen.width = width;
         screen.height = height;
     }
+    // Kitty support is advertised, never probed synchronously. A terminal that
+    // reports its pixel geometry also tells us how big a cell is; otherwise the
+    // default ratio is used.
+    screen.graphics = crate::graphics::Kitty::detect();
+    if let Ok(size) = crossterm::terminal::window_size()
+        && let Some(cell) = crate::graphics::CellSize::from_window(
+            screen.width,
+            screen.height,
+            size.width,
+            size.height,
+        )
+    {
+        screen.graphics.set_cell(cell);
+    }
     crossterm::terminal::enable_raw_mode().map_err(|error| error.to_string())?;
     let _terminal = Terminal;
     crossterm::execute!(
@@ -150,6 +164,10 @@ async fn drive_with_clipboard(
     let mut contributions = std::collections::BTreeMap::<String, crate::retained::Retained>::new();
     let mut pending = Vec::<misa_proto::view::BlobRef>::new();
     let mut uploads = 0usize;
+    // Blobs whose bytes this client has asked for and not yet cached. Content
+    // addressed, so the set spans scope switches.
+    let mut requested = std::collections::HashSet::<String>::new();
+    let mut images_dirty = true;
     let mut generation = 0u64;
     let mut scope = String::new();
     let mut parked = std::collections::BTreeMap::new();
@@ -167,6 +185,26 @@ async fn drive_with_clipboard(
     animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut frame = 0usize;
     loop {
+        // Fetch any image the tree names but the cache does not hold yet. This
+        // walks once per document update, never per painted frame, and the
+        // placeholder stays until the bytes arrive.
+        if images_dirty {
+            images_dirty = false;
+            if screen.graphics.enabled() {
+                let blobs: Vec<_> = retained
+                    .image_blobs()
+                    .into_iter()
+                    .chain(contributions.values().flat_map(|c| c.image_blobs()))
+                    .collect();
+                for blob in blobs {
+                    if screen.graphics.has(&blob.hash) || requested.contains(&blob.hash) {
+                        continue;
+                    }
+                    requested.insert(blob.hash.clone());
+                    enqueue(&commands, Request::Download { reference: blob }, screen);
+                }
+            }
+        }
         let staging =
             (!pending.is_empty() || uploads > 0).then(|| match (uploads > 0, pending.is_empty()) {
                 (true, true) => "Loading image…".to_string(),
@@ -209,7 +247,7 @@ async fn drive_with_clipboard(
             }
         }
         output
-            .paint(writer, &lines, screen.width as usize)
+            .paint(writer, &lines, screen.width as usize, &rendered.images)
             .map_err(|error| error.to_string())?;
         write!(
             writer,
@@ -305,6 +343,15 @@ async fn drive_with_clipboard(
                             match result { Ok(blob) => { pending.push(blob); screen.notice = Some("Image attached; Enter sends the prompt".into()); }, Err(error) => screen.notice = Some(error) }
                         }
                     }
+                    Some(Update::View(crate::Presentation::Reply(SessionReply::Downloaded { reference, result }))) => {
+                        match result {
+                            Ok(bytes) => match image::load_from_memory(&bytes) {
+                                Ok(image) => screen.graphics.insert(&reference.hash, image.into_rgba8()),
+                                Err(error) => screen.notice = Some(format!("Image decode failed: {error}")),
+                            },
+                            Err(error) => screen.notice = Some(error),
+                        }
+                    }
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Sent { draft, result }))) => match result {
                         Ok(()) => screen.notice = None,
                         Err(error) => {
@@ -318,6 +365,7 @@ async fn drive_with_clipboard(
                     },
                     None => return Ok(()),
                 }
+                images_dirty = true;
                 continue;
             }
             _ = animation.tick(), if retained.has_turn() => {

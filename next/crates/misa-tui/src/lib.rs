@@ -24,6 +24,7 @@ mod chrome;
 pub mod clipboard;
 mod dialogs;
 mod event_loop;
+pub mod graphics;
 pub mod output;
 pub mod prefs;
 pub mod presentation;
@@ -264,6 +265,9 @@ pub struct Screen {
     pub scroll_intent: u64,
     pub width: u16,
     pub height: u16,
+    /// The kitty graphics cache and planner. Terminal-specific, so it lives on the
+    /// client, not in the retained layout or the shared line renderer.
+    pub graphics: graphics::Kitty,
 }
 
 impl Screen {
@@ -296,6 +300,7 @@ impl Screen {
             scroll_intent: 0,
             width,
             height,
+            graphics: graphics::Kitty::new(false, graphics::CellSize::default()),
         }
     }
 
@@ -2321,6 +2326,10 @@ pub trait Session: Send {
                 generation,
                 result: self.upload(bytes, &media).await,
             },
+            SessionRequest::Download { reference } => SessionReply::Downloaded {
+                reference: reference.clone(),
+                result: self.download(&reference).await,
+            },
             SessionRequest::Complete { source, prefix } => {
                 let result = self.complete(&source, &prefix).await;
                 SessionReply::Complete {
@@ -2346,6 +2355,15 @@ pub trait Session: Send {
         Err("This client has no blob connection".into())
     }
     async fn save_attachment(&mut self, _node: &str, _destination: &str) -> Result<(), String> {
+        Err("This client has no blob connection".into())
+    }
+    /// Fetch the bytes a [`misa_proto::view::BlobRef`] names. The generic client
+    /// renders a placeholder until it returns, so an implementation is free to be
+    /// slow — but it must not be called on the render path.
+    async fn download(
+        &mut self,
+        _reference: &misa_proto::view::BlobRef,
+    ) -> Result<Vec<u8>, String> {
         Err("This client has no blob connection".into())
     }
     /// Candidates a session holds, for a source this client asked about.
@@ -2412,6 +2430,9 @@ pub enum SessionRequest {
         bytes: Vec<u8>,
         media: String,
     },
+    Download {
+        reference: misa_proto::view::BlobRef,
+    },
     Complete {
         source: String,
         prefix: String,
@@ -2438,6 +2459,10 @@ pub enum SessionReply {
     Uploaded {
         generation: u64,
         result: Result<misa_proto::view::BlobRef, String>,
+    },
+    Downloaded {
+        reference: misa_proto::view::BlobRef,
+        result: Result<Vec<u8>, String>,
     },
     Sent {
         draft: Option<(String, Vec<misa_proto::view::BlobRef>)>,

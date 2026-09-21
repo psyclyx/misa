@@ -5,6 +5,9 @@ pub struct Frame {
     pub lines: Vec<Line>,
     pub cursor_row: usize,
     pub cursor_column: usize,
+    /// Kitty placements anchored to rows of `lines`. Empty when graphics are
+    /// unsupported or no decoded image is on screen.
+    pub images: Vec<crate::graphics::Placement>,
 }
 fn row(screen: &Screen, first: bool) -> Line {
     let (mode, role) = match screen.editor.mode() {
@@ -122,6 +125,7 @@ pub(crate) fn composer_with_budget(screen: &Screen, max_rows: usize) -> Frame {
         lines: lines.into_iter().skip(start).take(count).collect(),
         cursor_row: caret.0 - start,
         cursor_column: caret.1.min(width - 1),
+        images: Vec::new(),
     }
 }
 pub(crate) fn header(screen: &Screen) -> Vec<Line> {
@@ -254,6 +258,7 @@ pub fn frame(screen: &Screen, attachments: usize, staging: Option<&str>) -> Fram
             cursor_row: lines.len().saturating_sub(1),
             cursor_column: 0,
             lines,
+            images: Vec::new(),
         };
     }
     let overlay = screen
@@ -322,6 +327,7 @@ pub fn frame(screen: &Screen, attachments: usize, staging: Option<&str>) -> Fram
         lines: top,
         cursor_row,
         cursor_column: cursor.1,
+        images: Vec::new(),
     }
 }
 #[cfg(test)]
