@@ -18,6 +18,7 @@
 use misa_proto::view::{Kind, Node, Span, State};
 use misa_value::Value;
 
+use misa_render::Color;
 use misa_render::text::{clip, pad, width, wrap_spans};
 use misa_render::theme::{Style, Theme};
 
@@ -223,6 +224,39 @@ pub fn to_plain(lines: &[Line]) -> String {
     out
 }
 
+/// The explicit shape of one code block.
+///
+/// A markdown fence and a tool result are the same medium problem — a quiet
+/// label, a gutter with a thin rail, and a body — so they are this component
+/// with different options rather than two renderers that drift apart. A diff is
+/// the same component again: its body says what each line is, so the component
+/// asks the line instead of the caller.
+struct CodeBlock<'a> {
+    /// The node every row points at, and whose state mark closes the block.
+    node: &'a Node,
+    /// The authored fence label, drawn quiet on a thin rail. `None` draws no
+    /// label; a diff never draws one, because its body already says what it is.
+    language: Option<&'a str>,
+    /// The body, one source line per row.
+    text: &'a str,
+    /// Syntax captures over the body, only for a non-diff block.
+    captures: &'a [misa_syntax::Capture],
+    /// The style every line starts from.
+    base: Style,
+    /// The role the block was resolved for, so a diff line may name its style
+    /// under it.
+    role: &'a str,
+    /// A diff parses its hunk headers and numbers the old and new sides; a
+    /// non-diff block numbers in sequence, or not at all.
+    diff: bool,
+    /// Whether a non-diff block shows a sequential gutter.
+    numbered: bool,
+    /// Cells the parent leaves on each side of the block.
+    margin: Margin,
+    /// The surface behind the block's rows. A diff replaces it per line.
+    surface: Option<Style>,
+}
+
 struct Renderer<'a> {
     theme: &'a Theme,
     columns: usize,
@@ -389,7 +423,42 @@ impl<'a> Renderer<'a> {
                     Some(&node.id),
                 )]
             }
-            Kind::Code { lang, text } => self.code(node, inset, indent, style, lang, text),
+            Kind::Code { lang, text } => {
+                // A diff is code whose meaning is *per line*, and the session says so —
+                // by naming a role that ends in `.diff`, or, for a body a model fenced,
+                // by the language it was fenced with. Nothing here guesses from the
+                // text: a block of code that happens to contain a `+` is still code.
+                let diff = is_diff(&node.role, lang.as_deref());
+                // Highlighting is the client's. The session sent the code and its
+                // authored fence label; the grammar, the parse and the classes are
+                // ours. A diff classifies its own lines instead.
+                let captures = if diff {
+                    Vec::new()
+                } else {
+                    lang.as_deref()
+                        .map(|language| misa_syntax::captures(language, text))
+                        .unwrap_or_default()
+                };
+                // A prose code block carries a numbered gutter, as the previous
+                // markdown renderer did; a tool's own code view keeps its shape.
+                // A diff overrides both and numbers its old and new sides.
+                self.code_block(
+                    CodeBlock {
+                        node,
+                        language: lang.as_deref(),
+                        text,
+                        captures: &captures,
+                        base: style,
+                        role: &node.role,
+                        diff,
+                        numbered: numbered_code(&node.role),
+                        margin: Margin::NESTED,
+                        surface: self.theme.surface(&node.role),
+                    },
+                    indent,
+                    inset,
+                )
+            }
             Kind::List {
                 ordered,
                 items,
@@ -604,44 +673,48 @@ impl<'a> Renderer<'a> {
         lines
     }
 
-    /// Render a code block: a demoted language marker on a thin rail, a numbered
-    /// gutter with a thin rail between the numbers and the body, and the body.
-    fn code(
-        &self,
-        node: &Node,
-        inset: usize,
-        indent: u8,
-        style: Style,
-        lang: &Option<String>,
-        text: &str,
-    ) -> Vec<Line> {
-        // A diff is code whose meaning is *per line*, and the session says so —
-        // by naming a role that ends in `.diff`, or, for a body a model fenced,
-        // by the language it was fenced with. Nothing here guesses from the
-        // text: a block of code that happens to contain a `+` is still code.
-        let diff = is_diff(&node.role, lang.as_deref());
-        let chrome = Chrome::nested(Prefix::none());
-        let surface = self.theme.surface(&node.role);
-        let border_style = self.merged(style, &node.role, "border", "markdown.code.border");
+    /// Render one code block: a quiet language marker on a thin rail, a gutter
+    /// with a thin rail between the numbers and the body, and the body.
+    ///
+    /// This is the single home for a language label, a line-number gutter, the
+    /// rail beside it, the left and right margins, and a diff's per-side
+    /// numbering. Markdown fences and tool results differ only in the options
+    /// they pass, never in the code they reach.
+    fn code_block(&self, code: CodeBlock<'_>, indent: u8, inset: usize) -> Vec<Line> {
+        let CodeBlock {
+            node,
+            language,
+            text,
+            captures,
+            base,
+            role,
+            diff,
+            numbered,
+            margin,
+            surface,
+        } = code;
+        let chrome = Chrome {
+            prefix: Prefix::none(),
+            padding: Padding::NONE,
+            margin,
+            rail: false,
+        };
+        let border_style = self.merged(base, role, "border", "markdown.code.border");
         // The label keeps the role's colour but loses its bold: it is a marker,
         // not a banner.
-        let mut label_style = self.merged(style, &node.role, "label", "markdown.code.label");
+        let mut label_style = self.merged(base, role, "label", "markdown.code.label");
         label_style.bold = false;
         label_style.dim = true;
-        // Highlighting is the client's. The session sent the code and its
-        // authored fence label; the grammar, the parse and the classes are
-        // ours. A diff classifies its own lines instead.
-        let captures = if diff {
-            Vec::new()
-        } else {
-            lang.as_deref()
-                .map(|language| misa_syntax::captures(language, text))
-                .unwrap_or_default()
-        };
         let source: Vec<&str> = text.split('\n').collect();
-        // A prose code block carries a numbered gutter, as the previous
-        // markdown renderer did; a tool's own code view keeps its shape.
-        let numbers = numbered_code(&node.role).then(|| code_numbers(&source, diff));
+        // A diff numbers from its hunk headers; a prose code block numbers in
+        // sequence; a tool's own code view keeps its shape and has no gutter.
+        let numbers = if diff {
+            Some(code_numbers(&source, true))
+        } else if numbered {
+            Some(code_numbers(&source, false))
+        } else {
+            None
+        };
         let number_width = numbers
             .as_ref()
             .and_then(|numbers| numbers.iter().flatten().map(String::len).max())
@@ -655,26 +728,34 @@ impl<'a> Renderer<'a> {
         } else {
             available
         };
+        // A diff's context keeps the code surface rather than the owning
+        // message's, so the whole change reads as one block whatever it sits in.
+        let context_surface = if diff {
+            self.theme.surface("code").or(surface)
+        } else {
+            surface
+        };
         let mut content = Vec::new();
-        if let Some(lang) = lang
+        if let Some(language) = language
             && !diff
         {
             content.push(Line {
                 indent,
                 spans: vec![
                     (border_style, "▏ ".to_string()),
-                    (label_style, lang.clone()),
+                    (label_style, language.to_string()),
                 ],
-                surface,
+                surface: context_surface,
                 node: Some(node.id.clone()),
             });
         }
         for (index, raw) in source.iter().enumerate() {
             let value = clip(raw, body_width);
+            let suffix = if diff { diff_suffix(raw) } else { None };
             let line_style = if diff {
-                self.diff_style(style, &node.role, raw)
+                self.diff_style(base, role, raw)
             } else {
-                style
+                base
             };
             let mut spans = Vec::new();
             if gutter {
@@ -686,16 +767,37 @@ impl<'a> Renderer<'a> {
                 spans.push((border_style, format!("{number:>number_width$} ")));
                 spans.push((border_style, "│ ".to_string()));
             }
-            spans.extend(self.code_spans(text, index, raw, &value, &captures, line_style));
+            spans.extend(self.code_spans(text, index, raw, &value, captures, line_style));
             content.push(Line {
                 indent,
                 spans,
-                surface,
+                surface: self.diff_row_surface(context_surface, suffix),
                 node: Some(node.id.clone()),
             });
         }
         self.state_mark(node, indent, &mut content);
-        self.frame(&chrome, indent, surface, &node.id, content)
+        self.frame(&chrome, indent, context_surface, &node.id, content)
+    }
+
+    /// The full-row surface for one line of a diff.
+    ///
+    /// What a line *is* is what makes it read as added or removed, so the change
+    /// role's colour is laid behind the whole row — a theme that names a
+    /// background for the role wins over its foreground. Context and the
+    /// patch's own metadata keep the code surface, so the block stays one extent.
+    fn diff_row_surface(&self, context: Option<Style>, suffix: Option<&str>) -> Option<Style> {
+        let role = match suffix {
+            Some("added") => "diff.added",
+            Some("removed") => "diff.removed",
+            _ => return context,
+        };
+        let style = self.theme.role(role);
+        let colour = if style.bg != Color::Default {
+            style.bg
+        } else {
+            style.fg
+        };
+        (colour != Color::Default).then_some(Style::PLAIN.on(colour))
     }
 
     /// Compose a block: put its chrome in front of rows that were laid out with
@@ -1606,6 +1708,116 @@ mod tests {
     }
 
     #[test]
+    fn a_diff_fence_and_a_tool_result_render_the_same_rows() {
+        // Two ways a session says "this body is a diff": a fence that named
+        // `diff`, and a result the session classified. The same component draws
+        // both, so the rows agree apart from the node they point back at.
+        let body = "@@ -1 +1 @@\n-old\n+new\n context";
+        let fence = Node::new(
+            "message.assistant.markdown.diff",
+            Kind::Code {
+                lang: Some("diff".into()),
+                text: body.into(),
+            },
+        )
+        .id("fence");
+        let result = Node::new(
+            "tool.result.diff",
+            Kind::Code {
+                lang: None,
+                text: body.into(),
+            },
+        )
+        .id("result");
+        let theme = Theme::dark();
+        let rows = |mut lines: Vec<Line>| {
+            for line in &mut lines {
+                line.node = None;
+            }
+            lines
+        };
+        assert_eq!(
+            rows(render(&fence, &theme, 40)),
+            rows(render(&result, &theme, 40))
+        );
+    }
+
+    #[test]
+    fn a_diff_numbers_both_sides_across_two_hunks() {
+        // Only tracking the `@@ -a,b +c,d @@` headers keeps the second hunk's
+        // numbers right: the old side jumps to ten while the new side jumps to
+        // eleven, and each change line still numbers its own file.
+        let text = "\
+diff --git a/x b/x
+index 111..222 100644
+--- a/x
++++ b/x
+@@ -1,2 +1,3 @@
+ a
+-b
++c
++d
+@@ -10,2 +11,1 @@
+ e
+-f
++g";
+        let node = Node::new(
+            "tool.result.diff",
+            Kind::Code {
+                lang: None,
+                text: text.into(),
+            },
+        )
+        .id("d");
+        let lines = render(&node, &Theme::dark(), 40);
+        // Metadata and hunk headers say nothing; a removed line names the old
+        // file, an added or context line the new one.
+        assert_eq!(
+            to_plain(&lines),
+            "    │ diff --git a/x b/x\n    │ index 111..222 100644\n    │ --- a/x\n    │ +++ b/x\n    │ @@ -1,2 +1,3 @@\n  1 │  a\n  2 │ -b\n  2 │ +c\n  3 │ +d\n    │ @@ -10,2 +11,1 @@\n 11 │  e\n 11 │ -f\n 12 │ +g\n"
+        );
+    }
+
+    #[test]
+    fn a_change_row_takes_its_role_surface_and_metadata_does_not() {
+        let text = "diff --git a/x b/x\n@@ -1 +1 @@\n-gone\n+kept";
+        let node = Node::new(
+            "tool.result.diff",
+            Kind::Code {
+                lang: None,
+                text: text.into(),
+            },
+        )
+        .id("d");
+        let theme = Theme::dark();
+        let lines = render(&node, &theme, 40);
+        let row = |needle: &str| {
+            lines
+                .iter()
+                .find(|line| line.text().contains(needle))
+                .unwrap_or_else(|| panic!("no row for {needle:?}: {}", to_plain(&lines)))
+        };
+        let added = row("+kept");
+        let removed = row("-gone");
+        let meta = row("diff --git");
+        let hunk = row("@@");
+        let code = theme.surface("code").expect("the code surface");
+        // The change's own colour is behind the whole row, green-ish for an
+        // addition and red-ish for a removal.
+        assert_eq!(added.surface.unwrap().bg, theme.role("diff.added").fg);
+        assert_eq!(removed.surface.unwrap().bg, theme.role("diff.removed").fg);
+        assert_ne!(added.surface.unwrap().bg, removed.surface.unwrap().bg);
+        // The patch's own metadata and a hunk header keep the code surface, so
+        // the block stays one extent and only the changes stand out.
+        assert_eq!(meta.surface, Some(code));
+        assert_eq!(hunk.surface, Some(code));
+        for row in [meta, hunk] {
+            assert_ne!(row.surface, added.surface);
+            assert_ne!(row.surface, removed.surface);
+        }
+    }
+
+    #[test]
     fn a_theme_may_name_a_diff_line_under_the_node_it_belongs_to() {
         let node = Node::new(
             "tool.result.diff",
@@ -1614,14 +1826,15 @@ mod tests {
                 text: "+added".into(),
             },
         );
-        // A theme that says something narrower wins over the generic role.
+        // A theme that says something narrower wins over the generic role. The
+        // body run follows the gutter a diff shares with a markdown fence.
         let theme = Theme::dark().with_role("tool.result.diff.added", Style::rgb(1, 2, 3).bold());
         let line = &render(&node, &theme, 40)[0];
-        assert_eq!(line.spans[1].0.fg, Color::Rgb(1, 2, 3));
-        assert!(line.spans[1].0.bold);
+        assert_eq!(line.spans[3].0.fg, Color::Rgb(1, 2, 3));
+        assert!(line.spans[3].0.bold);
         // And the generic role is used when it has not.
         let line = &render(&node, &Theme::dark(), 40)[0];
-        assert_eq!(line.spans[1].0, Theme::dark().role("diff.added"));
+        assert_eq!(line.spans[3].0, Theme::dark().role("diff.added"));
     }
 
     #[test]
