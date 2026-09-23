@@ -1739,6 +1739,37 @@ impl App {
                     *y += 9.0;
                 }
             }
+            Kind::Definition { entries } => {
+                // A term on its own row, then each definition behind a quiet marker.
+                for entry in entries {
+                    let term = entry
+                        .term
+                        .iter()
+                        .map(|span| span.text.as_str())
+                        .collect::<String>();
+                    self.row(
+                        scene,
+                        x,
+                        *y,
+                        vec![(theme.role("markdown.definition.term"), term)],
+                    );
+                    *y += 22.0;
+                    for definition in &entry.definitions {
+                        let body = definition
+                            .iter()
+                            .map(|span| span.text.as_str())
+                            .collect::<String>();
+                        self.row(
+                            scene,
+                            x + 16.0,
+                            *y,
+                            vec![(theme.role(&node.role), format!("• {body}"))],
+                        );
+                        *y += 21.0;
+                    }
+                    *y += 6.0;
+                }
+            }
             Kind::Meter { label, value, max } => {
                 self.row(
                     scene,

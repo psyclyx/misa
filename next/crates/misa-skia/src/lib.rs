@@ -481,6 +481,17 @@ impl Builder<'_> {
                 self.spans(indent, summary, base);
                 self.children(node, indent);
             }
+            Kind::Definition { entries } => {
+                // A term is prominent; each definition sits behind a quiet marker.
+                for entry in entries {
+                    self.spans(indent, &entry.term, base.bold());
+                    self.prefixes.push((base.dim(), "• ".to_string()));
+                    for definition in &entry.definitions {
+                        self.spans(indent, definition, base);
+                    }
+                    self.prefixes.pop();
+                }
+            }
             Kind::Image {
                 blob,
                 alt,

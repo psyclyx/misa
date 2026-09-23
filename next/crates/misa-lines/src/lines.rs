@@ -511,6 +511,65 @@ impl<'a> Renderer<'a> {
                 self.state_mark(node, indent, &mut out);
                 out
             }
+            Kind::Definition { entries } => {
+                // A definition list is a term on its own row, then its body behind
+                // a quiet marker and a nested margin. The term resolves through the
+                // global vocabulary so a theme names it once; the marker has its own
+                // role so it can stay quiet while the term stays prominent.
+                let term_style = self.merged(style, &node.role, "term", "markdown.definition.term");
+                let marker_style =
+                    self.merged(style, &node.role, "marker", "markdown.definition.marker");
+                let chrome = Chrome::nested(Prefix::none());
+                let inner = inset + chrome.horizontal();
+                let mut content = Vec::new();
+                for entry in entries {
+                    for line in wrap_spans(&entry.term, self.budget(indent, inner)) {
+                        content.push(Line {
+                            indent,
+                            spans: line
+                                .iter()
+                                .map(|span| (self.span_style(span, term_style), span.text.clone()))
+                                .collect(),
+                            surface: self.theme.surface(&node.role),
+                            node: Some(node.id.clone()),
+                        });
+                    }
+                    let prefix = Prefix::first_rest(
+                        vec![(marker_style, "• ".to_string())],
+                        vec![(marker_style, "  ".to_string())],
+                    );
+                    let definition_chrome = Chrome {
+                        prefix,
+                        padding: Padding::NONE,
+                        margin: Margin::MARKED,
+                        rail: false,
+                    };
+                    let definition_inner = inner + definition_chrome.horizontal();
+                    for definition in &entry.definitions {
+                        let mut lines = Vec::new();
+                        for line in wrap_spans(definition, self.budget(indent, definition_inner)) {
+                            lines.push(Line {
+                                indent,
+                                spans: line
+                                    .iter()
+                                    .map(|span| (self.span_style(span, style), span.text.clone()))
+                                    .collect(),
+                                surface: self.theme.surface(&node.role),
+                                node: Some(node.id.clone()),
+                            });
+                        }
+                        content.extend(self.frame(
+                            &definition_chrome,
+                            indent,
+                            None,
+                            &node.id,
+                            lines,
+                        ));
+                    }
+                }
+                self.state_mark(node, indent, &mut content);
+                self.frame(&chrome, indent, None, &node.id, content)
+            }
             Kind::Table { head, rows, align } => {
                 let chrome = Chrome::nested(Prefix::none());
                 let inner = inset + chrome.horizontal();
@@ -567,13 +626,18 @@ impl<'a> Renderer<'a> {
                     self.state_mark(node, indent, &mut content);
                     return content;
                 }
+                // A terminal always expands a disclosure: the body follows the
+                // summary, with no collapse marker of its own. The summary keeps
+                // its own role so a theme can make it read as a heading.
+                let summary_style =
+                    self.merged(style, &node.role, "summary", "markdown.details.summary");
                 let budget = self.budget(indent, inset);
                 for line in wrap_spans(summary, budget) {
                     content.push(Line {
                         indent,
                         spans: line
                             .iter()
-                            .map(|span| (self.span_style(span, style), span.text.clone()))
+                            .map(|span| (self.span_style(span, summary_style), span.text.clone()))
                             .collect(),
                         surface: self.theme.surface(&node.role),
                         node: Some(node.id.clone()),
@@ -957,7 +1021,17 @@ impl<'a> Renderer<'a> {
             SpanKind::Superscript => base.over(self.theme.role("superscript")),
             SpanKind::Kbd => base.over(self.theme.role("keybinding")),
             SpanKind::Code => base.over(self.theme.role("code")),
-            SpanKind::Link { .. } => base.over(self.theme.role("link")),
+            SpanKind::Link { href } => {
+                // A footnote reference and its back-link ride the link vocabulary
+                // with a `footnote:`/`footnote-back:` target, which is how a marker
+                // is told apart from a target a reader can follow. A theme names
+                // the marker once; a normal link keeps the global `link` role.
+                if href.starts_with("footnote") {
+                    base.over(self.theme.role("markdown.footnote.marker"))
+                } else {
+                    base.over(self.theme.role("link"))
+                }
+            }
         }
     }
 
@@ -1459,7 +1533,9 @@ pub fn value_text(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use misa_proto::view::{Action, ActionOn, Alignment, Field, FieldKind, SpanKind, State};
+    use misa_proto::view::{
+        Action, ActionOn, Alignment, Definition, Field, FieldKind, SpanKind, State,
+    };
     use misa_render::Color;
 
     /// A table node with the given columns, alignment, and cells.
@@ -1954,6 +2030,105 @@ mod tests {
         assert_eq!(lines[0].text(), "thinking…");
         assert!(lines.iter().any(|line| line.text().contains("because")));
         assert!(lines[1].indent > lines[0].indent);
+    }
+
+    #[test]
+    fn a_details_block_is_always_expanded_in_the_terminal() {
+        // The linear medium has no interaction, so a disclosure is its summary
+        // followed by its body: there is no collapse marker and nothing is hidden.
+        let blocks = misa_markdown::blocks(
+            "message.assistant",
+            "<details>\n<summary>More</summary>\n\nhidden **text**\n\n</details>",
+        );
+        let node = Node::section("message.assistant").children(blocks);
+        let theme = Theme::dark();
+        let lines = render(&node, &theme, 60);
+        let text = to_plain(&lines);
+        assert!(text.contains("More"), "{text}");
+        assert!(text.contains("hidden text"), "{text}");
+        // The summary resolves through the global details-summary role, so a
+        // theme names it once.
+        let summary = lines
+            .iter()
+            .find(|line| line.text().contains("More"))
+            .and_then(|line| line.spans.iter().find(|(_, text)| text == "More"))
+            .expect("the summary run");
+        assert_eq!(summary.0, theme.role("markdown.details.summary"));
+    }
+
+    #[test]
+    fn a_definition_list_puts_terms_above_indented_definitions() {
+        let node = Node::new(
+            "message.assistant.markdown.definition",
+            Kind::Definition {
+                entries: vec![
+                    Definition {
+                        term: vec![Span::plain("Apple")],
+                        definitions: vec![
+                            vec![Span::plain("A fruit.")],
+                            vec![Span::plain("A company.")],
+                        ],
+                    },
+                    Definition {
+                        term: vec![Span::plain("Orange")],
+                        definitions: vec![vec![Span::plain("A colour.")]],
+                    },
+                ],
+            },
+        )
+        .id("dl");
+        let rows: Vec<String> = render(&node, &theme(), 60).iter().map(Line::text).collect();
+        assert_eq!(
+            rows,
+            vec![
+                " Apple",
+                " • A fruit.",
+                " • A company.",
+                " Orange",
+                " • A colour.",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_dl_renders_the_same_rows_as_the_markdown_form() {
+        let markdown = misa_markdown::blocks(
+            "message.assistant",
+            "Apple\n:   A fruit.\n:   A company.\n\nOrange\n:   A colour.",
+        );
+        let html = misa_markdown::blocks(
+            "message.assistant",
+            "<dl>\n<dt>Apple</dt>\n<dd>A fruit.</dd>\n<dd>A company.</dd>\n<dt>Orange</dt>\n<dd>A colour.</dd>\n</dl>",
+        );
+        let draw = |blocks| {
+            to_plain(&render(
+                &Node::section("message.assistant").children(blocks),
+                &theme(),
+                60,
+            ))
+        };
+        assert_eq!(draw(markdown), draw(html));
+    }
+
+    #[test]
+    fn a_footnote_reference_and_its_section_render() {
+        let blocks = misa_markdown::blocks("message.assistant", "Text[^one].\n\n[^one]: The note.");
+        let node = Node::section("message.assistant").children(blocks);
+        let theme = Theme::dark();
+        let lines = render(&node, &theme, 60);
+        let text = to_plain(&lines);
+        assert!(text.contains("Text1."), "{text}");
+        assert!(text.contains("The note."), "{text}");
+        assert!(text.contains('↩'), "{text}");
+        // The marker is styled by the global footnote-marker role rather than
+        // the ordinary link role, so a theme can tell a note from a target.
+        let marker = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|(_, text)| text == "1")
+            .expect("the footnote marker");
+        assert_eq!(marker.0, theme.role("markdown.footnote.marker"));
+        assert_ne!(marker.0, theme.role("link"));
     }
 
     #[test]

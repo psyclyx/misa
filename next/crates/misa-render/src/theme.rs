@@ -529,6 +529,11 @@ impl Theme {
         set("markdown.table.header", Style::PLAIN.bold());
         set("markdown.table.cell", Style::PLAIN);
         set("markdown.table.rule", Style::fg(palette.muted).dim());
+        set("markdown.definition.term", Style::PLAIN.bold());
+        set("markdown.definition.marker", Style::PLAIN.dim());
+        set("markdown.footnote", Style::fg(palette.muted).dim());
+        set("markdown.footnote.marker", Style::fg(palette.accent));
+        set("markdown.details.summary", Style::fg(palette.muted).dim());
         set("markdown.code.label", Style::PLAIN.bold());
         set("markdown.code.border", Style::PLAIN.dim());
         set("choice.preview", Style::PLAIN.dim());
@@ -865,6 +870,27 @@ mod tests {
         assert_ne!(
             Theme::light().role("markdown.table.rule"),
             Theme::dark().role("markdown.table.rule")
+        );
+    }
+
+    #[test]
+    fn new_markdown_roles_exist_in_both_palettes() {
+        for theme in [Theme::dark(), Theme::light()] {
+            assert!(theme.names("markdown.definition.term"));
+            assert!(theme.names("markdown.definition.marker"));
+            assert!(theme.names("markdown.footnote"));
+            assert!(theme.names("markdown.footnote.marker"));
+            assert!(theme.names("markdown.details.summary"));
+        }
+        // The reference marker takes the palette's accent, so the light
+        // palette gives it a light-palette value rather than the dark one.
+        assert_ne!(
+            Theme::light().role("markdown.footnote.marker"),
+            Theme::dark().role("markdown.footnote.marker")
+        );
+        assert_ne!(
+            Theme::light().role("markdown.footnote"),
+            Theme::dark().role("markdown.footnote")
         );
     }
 

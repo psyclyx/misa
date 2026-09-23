@@ -38,7 +38,7 @@
 
 use std::collections::BTreeMap;
 
-use misa_proto::view::{Alignment, Kind, Node, Span, SpanKind};
+use misa_proto::view::{Alignment, Definition, Kind, Node, Span, SpanKind};
 
 /// Parse a message body into block nodes, each role under `prefix`.
 ///
@@ -47,13 +47,17 @@ use misa_proto::view::{Alignment, Kind, Node, Span, SpanKind};
 pub fn blocks(prefix: &str, text: &str) -> Vec<Node> {
     let lines: Vec<&str> = text.split('\n').collect();
     let references = collect_references(&lines);
-    Parser {
+    let footnotes = collect_footnotes(&lines);
+    let mut out = Parser {
         prefix,
         partial: false,
         references: &references,
+        footnotes: &footnotes,
     }
     .blocks_tracked(&lines)
-    .0
+    .0;
+    append_footnotes(&mut out, &references, &footnotes);
+    out
 }
 
 /// A parsed Markdown document, kept so a later, longer text can reuse its prefix.
@@ -111,15 +115,25 @@ pub fn document(prefix: &str, text: &str, previous: Option<&Document>) -> Docume
     // resolves; the two parses are then identical.
     let all_lines: Vec<&str> = text.split('\n').collect();
     let references = collect_references(&all_lines);
+    let footnotes = collect_footnotes(&all_lines);
     let suffix_lines: Vec<&str> = text[from..].split('\n').collect();
     let (suffix, suffix_starts) = Parser {
         prefix,
         partial: true,
         references: &references,
+        footnotes: &footnotes,
     }
     .blocks_tracked(&suffix_lines);
     blocks.extend(suffix);
     starts.extend(suffix_starts.into_iter().map(|offset| from + offset));
+    // The footnote section is rebuilt from the whole document every time, so a
+    // stale one carried by the retained prefix is dropped before it is re-emitted.
+    if blocks.last().is_some_and(is_footnote_section) {
+        blocks.pop();
+        starts.pop();
+    }
+    append_footnotes(&mut blocks, &references, &footnotes);
+    starts.resize(blocks.len(), text.len());
     Document {
         blocks,
         source: text.to_string(),
@@ -132,14 +146,20 @@ pub fn document(prefix: &str, text: &str, previous: Option<&Document>) -> Docume
 /// Public because a producer that already knows its blocks — a tool result, a panel's
 /// field — may want the inline rules without the block ones.
 pub fn inline(text: &str) -> Vec<Span> {
-    inline_inner(text, false, &BTreeMap::new())
+    inline_inner(text, false, &BTreeMap::new(), &BTreeMap::new())
 }
 
 /// Parse inline runs, treating an unclosed opener as if it closed at the end of
 /// the text. Only the streaming path sets `partial`; a settled body requires its
 /// closers and keeps an unclosed marker literal. `references` are the document's
-/// collected link definitions, so a reference link can resolve.
-fn inline_inner(text: &str, partial: bool, references: &BTreeMap<String, String>) -> Vec<Span> {
+/// collected link definitions and `footnotes` its note definitions, so a
+/// reference link or a note marker can resolve.
+fn inline_inner(
+    text: &str,
+    partial: bool,
+    references: &BTreeMap<String, String>,
+    footnotes: &BTreeMap<String, Footnote>,
+) -> Vec<Span> {
     let mut out = Vec::new();
     let mut plain = String::new();
     let mut index = 0;
@@ -259,6 +279,18 @@ fn inline_inner(text: &str, partial: bool, references: &BTreeMap<String, String>
                 text: inner,
                 kind: SpanKind::Superscript,
             });
+            index = next;
+            continue;
+        }
+        if ch == '['
+            && let Some((number, next)) = footnote_reference(text, index, footnotes)
+        {
+            // A footnote reference is a marker whose text is the note's number.
+            // It rides the link vocabulary with a `footnote:` target so a client
+            // can style it as a marker without a new span kind; the target is
+            // never followed, only identified.
+            flush(&mut out, &mut plain);
+            out.push(Span::link(number.to_string(), format!("footnote:{number}")));
             index = next;
             continue;
         }
@@ -606,6 +638,8 @@ struct Parser<'a> {
     partial: bool,
     /// Link reference definitions collected from the whole document.
     references: &'a BTreeMap<String, String>,
+    /// Footnote definitions collected from the whole document.
+    footnotes: &'a BTreeMap<String, Footnote>,
 }
 
 impl Parser<'_> {
@@ -615,7 +649,7 @@ impl Parser<'_> {
 
     /// Parse inline runs for this document's mode (settled or streaming).
     fn inline(&self, text: &str) -> Vec<Span> {
-        inline_inner(text, self.partial, self.references)
+        inline_inner(text, self.partial, self.references, self.footnotes)
     }
 
     fn blocks(&self, lines: &[&str]) -> Vec<Node> {
@@ -644,7 +678,12 @@ impl Parser<'_> {
                 continue;
             }
             // A link reference definition is document state, not a block; it is
-            // collected up front and skipped here.
+            // collected up front and skipped here. A footnote definition is the
+            // same, except that its continuation lines are skipped with it.
+            if is_footnote_definition(line) {
+                index = footnote_definition_end(lines, index);
+                continue;
+            }
             if is_reference_definition(line) {
                 index += 1;
                 continue;
@@ -680,6 +719,8 @@ impl Parser<'_> {
                 self.table(lines, index)
             } else if is_details(line) {
                 self.details(lines, index)
+            } else if is_definition_list_html(line) {
+                self.html_definition_list(lines, index)
             } else if is_html_block(line) {
                 self.html_block(lines, index)
             } else if indent_of(line) >= 4 {
@@ -688,6 +729,8 @@ impl Parser<'_> {
                 self.quote(lines, index)
             } else if list_marker(line).is_some() {
                 self.list(lines, index)
+            } else if starts_definition_list(lines, index) {
+                self.definition_list(lines, index)
             } else {
                 self.paragraph(lines, index)
             };
@@ -844,6 +887,140 @@ impl Parser<'_> {
             ),
             index,
         )
+    }
+
+    fn definition_list(&self, lines: &[&str], start: usize) -> (Node, usize) {
+        let mut entries: Vec<Definition> = Vec::new();
+        let mut index = start;
+        loop {
+            // One or more term lines, with a definition marker ending the run.
+            let term_start = index;
+            while index < lines.len()
+                && !lines[index].trim().is_empty()
+                && !is_definition_marker(lines[index])
+                && !is_block_start(lines[index])
+            {
+                index += 1;
+            }
+            if index == term_start || index >= lines.len() || !is_definition_marker(lines[index]) {
+                break;
+            }
+            let term = self.inline(&lines[term_start..index].join("\n"));
+            let mut definitions = Vec::new();
+            while index < lines.len() && is_definition_marker(lines[index]) {
+                let mut text = definition_marker_body(lines[index]).to_string();
+                index += 1;
+                // A continuation line is part of the definition whether it is
+                // indented (the usual case) or lazy: only a new block ends it.
+                while index < lines.len() {
+                    let line = lines[index];
+                    if line.trim().is_empty() || is_definition_marker(line) {
+                        break;
+                    }
+                    if is_block_start(line) {
+                        break;
+                    }
+                    text.push('\n');
+                    text.push_str(&dedent(line, 4));
+                    index += 1;
+                }
+                definitions.push(self.inline(&text));
+            }
+            entries.push(Definition { term, definitions });
+            // A blank line between entries is ordinary spacing; the next entry
+            // exists only if another term run is followed by a marker.
+            let mut next = index;
+            while next < lines.len() && lines[next].trim().is_empty() {
+                next += 1;
+            }
+            if next >= lines.len() || !starts_definition_list(lines, next) {
+                break;
+            }
+            index = next;
+        }
+        (
+            Node::new(self.role("definition"), Kind::Definition { entries }),
+            index,
+        )
+    }
+
+    /// A `<dl>` block: each `<dt>` term and the `<dd>` definitions under it.
+    fn html_definition_list(&self, lines: &[&str], start: usize) -> (Node, usize) {
+        let mut raw = String::new();
+        let mut index = start;
+        while index < lines.len() {
+            raw.push_str(lines[index]);
+            raw.push('\n');
+            index += 1;
+            if raw.to_ascii_lowercase().contains("</dl>") {
+                break;
+            }
+        }
+        let entries = self.html_definition_entries(&raw);
+        if entries.is_empty() {
+            // A `<dl>` the parser could not read as terms and definitions is
+            // still raw HTML, which is what the fallback already says.
+            return self.html_block(lines, start);
+        }
+        (
+            Node::new(self.role("definition"), Kind::Definition { entries }),
+            index,
+        )
+    }
+
+    fn html_definition_entries(&self, raw: &str) -> Vec<Definition> {
+        // Lowercasing ASCII preserves byte offsets, so the found positions index
+        // the original text.
+        let lower = raw.to_ascii_lowercase();
+        let mut entries = Vec::new();
+        let mut terms: Vec<String> = Vec::new();
+        let mut definitions: Vec<String> = Vec::new();
+        let mut index = 0;
+        while index < lower.len() {
+            let next_dt = lower[index..].find("<dt");
+            let next_dd = lower[index..].find("<dd");
+            let (at, closing) = match (next_dt, next_dd) {
+                (Some(dt), Some(dd)) if dt <= dd => (index + dt, "</dt>"),
+                (_, Some(dd)) => (index + dd, "</dd>"),
+                (Some(dt), None) => (index + dt, "</dt>"),
+                (None, None) => break,
+            };
+            let Some(open_end) = lower[at..].find('>') else {
+                break;
+            };
+            let content_start = at + open_end + 1;
+            let Some(close_at) = lower[content_start..].find(closing) else {
+                break;
+            };
+            let inner = normalize(&raw[content_start..content_start + close_at]);
+            if closing == "</dt>" {
+                if !definitions.is_empty() && !terms.is_empty() {
+                    entries.push(Definition {
+                        term: self.inline(&terms.join("\n")),
+                        definitions: definitions
+                            .iter()
+                            .map(|definition| self.inline(definition))
+                            .collect(),
+                    });
+                    terms.clear();
+                    definitions.clear();
+                }
+                terms.push(inner);
+            } else if !terms.is_empty() {
+                definitions.push(inner);
+            }
+            index = content_start + close_at + closing.len();
+        }
+        if !definitions.is_empty() && !terms.is_empty() {
+            entries.push(Definition {
+                term: self.inline(&terms.join("\n")),
+                definitions: definitions
+                    .iter()
+                    .map(|definition| self.inline(definition))
+                    .collect(),
+            });
+        }
+        entries
     }
 
     fn list(&self, lines: &[&str], start: usize) -> (Node, usize) {
@@ -1087,6 +1264,194 @@ fn starts_with_tag(line: &str, name: &str) -> bool {
     }
 }
 
+/// Whether a line opens a definition list element, `<dl>`.
+fn is_definition_list_html(line: &str) -> bool {
+    starts_with_tag(line, "dl")
+}
+
+/// A definition-list marker: a `:` or `~` followed by whitespace or nothing,
+/// indented at most three columns. Returns the text after the marker.
+fn definition_marker_body(line: &str) -> &str {
+    let indent = indent_of(line);
+    if indent > 3 {
+        return "";
+    }
+    let rest = &line[indent..];
+    let Some(marker) = rest.chars().next() else {
+        return "";
+    };
+    if marker != ':' && marker != '~' {
+        return "";
+    }
+    let after = &rest[marker.len_utf8()..];
+    after.trim_start()
+}
+
+/// Whether a line is a definition-list marker.
+fn is_definition_marker(line: &str) -> bool {
+    let indent = indent_of(line);
+    if indent > 3 {
+        return false;
+    }
+    let rest = &line[indent..];
+    matches!(rest.chars().next(), Some(':') | Some('~'))
+        && rest.chars().nth(1).is_none_or(char::is_whitespace)
+}
+
+/// Whether the run of lines at `index` is a term followed by a definition
+/// marker, which is what makes it a definition list rather than a paragraph.
+fn starts_definition_list(lines: &[&str], index: usize) -> bool {
+    let Some(first) = lines.get(index) else {
+        return false;
+    };
+    if first.trim().is_empty() || is_definition_marker(first) {
+        return false;
+    }
+    let mut look = index;
+    while look < lines.len() {
+        let line = lines[look];
+        if line.trim().is_empty() {
+            return false;
+        }
+        if is_definition_marker(line) {
+            return look > index;
+        }
+        if is_block_start(line) {
+            return false;
+        }
+        look += 1;
+    }
+    false
+}
+
+/// A footnote definition line: `[^label]: body`.
+fn footnote_definition(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix("[^")?;
+    let close = rest.find("]:")?;
+    let label = &rest[..close];
+    if label.is_empty() || label.contains('[') || label.contains(']') {
+        return None;
+    }
+    Some((label, rest[close + 2..].trim()))
+}
+
+/// Whether a line is a footnote definition.
+fn is_footnote_definition(line: &str) -> bool {
+    footnote_definition(line).is_some()
+}
+
+/// The index after a footnote definition's body, so its continuation lines are
+/// skipped with it rather than parsed as an indented code block.
+fn footnote_definition_end(lines: &[&str], start: usize) -> usize {
+    let mut index = start + 1;
+    while index < lines.len() {
+        let line = lines[index];
+        if line.trim().is_empty() || is_block_start(line) {
+            break;
+        }
+        index += 1;
+    }
+    index
+}
+
+/// A footnote definition as the document knows it: the number its marker shows
+/// and the raw body text, before inline parsing.
+struct Footnote {
+    number: usize,
+    body: String,
+}
+
+/// Every footnote definition in the document, keyed by its lowercased label.
+///
+/// The number comes from the definition's order in the document, so it is stable
+/// as an answer is appended to: a new definition can only be later, never
+/// renumber an earlier one.
+fn collect_footnotes(lines: &[&str]) -> BTreeMap<String, Footnote> {
+    let mut footnotes = BTreeMap::new();
+    let mut number = 0;
+    let mut index = 0;
+    while index < lines.len() {
+        if let Some((label, body)) = footnote_definition(lines[index]) {
+            number += 1;
+            let mut text = body.to_string();
+            let end = footnote_definition_end(lines, index);
+            for line in &lines[index + 1..end] {
+                text.push('\n');
+                text.push_str(&dedent(line, 4));
+            }
+            footnotes.insert(label.to_ascii_lowercase(), Footnote { number, body: text });
+            index = end;
+            continue;
+        }
+        index += 1;
+    }
+    footnotes
+}
+
+/// A footnote reference `[^label]`, when a definition with that label exists.
+/// Returns the number the marker shows and the index after the reference.
+fn footnote_reference(
+    text: &str,
+    start: usize,
+    footnotes: &BTreeMap<String, Footnote>,
+) -> Option<(usize, usize)> {
+    let rest = text.get(start..)?;
+    let inner = rest.strip_prefix("[^")?;
+    let close = inner.find(']')?;
+    let label = &inner[..close];
+    if label.is_empty() || label.contains('[') {
+        return None;
+    }
+    let footnote = footnotes.get(&label.to_ascii_lowercase())?;
+    Some((footnote.number, start + 2 + close + 1))
+}
+
+/// Whether a node is the footnotes section the parser appends last.
+fn is_footnote_section(node: &Node) -> bool {
+    node.role == "markdown.footnote" && matches!(node.kind, Kind::Section)
+}
+
+/// Append the document's footnotes under a quiet heading, one entry per note.
+///
+/// The marker is a link with a `footnote:` target, which is the parser's whole
+/// contract for it: a client styles it as a marker and never follows it. The
+/// back-link carries `footnote-back:` and points the reader home.
+fn append_footnotes(
+    out: &mut Vec<Node>,
+    references: &BTreeMap<String, String>,
+    footnotes: &BTreeMap<String, Footnote>,
+) {
+    if footnotes.is_empty() {
+        return;
+    }
+    let mut ordered: Vec<&Footnote> = footnotes.values().collect();
+    ordered.sort_by_key(|footnote| footnote.number);
+    let mut section = Node::new("markdown.footnote", Kind::Section).child(Node::new(
+        "markdown.footnote.heading",
+        Kind::Text {
+            spans: vec![Span::plain("Footnotes")],
+        },
+    ));
+    for footnote in ordered {
+        let mut spans = vec![
+            Span::link(
+                footnote.number.to_string(),
+                format!("footnote:{}", footnote.number),
+            ),
+            Span::plain(" "),
+        ];
+        spans.extend(inline_inner(&footnote.body, false, references, footnotes));
+        spans.push(Span::plain(" "));
+        spans.push(Span::link(
+            "↩",
+            format!("footnote-back:{}", footnote.number),
+        ));
+        section = section.child(Node::new("markdown.footnote.entry", Kind::Text { spans }));
+    }
+    out.push(section);
+}
+
 /// The GitHub-alert kind of a blockquote's first line, if it names one.
 fn alert_kind(line: &str) -> Option<&'static str> {
     Some(match line.trim().to_ascii_lowercase().as_str() {
@@ -1105,7 +1470,7 @@ fn reference_definition(line: &str) -> Option<(&str, &str)> {
     let rest = trimmed.strip_prefix('[')?;
     let close = rest.find("]:")?;
     let label = &rest[..close];
-    if label.is_empty() || label.contains('[') || label.contains(']') {
+    if label.is_empty() || label.contains('[') || label.contains(']') || label.starts_with('^') {
         return None;
     }
     let raw = rest[close + 2..].trim();
@@ -2043,6 +2408,130 @@ mod tests {
             "{:?}",
             out[0].children
         );
+    }
+
+    #[test]
+    fn a_definition_list_parses_terms_and_definitions() {
+        let out = parse("Apple\n:   A fruit.\n:   A company.\n\nOrange\n:   A colour.");
+        assert_eq!(roles(&out), vec!["message.assistant.markdown.definition"]);
+        match &out[0].kind {
+            Kind::Definition { entries } => {
+                assert_eq!(entries.len(), 2, "two entries, one per term block");
+                assert_eq!(text_of(&entries[0].term), "Apple");
+                assert_eq!(entries[0].definitions.len(), 2);
+                assert_eq!(text_of(&entries[0].definitions[0]), "A fruit.");
+                assert_eq!(text_of(&entries[0].definitions[1]), "A company.");
+                assert_eq!(text_of(&entries[1].term), "Orange");
+                assert_eq!(text_of(&entries[1].definitions[0]), "A colour.");
+            }
+            other => panic!("expected a definition list, got {other:?}"),
+        }
+        validate(&Node::section("root").children(out)).unwrap();
+    }
+
+    #[test]
+    fn a_tilde_marker_and_multiple_terms_share_a_definition() {
+        let out = parse("Term A\nTerm B\n~ shared body\n    continued lazily\nand more");
+        match &out[0].kind {
+            Kind::Definition { entries } => {
+                assert_eq!(entries.len(), 1);
+                // Two term lines are one term whose newline is content.
+                assert_eq!(text_of(&entries[0].term), "Term A\nTerm B");
+                assert_eq!(
+                    text_of(&entries[0].definitions[0]),
+                    "shared body\ncontinued lazily\nand more"
+                );
+            }
+            other => panic!("expected a definition list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dl_element_maps_to_the_same_kind() {
+        let out = parse("<dl>\n<dt>Apple</dt>\n<dd>A fruit.</dd>\n</dl>");
+        assert_eq!(roles(&out), vec!["message.assistant.markdown.definition"]);
+        match &out[0].kind {
+            Kind::Definition { entries } => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(text_of(&entries[0].term), "Apple");
+                assert_eq!(text_of(&entries[0].definitions[0]), "A fruit.");
+            }
+            other => panic!("expected a definition list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn footnote_references_resolve_and_emit_a_section() {
+        let out = parse("Text[^one].\n\n[^one]: The note.");
+        // The marker is a link with a `footnote:` target, whose text is the number.
+        match &out[0].kind {
+            Kind::Text { spans } => assert!(
+                spans.iter().any(|span| matches!(
+                    &span.kind,
+                    SpanKind::Link { href } if href == "footnote:1"
+                ) && span.text == "1"),
+                "{spans:?}"
+            ),
+            other => panic!("expected a paragraph, got {other:?}"),
+        }
+        // The section is emitted last and carries the definition and a back-link.
+        let section = out.last().expect("a footnotes section");
+        assert_eq!(section.role, "markdown.footnote");
+        assert!(matches!(section.kind, Kind::Section));
+        let text = section
+            .children
+            .iter()
+            .filter_map(|child| match &child.kind {
+                Kind::Text { spans } => Some(text_of(spans)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text.contains("The note."), "{text}");
+        assert!(text.contains('↩'), "{text}");
+        validate(&Node::section("root").children(out)).unwrap();
+    }
+
+    #[test]
+    fn a_footnote_definition_is_not_a_link_reference() {
+        // A bare note definition is document state, not a paragraph, and it does
+        // not register as a link reference for an ordinary shortcut.
+        let out = parse("[^one]: The note.");
+        assert_eq!(out.len(), 1, "{:?}", roles(&out));
+        assert_eq!(out[0].role, "markdown.footnote");
+        assert!(
+            !out.iter().any(|node| node.role.ends_with(".paragraph")),
+            "a definition became a paragraph"
+        );
+    }
+
+    #[test]
+    fn a_footnote_reference_to_a_later_definition_resolves_incrementally() {
+        // A streaming parse of a marker with no definition yet does not resolve
+        // it, and emits no footnotes section.
+        let previous = document("message.assistant", "Text[^one].", None);
+        let resolves = |blocks: &[Node]| {
+            blocks.iter().any(|node| match &node.kind {
+                Kind::Text { spans } => spans.iter().any(
+                    |span| matches!(&span.kind, SpanKind::Link { href } if href == "footnote:1"),
+                ),
+                _ => false,
+            })
+        };
+        assert!(!resolves(&previous.blocks));
+        assert!(
+            previous
+                .blocks
+                .iter()
+                .all(|node| node.role != "markdown.footnote"),
+            "{:?}",
+            roles(&previous.blocks)
+        );
+        // ...and once it is appended, a full parse and the incremental one agree,
+        // and the marker resolves to the definition's number.
+        let next = assert_incremental("Text[^one].\n\n[^one]: The note.", &previous);
+        assert!(resolves(&next.blocks), "{:?}", next.blocks);
+        assert_eq!(next.blocks.last().unwrap().role, "markdown.footnote");
     }
 
     #[test]

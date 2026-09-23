@@ -12,3 +12,6 @@ misa-value.workspace = true
 misa-render.workspace = true
 misa-syntax.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+misa-markdown.workspace = true

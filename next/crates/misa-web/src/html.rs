@@ -121,6 +121,22 @@ fn render_node(node: &Node, prefix: &str, out: &mut String) {
             }
             out.push_str("</tbody></table>");
         }
+        Kind::Definition { entries } => {
+            // A definition list is what `<dl>` already means, so the browser gets
+            // the terms and definitions as the elements it already knows.
+            out.push_str("<dl>");
+            for entry in entries {
+                out.push_str("<dt>");
+                inline(&entry.term, out);
+                out.push_str("</dt>");
+                for definition in &entry.definitions {
+                    out.push_str("<dd>");
+                    inline(definition, out);
+                    out.push_str("</dd>");
+                }
+            }
+            out.push_str("</dl>");
+        }
         Kind::Fields { fields } => {
             out.push_str("<dl>");
             for field in fields {
@@ -259,6 +275,7 @@ fn element_for(node: &Node) -> String {
         Kind::List { ordered: true, .. } => "ol".into(),
         Kind::List { .. } => "ul".into(),
         Kind::Table { .. } => "div".into(),
+        Kind::Definition { .. } => "dl".into(),
         Kind::Fields { .. } => "dl".into(),
         Kind::Collapsible { .. } => "details".into(),
         Kind::Image { .. } => "figure".into(),

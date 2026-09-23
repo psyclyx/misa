@@ -197,6 +197,16 @@ pub enum Kind {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         align: Vec<Alignment>,
     },
+    /// A definition list: terms and the definitions that explain them.
+    ///
+    /// The order of `entries` is the document's order. One entry may carry a
+    /// term that spans several source lines (the newline is content, exactly as
+    /// it is in a paragraph) and several definitions, which is what a term with
+    /// more than one `:` line means.
+    Definition {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        entries: Vec<Definition>,
+    },
     /// Named values: a tool call's arguments, a result's summary, a dialog.
     Fields { fields: Vec<Field> },
     /// A node with a short form and a long form.
@@ -238,6 +248,18 @@ pub enum Alignment {
     Left,
     Center,
     Right,
+}
+
+/// One term and the definitions that explain it, the whole of a definition
+/// list's vocabulary.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Definition {
+    /// The term, as inline runs. A term that the author wrote across several
+    /// lines keeps the newlines between them: they are prose, not structure.
+    pub term: Vec<Span>,
+    /// One or more definitions for the term, each a run of inline content.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub definitions: Vec<Vec<Span>>,
 }
 
 /// One inline run. Adjacent runs with the same kind are merged by convention, not
@@ -568,6 +590,26 @@ fn validate_at(
                 }
             }
         }
+        Kind::Definition { entries } => {
+            // A definition list that names no terms is not a list, and a term
+            // with nothing defining it is a paragraph. Both are the parser's
+            // business, not a shape a client should have to draw.
+            if entries.is_empty() {
+                return Err(fault(path, "has no definition entries"));
+            }
+            for entry in entries {
+                if entry.term.is_empty() {
+                    return Err(fault(path, "has a definition entry with no term"));
+                }
+                if entry.definitions.is_empty() {
+                    return Err(fault(path, "has a term with no definitions"));
+                }
+                check_spans(&entry.term, path)?;
+                for definition in &entry.definitions {
+                    check_spans(definition, path)?;
+                }
+            }
+        }
         Kind::Fields { fields } => {
             for field in fields {
                 if field.id.is_empty() {
@@ -873,6 +915,15 @@ mod tests {
                 },
             ),
             Node::new(
+                "a.definition",
+                Kind::Definition {
+                    entries: vec![Definition {
+                        term: vec![Span::plain("Term")],
+                        definitions: vec![vec![Span::plain("a definition")]],
+                    }],
+                },
+            ),
+            Node::new(
                 "a.fields",
                 Kind::Fields {
                     fields: vec![Field {
@@ -1000,6 +1051,69 @@ mod tests {
         assert!(validate(&list(Vec::new())).is_ok());
         assert!(validate(&list(vec![Some(true)])).is_ok());
         assert!(validate(&list(vec![Some(true), Some(false)])).is_err());
+    }
+
+    #[test]
+    fn a_definition_list_needs_a_term_and_a_definition() {
+        let definition = |entries| Node::new("a.definition", Kind::Definition { entries });
+        assert!(
+            validate(&definition(Vec::new())).is_err(),
+            "a list with no entries is not a list"
+        );
+        assert!(
+            validate(&definition(vec![Definition {
+                term: vec![Span::plain("Term")],
+                definitions: vec![vec![Span::plain("body")]],
+            }]))
+            .is_ok()
+        );
+        assert!(
+            validate(&definition(vec![Definition {
+                term: Vec::new(),
+                definitions: vec![vec![Span::plain("body")]],
+            }]))
+            .is_err(),
+            "a term is required"
+        );
+        assert!(
+            validate(&definition(vec![Definition {
+                term: vec![Span::plain("Term")],
+                definitions: Vec::new(),
+            }]))
+            .is_err(),
+            "a definition is required"
+        );
+    }
+
+    #[test]
+    fn a_definition_without_definitions_decodes_from_an_older_tree() {
+        // The field is defaulted so a tree that named a term before any body
+        // arrived still decodes; validation is what refuses it as a final view.
+        let node = Node::new(
+            "a.definition",
+            Kind::Definition {
+                entries: vec![Definition {
+                    term: vec![Span::plain("T")],
+                    definitions: Vec::new(),
+                }],
+            },
+        );
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&node, &mut bytes).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("definitions"),
+            "an empty definition list should not reach the wire"
+        );
+        let back: Node =
+            ciborium::de::from_reader(&bytes[..]).expect("a defaulted definition decodes");
+        match back.kind {
+            Kind::Definition { entries } => {
+                assert_eq!(entries.len(), 1);
+                assert!(entries[0].definitions.is_empty());
+            }
+            other => panic!("expected a definition, got {other:?}"),
+        }
     }
 
     #[test]
