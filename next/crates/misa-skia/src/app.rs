@@ -1771,7 +1771,7 @@ impl App {
                 });
                 *y += 22.0;
             }
-            Kind::Table { head, rows } => {
+            Kind::Table { head, rows, .. } => {
                 let columns = head
                     .len()
                     .max(rows.iter().map(Vec::len).max().unwrap_or(1))
@@ -2355,6 +2355,7 @@ mod tests {
                     rows: vec![vec![vec![Span::plain(
                         "A long cell that wraps into multiple visible lines",
                     )]]],
+                    align: Vec::new(),
                 },
             ))
             .child(Node::new(

@@ -98,7 +98,7 @@ fn render_node(node: &Node, prefix: &str, out: &mut String) {
             }
             out.push_str(&items_out);
         }
-        Kind::Table { head, rows } => {
+        Kind::Table { head, rows, .. } => {
             out.push_str("<table>");
             if !head.is_empty() {
                 out.push_str("<thead><tr>");

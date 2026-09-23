@@ -38,7 +38,7 @@
 
 use std::collections::BTreeMap;
 
-use misa_proto::view::{Kind, Node, Span, SpanKind};
+use misa_proto::view::{Alignment, Kind, Node, Span, SpanKind};
 
 /// Parse a message body into block nodes, each role under `prefix`.
 ///
@@ -932,11 +932,26 @@ impl Parser<'_> {
 
     /// A pipe table: a header row, a separator row, then body rows.
     ///
-    /// Alignment markers are parsed only to validate them; the semantic tree does
-    /// not carry a column alignment, so a client decides how to line a cell up.
+    /// The separator row's colons are the author's alignment for each column, so
+    /// they travel on the tree rather than being reduced to a validation. A cell's
+    /// inline runs are parsed with the same rules as any other text, so emphasis,
+    /// code, and links inside a cell mean what they mean everywhere else. A short
+    /// row while streaming is padded with empty cells.
     fn table(&self, lines: &[&str], start: usize) -> (Node, usize) {
-        let columns = split_table_row(lines[start]).len();
-        let head = split_table_row(lines[start])
+        let header_cells = split_table_row(lines[start]);
+        let columns = header_cells.len();
+        let delimiters = split_table_row(lines[start + 1]);
+        // A delimiter row of a different shape still yields one alignment per
+        // header column; a missing one is the left default.
+        let align: Vec<Alignment> = (0..columns)
+            .map(|index| {
+                delimiters
+                    .get(index)
+                    .map(|cell| table_alignment(cell))
+                    .unwrap_or_default()
+            })
+            .collect();
+        let head = header_cells
             .into_iter()
             .map(|cell| self.inline(&cell))
             .collect();
@@ -956,7 +971,7 @@ impl Parser<'_> {
             index += 1;
         }
         (
-            Node::new(self.role("table"), Kind::Table { head, rows }),
+            Node::new(self.role("table"), Kind::Table { head, rows, align }),
             index,
         )
     }
@@ -1151,15 +1166,54 @@ fn is_table(lines: &[&str], index: usize) -> bool {
     header.contains('|') && is_table_separator(separator)
 }
 
+/// The alignment a delimiter cell asks for: `:--` left, `:-:` centre, `--:` right.
+fn table_alignment(cell: &str) -> Alignment {
+    let cell = cell.trim();
+    match (cell.starts_with(':'), cell.ends_with(':')) {
+        (true, true) => Alignment::Center,
+        (false, true) => Alignment::Right,
+        _ => Alignment::Left,
+    }
+}
+
 /// Split a pipe-table row into trimmed cells, without the outer pipes.
+///
+/// A backslash escapes the character after it, so `\|` is content, not a
+/// separator. The pair is kept in the cell text and resolved by the inline
+/// parser, which is the one place an escape becomes the character it protected.
 fn split_table_row(line: &str) -> Vec<String> {
-    let trimmed = line.trim();
-    let trimmed = trimmed.strip_prefix('|').unwrap_or(trimmed);
-    let trimmed = trimmed.strip_suffix('|').unwrap_or(trimmed);
-    trimmed
-        .split('|')
-        .map(|cell| cell.trim().to_string())
-        .collect()
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut chars = line.trim().chars().peekable();
+    // An unescaped leading pipe is the row's frame, not its first cell.
+    if chars.peek() == Some(&'|') {
+        chars.next();
+    }
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            current.push(ch);
+            if let Some(next) = chars.next() {
+                current.push(next);
+            }
+            continue;
+        }
+        if ch == '|' {
+            if chars.peek().is_none() {
+                // A trailing pipe closes the row rather than opening an empty cell.
+                cells.push(current.trim().to_string());
+                current.clear();
+                break;
+            }
+            cells.push(current.trim().to_string());
+            current.clear();
+            continue;
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() || cells.is_empty() {
+        cells.push(current.trim().to_string());
+    }
+    cells
 }
 
 /// A setext heading: a line of text underlined by `===` or `---`.
@@ -1311,7 +1365,10 @@ fn flush(out: &mut Vec<Span>, plain: &mut String) {
 }
 
 fn is_escapable(ch: char) -> bool {
-    matches!(ch, '\\' | '`' | '*' | '_' | '~' | '[' | ']' | '(' | ')')
+    matches!(
+        ch,
+        '\\' | '`' | '*' | '_' | '~' | '[' | ']' | '(' | ')' | '|'
+    )
 }
 
 /// The text between a marker at `start` and the next one, and the index after it.
@@ -1538,11 +1595,12 @@ mod tests {
         let out = parse("| a | b |\n| --- | --- |\n| one | two |\n| three | four |");
         assert_eq!(roles(&out), vec!["message.assistant.markdown.table"]);
         match &out[0].kind {
-            Kind::Table { head, rows } => {
+            Kind::Table { head, rows, align } => {
                 assert_eq!(head.len(), 2);
                 assert_eq!(rows.len(), 2);
                 assert_eq!(text_of(&head[0]), "a");
                 assert_eq!(text_of(&rows[1][1]), "four");
+                assert_eq!(align, &[Alignment::Left, Alignment::Left]);
             }
             other => panic!("expected a table, got {other:?}"),
         }
@@ -1557,12 +1615,118 @@ mod tests {
 
     #[test]
     fn a_table_supports_alignment_markers_and_ragged_rows() {
-        let out = parse("| a | b |\n|:--|--:|\n| one |");
+        let out = parse("| a | b | c |\n|:--|:-:|--:|\n| one |");
         match &out[0].kind {
-            Kind::Table { rows, .. } => {
+            Kind::Table { rows, align, .. } => {
                 assert_eq!(rows.len(), 1);
-                assert_eq!(rows[0].len(), 2, "a short row is padded to the header");
+                assert_eq!(rows[0].len(), 3, "a short row is padded to the header");
                 assert_eq!(text_of(&rows[0][1]), "");
+                assert_eq!(
+                    align,
+                    &[Alignment::Left, Alignment::Center, Alignment::Right]
+                );
+            }
+            other => panic!("expected a table, got {other:?}"),
+        }
+        // A bare separator is left-aligned, and a table with no markers still
+        // carries one alignment per column rather than nothing at all.
+        match &parse("| a | b |\n| --- | --- |\n| one | two |")[0].kind {
+            Kind::Table { align, .. } => {
+                assert_eq!(align, &[Alignment::Left, Alignment::Left])
+            }
+            other => panic!("expected a table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_escaped_pipe_is_content_and_a_cell_keeps_its_inline_runs() {
+        // `\|` does not split the cell, and the inline parser resolves the escape
+        // to the pipe it protected while keeping the surrounding emphasis.
+        let out =
+            parse("| a | b |\n| --- | --- |\n| x \\| y | **bold** `code` [link](https://x) |");
+        match &out[0].kind {
+            Kind::Table { head, rows, .. } => {
+                assert_eq!(head.len(), 2, "the escaped pipe must not add a column");
+                assert_eq!(text_of(&rows[0][0]), "x | y");
+                let spans = &rows[0][1];
+                assert!(
+                    spans.iter().any(|span| span.kind == SpanKind::Strong),
+                    "{spans:?}"
+                );
+                assert!(
+                    spans.iter().any(|span| span.kind == SpanKind::Code),
+                    "{spans:?}"
+                );
+                assert!(
+                    spans.iter().any(|span| matches!(
+                        &span.kind,
+                        SpanKind::Link { href } if href == "https://x"
+                    )),
+                    "{spans:?}"
+                );
+                // A doubled backslash is a literal backslash followed by a real
+                // separator, so the second cell still starts a new column.
+                let doubled = split_table_row(r"| a \\| b |");
+                // The pair is kept for the inline parser; `\\` is two cells once
+                // the escape is resolved.
+                assert_eq!(doubled, vec!["a \\\\", "b"]);
+            }
+            other => panic!("expected a table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_streaming_table_cell_styles_an_unclosed_span() {
+        // The partial parse is what a table sees while it is still arriving: the
+        // last cell's opener has no closer yet, and the row is padded to the
+        // header's width so the renderer already has a column for it.
+        let document = document(
+            "message.assistant",
+            "| a | b |\n| --- | --- |\n| one | **two",
+            None,
+        );
+        match &document.blocks[0].kind {
+            Kind::Table { rows, align, .. } => {
+                assert_eq!(rows[0].len(), 2);
+                assert_eq!(align.len(), 2);
+                assert!(
+                    rows[0][1]
+                        .iter()
+                        .any(|span| span.kind == SpanKind::Strong && span.text == "two"),
+                    "{:?}",
+                    rows[0][1]
+                );
+            }
+            other => panic!("expected a table, got {other:?}"),
+        }
+        // A settled parse keeps the same row's marker literal instead.
+        match &parse("| a | b |\n| --- | --- |\n| one | **two")[0].kind {
+            Kind::Table { rows, .. } => {
+                assert_eq!(text_of(&rows[0][1]), "**two");
+            }
+            other => panic!("expected a table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_streamed_table_keeps_its_alignment_as_rows_arrive() {
+        let first = document(
+            "message.assistant",
+            "| a | b |\n|:--|--:|\n| one | two |",
+            None,
+        );
+        let next = assert_incremental(
+            "| a | b |\n|:--|--:|\n| one | two |\n| three | four |",
+            &first,
+        );
+        match &next.blocks[0].kind {
+            Kind::Table { rows, align, .. } => {
+                assert_eq!(rows.len(), 2, "the appended row arrived");
+                assert_eq!(
+                    align,
+                    &[Alignment::Left, Alignment::Right],
+                    "the delimiter row's alignment survived the append"
+                );
             }
             other => panic!("expected a table, got {other:?}"),
         }

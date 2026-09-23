@@ -475,7 +475,7 @@ impl Builder<'_> {
                 items,
                 markers,
             } => self.list(ordered, items, markers, indent, base),
-            Kind::Table { head, rows } => self.table(head, rows, indent, base),
+            Kind::Table { head, rows, .. } => self.table(head, rows, indent, base),
             Kind::Fields { fields } => self.fields(fields, indent, base),
             Kind::Collapsible { summary } => {
                 self.spans(indent, summary, base);

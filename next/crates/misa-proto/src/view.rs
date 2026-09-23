@@ -186,9 +186,16 @@ pub enum Kind {
         markers: Vec<Option<bool>>,
     },
     /// A table. Header cells and body cells are inline content.
+    ///
+    /// `align` is parallel to the header's columns and comes from the delimiter
+    /// row's colons, so a client can line each column up the way the author
+    /// asked without parsing the source. It is empty on a tree written before
+    /// the field existed, and every column is then left-aligned.
     Table {
         head: Vec<Vec<Span>>,
         rows: Vec<Vec<Vec<Span>>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        align: Vec<Alignment>,
     },
     /// Named values: a tool call's arguments, a result's summary, a dialog.
     Fields { fields: Vec<Field> },
@@ -218,6 +225,19 @@ pub enum Kind {
     /// `validate` enforces that, which is what keeps this from becoming a bag of
     /// values that every frontend has to interpret.
     Fact { value: Value },
+}
+
+/// How a table column lines its cells up, taken from the delimiter row's colons.
+///
+/// A column with no colons is left-aligned, which is also what an older tree
+/// without any alignment at all means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Alignment {
+    #[default]
+    Left,
+    Center,
+    Right,
 }
 
 /// One inline run. Adjacent runs with the same kind are merged by convention, not
@@ -532,7 +552,13 @@ fn validate_at(
                 }
             }
         }
-        Kind::Table { head, rows } => {
+        Kind::Table { head, rows, align } => {
+            if !align.is_empty() && align.len() != head.len() {
+                return Err(fault(
+                    path,
+                    "has an alignment for every column or none at all",
+                ));
+            }
             for cell in head {
                 check_spans(cell, path)?;
             }
@@ -843,6 +869,7 @@ mod tests {
                 Kind::Table {
                     head: vec![vec![Span::plain("name")]],
                     rows: vec![vec![vec![Span::plain("value")]]],
+                    align: vec![Alignment::Center],
                 },
             ),
             Node::new(
@@ -973,5 +1000,47 @@ mod tests {
         assert!(validate(&list(Vec::new())).is_ok());
         assert!(validate(&list(vec![Some(true)])).is_ok());
         assert!(validate(&list(vec![Some(true), Some(false)])).is_err());
+    }
+
+    #[test]
+    fn a_table_alignment_is_parallel_to_its_header() {
+        let table = |align| {
+            Node::new(
+                "a.table",
+                Kind::Table {
+                    head: vec![vec![Span::plain("a")], vec![Span::plain("b")]],
+                    rows: Vec::new(),
+                    align,
+                },
+            )
+        };
+        // No alignment at all is an older tree, and it is valid.
+        assert!(validate(&table(Vec::new())).is_ok());
+        assert!(validate(&table(vec![Alignment::Left, Alignment::Right])).is_ok());
+        assert!(validate(&table(vec![Alignment::Left])).is_err());
+    }
+
+    #[test]
+    fn a_table_without_alignment_decodes_as_left_aligned() {
+        // A tree written before the field existed decodes, and the alignment it
+        // never carried reads as the left default.
+        let node = Node::new(
+            "a.table",
+            Kind::Table {
+                head: vec![vec![Span::plain("a")]],
+                rows: vec![vec![vec![Span::plain("1")]]],
+                align: Vec::new(),
+            },
+        );
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&node, &mut bytes).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("align"),
+            "an empty alignment should not reach the wire"
+        );
+        let back: Node = ciborium::de::from_reader(&bytes[..]).unwrap();
+        assert_eq!(back, node);
+        assert_eq!(Alignment::default(), Alignment::Left);
     }
 }

@@ -15,7 +15,7 @@
 //! What it does not decide: any colour a theme has not named, and anything about
 //! the agent.
 
-use misa_proto::view::{Kind, Node, Span, State};
+use misa_proto::view::{Alignment, Kind, Node, Span, State};
 use misa_value::Value;
 
 use misa_render::Color;
@@ -255,6 +255,14 @@ struct CodeBlock<'a> {
     margin: Margin,
     /// The surface behind the block's rows. A diff replaces it per line.
     surface: Option<Style>,
+}
+
+/// A styled table cell and the width its runs occupy, plus the style its own
+/// padding carries so a cell's surface stays continuous.
+struct Cell {
+    spans: Vec<(Style, String)>,
+    width: usize,
+    base: Style,
 }
 
 struct Renderer<'a> {
@@ -503,10 +511,10 @@ impl<'a> Renderer<'a> {
                 self.state_mark(node, indent, &mut out);
                 out
             }
-            Kind::Table { head, rows } => {
+            Kind::Table { head, rows, align } => {
                 let chrome = Chrome::nested(Prefix::none());
                 let inner = inset + chrome.horizontal();
-                let mut content = self.table(head, rows, node, indent, inner, style);
+                let mut content = self.table(head, rows, align, node, indent, inner, style);
                 self.state_mark(node, indent, &mut content);
                 self.frame(&chrome, indent, None, &node.id, content)
             }
@@ -1007,10 +1015,165 @@ impl<'a> Renderer<'a> {
         spans
     }
 
+    /// One styled table cell: its inline runs resolved against `base`, and the
+    /// width they occupy. Inline emphasis, code, and links survive because the
+    /// cell is a run of spans, not a flattened string.
+    fn cell(&self, spans: &[Span], base: Style) -> Cell {
+        let spans: Vec<(Style, String)> = spans
+            .iter()
+            .map(|span| (self.span_style(span, base), span.text.clone()))
+            .collect();
+        let width = spans.iter().map(|(_, text)| width(text)).sum();
+        Cell { spans, width, base }
+    }
+
+    /// One table row: each cell padded to its column's width per the column's
+    /// alignment, joined by `gap`, and shifted by `offset` so the table is
+    /// centred. `widths` and `align` are parallel to the header's columns.
+    fn table_row(
+        &self,
+        cells: &[Cell],
+        widths: &[usize],
+        align: &[Alignment],
+        gap: usize,
+        offset: usize,
+        indent: u8,
+        node: &Node,
+    ) -> Line {
+        let mut spans = Vec::new();
+        if offset > 0 {
+            spans.push((Style::PLAIN, " ".repeat(offset)));
+        }
+        for (index, column) in widths.iter().enumerate() {
+            if index > 0 {
+                spans.push((Style::PLAIN, " ".repeat(gap)));
+            }
+            let cell = cells.get(index);
+            let content = cell
+                .map(|cell| clip_runs(&cell.spans, *column))
+                .unwrap_or_default();
+            let used = content.iter().map(|(_, text)| width(text)).sum::<usize>();
+            let slack = column.saturating_sub(used);
+            let (left, right) = match align.get(index).copied().unwrap_or_default() {
+                Alignment::Left => (0, slack),
+                Alignment::Center => (slack / 2, slack - slack / 2),
+                Alignment::Right => (slack, 0),
+            };
+            let base = cell.map_or(Style::PLAIN, |cell| cell.base);
+            if left > 0 {
+                spans.push((base, " ".repeat(left)));
+            }
+            spans.extend(content);
+            if right > 0 {
+                spans.push((base, " ".repeat(right)));
+            }
+        }
+        Line {
+            indent,
+            spans,
+            surface: None,
+            node: Some(node.id.clone()),
+        }
+    }
+
+    /// One table separator: a rule the full width of the table, carrying the
+    /// rule role and the same centre offset as the rows.
+    fn table_rule(
+        &self,
+        table_width: usize,
+        offset: usize,
+        indent: u8,
+        style: Style,
+        node: &Node,
+    ) -> Line {
+        let mut spans = Vec::new();
+        if offset > 0 {
+            spans.push((Style::PLAIN, " ".repeat(offset)));
+        }
+        spans.push((style, "─".repeat(table_width.max(1))));
+        Line {
+            indent,
+            spans,
+            surface: None,
+            node: Some(node.id.clone()),
+        }
+    }
+
+    /// A table with too little room for a grid keeps its fields: a header label,
+    /// a colon, and the cell, one line each.
+    fn stacked(
+        &self,
+        head: &[Vec<Span>],
+        rows: &[Vec<Vec<Span>>],
+        columns: usize,
+        indent: u8,
+        node: &Node,
+        style: Style,
+        available: usize,
+    ) -> Vec<Line> {
+        let text_of = |cells: &[Span]| {
+            cells
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>()
+        };
+        let mut out = Vec::new();
+        // A header that has arrived before any body row still says something;
+        // a streamed table starts life exactly this way.
+        if rows.is_empty() {
+            for index in 0..columns {
+                let label = head
+                    .get(index)
+                    .map(|cell| text_of(cell))
+                    .unwrap_or_default();
+                for line in wrap_spans(&[Span::plain(label)], available) {
+                    out.push(Line {
+                        indent,
+                        spans: line
+                            .iter()
+                            .map(|span| (self.span_style(span, style), span.text.clone()))
+                            .collect(),
+                        surface: None,
+                        node: Some(node.id.clone()),
+                    });
+                }
+            }
+            return out;
+        }
+        for (row_index, row) in rows.iter().enumerate() {
+            if row_index > 0 {
+                out.push(Line::default());
+            }
+            for index in 0..columns {
+                let label = head
+                    .get(index)
+                    .map(|cell| text_of(cell))
+                    .unwrap_or_default();
+                let mut spans = vec![Span::plain(format!("{label}: "))];
+                if let Some(cell) = row.get(index) {
+                    spans.extend(cell.iter().cloned());
+                }
+                for line in wrap_spans(&spans, available) {
+                    out.push(Line {
+                        indent,
+                        spans: line
+                            .iter()
+                            .map(|span| (self.span_style(span, style), span.text.clone()))
+                            .collect(),
+                        surface: None,
+                        node: Some(node.id.clone()),
+                    });
+                }
+            }
+        }
+        out
+    }
+
     fn table(
         &self,
         head: &[Vec<Span>],
         rows: &[Vec<Vec<Span>>],
+        align: &[Alignment],
         node: &Node,
         indent: u8,
         inset: usize,
@@ -1018,83 +1181,57 @@ impl<'a> Renderer<'a> {
     ) -> Vec<Line> {
         let role = &node.role;
         let columns = head.len().max(rows.iter().map(Vec::len).max().unwrap_or(0));
-        let mut out = Vec::new();
         if columns == 0 {
-            return out;
+            return Vec::new();
         }
-        let text_of = |cells: &[Span]| {
-            cells
-                .iter()
-                .map(|span| span.text.as_str())
-                .collect::<String>()
-        };
+        let available = self.budget(indent, inset);
         // A table that cannot give every column a border, padding and a wide
         // grapheme is shown as stacked fields, as the previous renderer did.
-        let available = self.budget(indent, inset);
         if available < columns.saturating_mul(5) + 1 {
-            for (row_index, row) in rows.iter().enumerate() {
-                if row_index > 0 {
-                    out.push(Line::default());
-                }
-                for index in 0..columns {
-                    let label = head
-                        .get(index)
-                        .map(|cell| text_of(cell))
-                        .unwrap_or_default();
-                    let mut spans = vec![Span::plain(format!("{label}: "))];
-                    if let Some(cell) = row.get(index) {
-                        spans.extend(cell.iter().cloned());
-                    }
-                    for line in wrap_spans(&spans, available) {
-                        out.push(Line {
-                            indent,
-                            spans: line
-                                .iter()
-                                .map(|span| (self.span_style(span, style), span.text.clone()))
-                                .collect(),
-                            surface: None,
-                            node: Some(node.id.clone()),
-                        });
-                    }
-                }
-            }
-            return out;
+            return self.stacked(head, rows, columns, indent, node, style, available);
         }
-        let mut widths = vec![1usize; columns];
-        for row in std::iter::once(head).chain(rows.iter().map(Vec::as_slice)) {
-            for (index, cell) in row.iter().enumerate() {
-                widths[index] = widths[index].max(width(&text_of(cell)));
-            }
-        }
-        // Allocate the column widths to the available room, as the previous
-        // markdown renderer did: at least three cells and at most forty, widened
-        // or narrowed to use what the viewport has.
-        let budget = self
-            .budget(indent, inset)
-            .saturating_sub(columns.saturating_sub(1) * 2);
-        allocate_columns(&mut widths, budget);
         let header_style = self.merged(style, role, "header", "markdown.table.header");
-        let border_style = self.merged(style, role, "border", "markdown.table.border");
-        for (row_index, row) in std::iter::once(head)
-            .chain(rows.iter().map(Vec::as_slice))
-            .enumerate()
-        {
-            let mut spans = Vec::new();
-            for index in 0..columns {
-                if index > 0 {
-                    spans.push((border_style, "  ".to_string()));
-                }
-                let cell = row.get(index).map(|cell| text_of(cell)).unwrap_or_default();
-                let text = pad(&cell, widths[index]);
-                let cell_style = if row_index == 0 { header_style } else { style };
-                spans.push((cell_style, text));
+        let cell_style = self.merged(style, role, "cell", "markdown.table.cell");
+        let rule_style = self.merged(style, role, "rule", "markdown.table.rule");
+        // A column is as wide as the widest of its header and its cells, so the
+        // narrow table stays narrow instead of being stretched to the viewport.
+        let mut natural = vec![1usize; columns];
+        for (index, cell) in head.iter().enumerate() {
+            natural[index] = natural[index].max(self.cell(cell, header_style).width);
+        }
+        for row in rows {
+            for (index, cell) in row.iter().enumerate() {
+                natural[index] = natural[index].max(self.cell(cell, cell_style).width);
             }
-            out.push(Line {
-                indent,
-                spans,
-                surface: None,
-                node: Some(node.id.clone()),
-            });
+        }
+        const GAP: usize = 2;
+        let separators = GAP * columns.saturating_sub(1);
+        let widths = fit_columns(&natural, available, separators);
+        let table_width: usize = widths.iter().sum::<usize>() + separators;
+        // Only the columns' own width is paid for. What is left is split either
+        // side, so the table sits in the middle of the budget.
+        let offset = available.saturating_sub(table_width) / 2;
+        let header: Vec<Cell> = (0..columns)
+            .map(|index| match head.get(index) {
+                Some(cell) => self.cell(cell, header_style),
+                None => self.cell(&[], header_style),
+            })
+            .collect();
+        let mut out = vec![self.table_row(&header, &widths, align, GAP, offset, indent, node)];
+        out.push(self.table_rule(table_width, offset, indent, rule_style, node));
+        for (row_index, row) in rows.iter().enumerate() {
+            // A rule under the header and between body rows, not before the
+            // first body row or after the last.
+            if row_index > 0 {
+                out.push(self.table_rule(table_width, offset, indent, rule_style, node));
+            }
+            let cells: Vec<Cell> = (0..columns)
+                .map(|index| match row.get(index) {
+                    Some(cell) => self.cell(cell, cell_style),
+                    None => self.cell(&[], cell_style),
+                })
+                .collect();
+            out.push(self.table_row(&cells, &widths, align, GAP, offset, indent, node));
         }
         out
     }
@@ -1240,43 +1377,50 @@ fn hunk_start(raw: &str) -> Option<(i64, i64)> {
     Some((old, new))
 }
 
-/// Allocate table column widths within `available` cells.
-fn allocate_columns(widths: &mut [usize], available: usize) {
-    let count = widths.len();
-    if count == 0 {
-        return;
-    }
-    for width in widths.iter_mut() {
-        *width = (*width).clamp(3, 40);
-    }
-    let room = available.max(2 * count);
-    let mut total: usize = widths.iter().sum();
-    while total > room {
-        let Some((index, _)) = widths.iter().enumerate().max_by_key(|(_, width)| **width) else {
+/// The smallest a column may be squeezed to before the table is stacked.
+const MIN_COLUMN: usize = 1;
+
+/// The natural column widths, shrunk from the widest until the table fits
+/// `available` cells, including the `separators` between columns.
+///
+/// A table narrower than the budget keeps its natural width; only one that is
+/// wider is narrowed, and never below one cell.
+fn fit_columns(natural: &[usize], available: usize, separators: usize) -> Vec<usize> {
+    let mut widths = natural.to_vec();
+    let total = |widths: &[usize]| widths.iter().sum::<usize>() + separators;
+    while total(&widths) > available {
+        let Some(index) = widths
+            .iter()
+            .enumerate()
+            .filter(|(_, width)| **width > MIN_COLUMN)
+            .max_by_key(|(_, width)| **width)
+            .map(|(index, _)| index)
+        else {
             break;
         };
-        if widths[index] <= 2 {
-            break;
-        }
         widths[index] -= 1;
-        total -= 1;
     }
-    loop {
-        if total >= room {
+    widths
+}
+
+/// Clip styled runs to at most `columns`, never inside a character.
+fn clip_runs(runs: &[(Style, String)], columns: usize) -> Vec<(Style, String)> {
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    for (style, text) in runs {
+        if used >= columns || text.is_empty() {
+            continue;
+        }
+        let clipped = clip(text, columns - used);
+        if clipped.is_empty() {
+            // The next character is wider than the room that is left, so
+            // nothing after this run will fit either.
             break;
         }
-        let mut grew = false;
-        for width in widths.iter_mut() {
-            if total < room && *width < 40 {
-                *width += 1;
-                total += 1;
-                grew = true;
-            }
-        }
-        if !grew {
-            break;
-        }
+        used += width(&clipped);
+        out.push((*style, clipped));
     }
+    out
 }
 
 fn state_word(state: State) -> &'static str {
@@ -1315,8 +1459,13 @@ pub fn value_text(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use misa_proto::view::{Action, ActionOn, Field, FieldKind, SpanKind, State};
+    use misa_proto::view::{Action, ActionOn, Alignment, Field, FieldKind, SpanKind, State};
     use misa_render::Color;
+
+    /// A table node with the given columns, alignment, and cells.
+    fn table_node(head: Vec<Vec<Span>>, rows: Vec<Vec<Vec<Span>>>, align: Vec<Alignment>) -> Node {
+        Node::new("table", Kind::Table { head, rows, align }).id("t")
+    }
 
     fn theme() -> Theme {
         Theme::plain()
@@ -1400,26 +1549,92 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_table_shrinks_instead_of_overflowing() {
+    fn a_wide_table_shrinks_instead_of_overflowing() {
         let head = vec![
             vec![Span::plain("first column")],
             vec![Span::plain("second column")],
         ];
         let rows = vec![vec![vec![Span::plain("one")], vec![Span::plain("two")]]];
-        let node = Node::new("table", Kind::Table { head, rows }).id("t");
+        let node = table_node(head, rows, Vec::new());
         let lines = render(&node, &theme(), 16);
         for line in &lines {
             assert!(width(&line.text()) <= 16, "{:?} is too wide", line.text());
         }
         assert!(lines[0].text().trim_start().starts_with("first"));
-        assert!(lines[1].text().trim_start().starts_with("one"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.text().trim_start().starts_with("one")),
+            "{:?}",
+            lines.iter().map(Line::text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_narrow_table_keeps_its_natural_width_and_is_centred() {
+        let head = vec![vec![Span::plain("Name")], vec![Span::plain("Age")]];
+        let rows = vec![vec![vec![Span::plain("Ada")], vec![Span::plain("36")]]];
+        let node = table_node(head, rows, Vec::new());
+        let lines = render(&node, &theme(), 60);
+        let text: Vec<String> = lines.iter().map(Line::text).collect();
+        // Natural width is four plus three plus the two-cell gap: nine cells,
+        // not the fifty-eight the row budget has. The slack is split either
+        // side, so the table sits in the middle rather than at the left edge.
+        let available = 60 - 2;
+        let offset = (available - 9) / 2;
+        assert_eq!(
+            text[0],
+            format!("{}{}", " ".repeat(1 + offset), "Name  Age")
+        );
+        // The table's own content is nine cells, not the fifty-eight the budget
+        // leaves; only the centring slack decides where it starts.
+        assert_eq!(text[0].trim_start(), "Name  Age");
+        assert_eq!(width(text[0].trim_start()), 9);
+        assert!(
+            width(&text[0]) < available,
+            "{:?} filled the budget",
+            text[0]
+        );
+    }
+
+    #[test]
+    fn table_columns_align_left_centre_and_right() {
+        let head = vec![
+            vec![Span::plain("Name")],
+            vec![Span::plain("Middle")],
+            vec![Span::plain("Score")],
+        ];
+        let rows = vec![vec![
+            vec![Span::plain("a")],
+            vec![Span::plain("b")],
+            vec![Span::plain("c")],
+        ]];
+        let node = table_node(
+            head,
+            rows,
+            vec![Alignment::Left, Alignment::Center, Alignment::Right],
+        );
+        let lines = render(&node, &theme(), 40);
+        let text: Vec<String> = lines.iter().map(Line::text).collect();
+        // The natural widths are four, six and five; the budget is thirty-eight,
+        // so the table is centred with an offset of nine and a leading margin of
+        // one. `a` fills its column from the left, `b` is centred, `c` is pushed
+        // right, and Rust's own formatting states the padding we expect.
+        let lead = " ".repeat(10);
+        assert_eq!(
+            text[0],
+            format!("{lead}{:<4}  {:^6}  {:>5}", "Name", "Middle", "Score")
+        );
+        // The rule sits under the header, and the body follows it.
+        assert!(text[1].trim_start().chars().all(|ch| ch == '─'));
+        assert_eq!(text[2], format!("{lead}{:<4}  {:^6}  {:>5}", "a", "b", "c"));
     }
 
     #[test]
     fn a_table_too_narrow_to_draw_stacks_its_fields() {
         let head = vec![vec![Span::plain("first")], vec![Span::plain("second")]];
         let rows = vec![vec![vec![Span::plain("one")], vec![Span::plain("two")]]];
-        let node = Node::new("table", Kind::Table { head, rows }).id("t");
+        let node = table_node(head, rows, Vec::new());
         let lines = render(&node, &theme(), 10);
         assert!(
             lines[0].text().trim_start().starts_with("first"),
@@ -1433,6 +1648,138 @@ mod tests {
         );
         assert!(lines.iter().any(|line| line.text().trim() == "one"));
         assert!(lines.iter().any(|line| line.text().trim() == "two"));
+        // A header that has no body yet is still a table that is streaming, and
+        // it must not vanish just because the budget is narrow.
+        let header_only = table_node(
+            vec![vec![Span::plain("first")], vec![Span::plain("second")]],
+            Vec::new(),
+            Vec::new(),
+        );
+        let lines = render(&header_only, &theme(), 10);
+        assert!(lines.iter().any(|line| line.text().contains("first")));
+        assert!(lines.iter().any(|line| line.text().contains("second")));
+    }
+
+    #[test]
+    fn table_rules_and_cell_styles_come_from_their_roles() {
+        let head = vec![vec![Span::plain("Name")], vec![Span::plain("Age")]];
+        let rows = vec![
+            vec![vec![Span::plain("Ada")], vec![Span::plain("36")]],
+            vec![vec![Span::plain("Bob")], vec![Span::plain("41")]],
+        ];
+        let node = table_node(head, rows, Vec::new());
+        let theme = Theme::dark();
+        let lines = render(&node, &theme, 40);
+        // There is a rule under the header and one between the two body rows.
+        let rules: Vec<&Line> = lines
+            .iter()
+            .filter(|line| {
+                let text = line.text();
+                let trimmed = text.trim();
+                !trimmed.is_empty() && trimmed.chars().all(|ch| ch == '─')
+            })
+            .collect();
+        assert_eq!(
+            rules.len(),
+            2,
+            "{:?}",
+            lines.iter().map(Line::text).collect::<Vec<_>>()
+        );
+        for rule in rules {
+            assert!(
+                rule.spans.iter().any(|(style, text)| text.contains('─')
+                    && *style == theme.role("markdown.table.rule")),
+                "{:?}",
+                rule.spans
+            );
+        }
+        // The header cell carries the header role; a body cell carries the
+        // cell role.
+        let header = lines[0]
+            .spans
+            .iter()
+            .find(|(_, text)| text.contains("Name"))
+            .expect("a header cell");
+        assert_eq!(header.0, theme.role("markdown.table.header"));
+        let body = lines
+            .iter()
+            .find(|line| line.text().contains("Ada"))
+            .and_then(|line| line.spans.iter().find(|(_, text)| text.contains("Ada")))
+            .expect("a body cell");
+        assert_eq!(body.0, theme.role("markdown.table.cell"));
+    }
+
+    #[test]
+    fn a_table_cell_keeps_its_inline_runs() {
+        let head = vec![vec![Span::plain("Value")]];
+        let rows = vec![vec![vec![
+            Span::plain("a "),
+            Span::strong("b"),
+            Span::code("c"),
+        ]]];
+        let node = table_node(head, rows, Vec::new());
+        let theme = Theme::dark();
+        let lines = render(&node, &theme, 30);
+        let body = lines
+            .iter()
+            .find(|line| line.text().contains("a b"))
+            .expect("the body row");
+        assert!(
+            body.spans
+                .iter()
+                .any(|(style, text)| text == "b" && style.bold),
+            "{:?}",
+            body.spans
+        );
+        assert!(
+            body.spans.iter().any(|(style, text)| text == "c"
+                && *style == theme.role("markdown.table.cell").over(theme.role("code"))),
+            "{:?}",
+            body.spans
+        );
+    }
+
+    #[test]
+    fn a_partial_table_row_renders_and_reflows_as_columns_grow() {
+        let head = vec![vec![Span::plain("Name")], vec![Span::plain("Age")]];
+        // The streamed row has only its first cell so far.
+        let node = table_node(
+            head.clone(),
+            vec![vec![vec![Span::plain("Ada")]]],
+            Vec::new(),
+        );
+        let lines = render(&node, &theme(), 40);
+        let body = lines
+            .iter()
+            .find(|line| line.text().contains("Ada"))
+            .expect("the arrived cell");
+        assert!(!body.text().contains("Age"));
+        // When the second cell arrives, the first column's neighbour widens and
+        // the row reflows around it.
+        let grown = table_node(
+            head,
+            vec![vec![
+                vec![Span::plain("Ada")],
+                vec![Span::plain("many years")],
+            ]],
+            Vec::new(),
+        );
+        let before: Vec<String> = lines.iter().map(Line::text).collect();
+        let after: Vec<String> = render(&grown, &theme(), 40)
+            .iter()
+            .map(Line::text)
+            .collect();
+        let row_of = |text: &[String]| {
+            text.iter()
+                .find(|line| line.contains("Ada"))
+                .cloned()
+                .expect("the body row")
+        };
+        assert_ne!(
+            row_of(&before),
+            row_of(&after),
+            "the row did not reflow as the column grew"
+        );
     }
 
     #[test]

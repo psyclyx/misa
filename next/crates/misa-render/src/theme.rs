@@ -527,6 +527,8 @@ impl Theme {
         set("markdown.rule", Style::PLAIN.dim());
         set("markdown.table.border", Style::PLAIN.dim());
         set("markdown.table.header", Style::PLAIN.bold());
+        set("markdown.table.cell", Style::PLAIN);
+        set("markdown.table.rule", Style::fg(palette.muted).dim());
         set("markdown.code.label", Style::PLAIN.bold());
         set("markdown.code.border", Style::PLAIN.dim());
         set("choice.preview", Style::PLAIN.dim());
@@ -848,6 +850,21 @@ mod tests {
         assert_eq!(
             light.surface("message.user").unwrap().bg,
             Color::Rgb(0xee, 0xf5, 0xf0)
+        );
+    }
+
+    #[test]
+    fn table_roles_exist_in_both_palettes() {
+        for theme in [Theme::dark(), Theme::light()] {
+            assert!(theme.names("markdown.table.header"));
+            assert!(theme.names("markdown.table.cell"));
+            assert!(theme.names("markdown.table.rule"));
+        }
+        // The rule is drawn from the palette's muted colour, so the light
+        // palette gives it a light-palette value rather than the dark one.
+        assert_ne!(
+            Theme::light().role("markdown.table.rule"),
+            Theme::dark().role("markdown.table.rule")
         );
     }
 
