@@ -10,3 +10,7 @@ misa-proto.workspace = true
 misa-value.workspace = true
 unicode-width.workspace = true
 serde.workspace = true
+
+# The local-offset facility only exists on Unix; other targets fall back to UTC.
+[target.'cfg(unix)'.dependencies]
+time.workspace = true

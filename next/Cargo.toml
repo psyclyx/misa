@@ -47,6 +47,9 @@ unicode-width = "0.2"
 unicode-segmentation = "1"
 blake3 = "1"
 base64 = "0.22"
+# Local-time rendering: `local-offset` reads the system zone (no tz database) and
+# computes the offset for the instant being formatted, DST included.
+time = { version = "0.3", features = ["local-offset"] }
 
 [profile.dev]
 incremental = true

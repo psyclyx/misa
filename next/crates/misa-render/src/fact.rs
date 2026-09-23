@@ -196,26 +196,32 @@ pub fn sequence(value: &Value) -> String {
 /// A datetime fact.
 ///
 /// The instant is seconds since the Unix epoch, or an RFC 3339 string. A fact may
-/// be a record with a `prefix`, a `relative_to` reference instant, a `utc_offset`
-/// in seconds for a local wall clock and a `fallback` for an instant that cannot be
-/// parsed; a scalar is the instant alone. The previous system obtained local time
-/// from a host capability; here the offset is part of the fact, so the formatter
-/// stays pure and every surface agrees.
+/// be a record with a `prefix`, a `relative_to` reference instant, an explicit
+/// `utc_offset` in seconds that pins the wall clock and a `fallback` for an instant
+/// that cannot be parsed; a scalar is the instant alone. Without an explicit
+/// offset the instant is rendered in the client's local timezone, with the offset
+/// named, so every surface agrees on the instant and each reader sees their own
+/// wall clock. Relative time is a difference between instants and is unaffected.
 pub fn datetime(value: &Value) -> String {
     let (instant, prefix, relative_to, offset, fallback) = match value.as_map() {
         Some(map) => (
             map.get("value").or_else(|| map.get("instant")),
             map.get("prefix").and_then(Value::as_str).unwrap_or(""),
             map.get("relative_to").and_then(timestamp_seconds),
-            map.get("utc_offset").and_then(Value::as_i64).unwrap_or(0),
+            map.get("utc_offset").and_then(Value::as_i64),
             map.get("fallback").and_then(Value::as_str),
         ),
-        None => (Some(value), "", None, 0, None),
+        None => (Some(value), "", None, None, None),
     };
     let Some(seconds) = instant.and_then(timestamp_seconds) else {
         return fallback.unwrap_or("Time unavailable").to_string();
     };
-    let formatted = format_utc(seconds + offset as f64);
+    let millis = (seconds * 1_000.0).floor() as i64;
+    // An explicit `utc_offset` pins the fact's wall clock; otherwise the client
+    // renders the instant in its own timezone, falling back to UTC when the
+    // platform cannot say what that is.
+    let offset_seconds = offset.unwrap_or_else(|| crate::local_offset::offset_seconds(millis));
+    let formatted = format_millis(millis, offset_seconds);
     match relative_to {
         Some(now) => format!("{prefix}{formatted} ({})", relative_time(seconds, now)),
         None => format!("{prefix}{formatted}"),
@@ -254,17 +260,46 @@ pub fn relative_time(instant: f64, now: f64) -> String {
     }
 }
 
-/// Format an instant as `YYYY-MM-DD HH:MM:SS` in UTC.
-fn format_utc(seconds: f64) -> String {
-    let seconds = seconds.floor() as i64;
-    let within = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(seconds.div_euclid(86_400));
+/// Format Unix milliseconds as a wall clock in the given UTC offset:
+/// `YYYY-MM-DD HH:MM:SS ±HH:MM`.
+///
+/// This is the pure formatting entry point: it is a function of its two arguments
+/// alone, so the client's timezone never leaks into the renderer or its tests. A
+/// normal render supplies the offset from [`crate::local_offset`]; the offset is
+/// named in the output so the instant stays unambiguous.
+pub fn format_millis(millis: i64, offset_seconds: i64) -> String {
+    let local = millis.div_euclid(1_000) + offset_seconds;
+    let within = local.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(local.div_euclid(86_400));
     format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} {}",
         within / 3_600,
         within / 60 % 60,
-        within % 60
+        within % 60,
+        format_offset(offset_seconds)
     )
+}
+
+/// Format Unix milliseconds as the compact `HH:MM:SS ±HH:MM` wall clock used by
+/// transcript boundaries. The date is left to [`format_millis`] because the footer
+/// is deliberately short.
+pub fn format_clock(millis: i64, offset_seconds: i64) -> String {
+    let local = millis.div_euclid(1_000) + offset_seconds;
+    let within = local.rem_euclid(86_400);
+    format!(
+        "{:02}:{:02}:{:02} {}",
+        within / 3_600,
+        within / 60 % 60,
+        within % 60,
+        format_offset(offset_seconds)
+    )
+}
+
+/// The `±HH:MM` spelling of an offset in seconds east of UTC.
+fn format_offset(offset_seconds: i64) -> String {
+    let sign = if offset_seconds < 0 { '-' } else { '+' };
+    let magnitude = offset_seconds.abs();
+    format!("{sign}{:02}:{:02}", magnitude / 3_600, magnitude / 60 % 60)
 }
 
 /// Days since the Unix epoch to a civil date (Howard Hinnant's algorithm).
@@ -473,22 +508,14 @@ pub fn duration(value: &Value) -> String {
     }
 }
 
-/// Unix milliseconds as the compact wall-clock fact used by transcript boundaries.
-/// The reference intentionally displays the instant's compact UTC clock portion.
-/// Follow-up: the session sends UTC integers and local-time rendering belongs to the
-/// client, but there is no client-side timezone facility yet, so this stays UTC for now.
+/// Unix milliseconds as the compact local wall clock used by transcript
+/// boundaries: `HH:MM:SS ±HH:MM`. The offset is looked up for the instant, so a
+/// footer on the far side of a daylight-saving change shows the right hour.
 pub fn timestamp(value: &Value) -> String {
     let Some(millis) = value.as_i64() else {
         return plain(value);
     };
-    let seconds = millis.div_euclid(1_000);
-    let within = seconds.rem_euclid(86_400);
-    format!(
-        "{:02}:{:02}:{:02}",
-        within / 3_600,
-        within / 60 % 60,
-        within % 60
-    )
+    format_clock(millis, crate::local_offset::offset_seconds(millis))
 }
 
 pub fn rate(value: &Value) -> String {
@@ -603,9 +630,75 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_is_only_the_compact_clock() {
-        assert_eq!(timestamp(&Value::Int(1_758_067_200_000)), "00:00:00");
-        assert_eq!(timestamp(&Value::Int(-1)), "23:59:59");
+    fn timestamp_is_the_local_compact_clock_with_a_named_offset() {
+        // Pure: the compact clock is a function of the instant and the offset.
+        assert_eq!(format_clock(1_758_067_200_000, 0), "00:00:00 +00:00");
+        assert_eq!(format_clock(-1, 0), "23:59:59 +00:00");
+        assert_eq!(format_clock(-1, -5 * 3_600), "18:59:59 -05:00");
+
+        // Default path: the client renders in its own timezone and names the
+        // offset, whether or not the platform can tell it what that is.
+        let millis = 1_758_067_200_000;
+        let rendered = timestamp(&Value::Int(millis));
+        assert_eq!(
+            rendered,
+            format_clock(millis, crate::local_offset::offset_seconds(millis))
+        );
+        let bytes = rendered.as_bytes();
+        assert_eq!(bytes.len(), "HH:MM:SS +HH:MM".len());
+        assert_eq!(
+            (bytes[2], bytes[5], bytes[8], bytes[12]),
+            (b':', b':', b' ', b':')
+        );
+        assert!(matches!(bytes[9], b'+' | b'-'), "no offset in {rendered:?}");
+    }
+
+    #[test]
+    fn a_known_instant_formats_at_several_offsets() {
+        // 2024-03-10 14:00:00 UTC, read at four offsets including a half-hour zone
+        // and an offset that carries the date to the next day.
+        let millis = 1_710_079_200_000;
+        assert_eq!(
+            format_millis(millis, -5 * 3_600),
+            "2024-03-10 09:00:00 -05:00"
+        );
+        assert_eq!(format_millis(millis, 0), "2024-03-10 14:00:00 +00:00");
+        assert_eq!(
+            format_millis(millis, 9 * 3_600),
+            "2024-03-10 23:00:00 +09:00"
+        );
+        assert_eq!(
+            format_millis(millis, 5 * 3_600 + 1_800),
+            "2024-03-10 19:30:00 +05:30"
+        );
+        assert_eq!(
+            format_millis(millis, 12 * 3_600),
+            "2024-03-11 02:00:00 +12:00"
+        );
+    }
+
+    #[test]
+    fn a_dst_boundary_pair_formats_with_each_instant_offset() {
+        // US spring-forward 2024-03-10 10:00 UTC. The wall clock jumps from 02:00
+        // standard time to 03:00 daylight time, so the two offsets differ.
+        assert_eq!(
+            format_millis(1_710_064_799_000, -8 * 3_600),
+            "2024-03-10 01:59:59 -08:00"
+        );
+        assert_eq!(
+            format_millis(1_710_064_801_000, -7 * 3_600),
+            "2024-03-10 03:00:01 -07:00"
+        );
+    }
+
+    #[test]
+    fn an_unavailable_local_offset_falls_back_to_utc() {
+        // An instant outside the calendar `time` can represent has no local offset;
+        // the facility answers UTC and rendering still names it rather than failing.
+        let out_of_range = i64::MAX;
+        let offset = crate::local_offset::offset_seconds(out_of_range);
+        assert_eq!(offset, 0);
+        assert!(format_clock(out_of_range, offset).ends_with("+00:00"));
     }
 
     #[test]
@@ -652,40 +745,55 @@ mod tests {
 
     #[test]
     fn datetime_parses_rfc3339_and_unix_seconds_and_shows_relative() {
+        // An explicit `utc_offset` keeps these independent of the host timezone.
         assert_eq!(
-            format("value.datetime", &Value::str("1970-01-01T00:00:00Z")),
-            "1970-01-01 00:00:00"
+            format(
+                "value.datetime",
+                &Value::map([
+                    ("value", Value::str("1970-01-01T00:00:00Z")),
+                    ("utc_offset", Value::Int(0)),
+                ])
+            ),
+            "1970-01-01 00:00:00 +00:00"
         );
         assert_eq!(
-            format("value.datetime", &Value::Int(0)),
-            "1970-01-01 00:00:00"
+            format(
+                "value.datetime",
+                &Value::map([("value", Value::Int(0)), ("utc_offset", Value::Int(0))])
+            ),
+            "1970-01-01 00:00:00 +00:00"
         );
+        // The offset embedded in the RFC 3339 string is normalized to the instant
+        // before the fact's own offset is applied.
         assert_eq!(
             format(
                 "value.datetime",
                 &Value::map([
                     ("value", Value::str("2024-01-01T00:00:00+01:00")),
                     ("prefix", Value::str("at ")),
+                    ("utc_offset", Value::Int(0)),
                 ])
             ),
-            "at 2023-12-31 23:00:00"
+            "at 2023-12-31 23:00:00 +00:00"
         );
+        // Relative time is a difference between instants, not a wall clock.
         assert_eq!(
             format(
                 "value.datetime",
                 &Value::map([
                     ("value", Value::Int(1_000)),
                     ("relative_to", Value::Int(1_000)),
+                    ("utc_offset", Value::Int(0)),
                 ])
             ),
-            "1970-01-01 00:16:40 (now)"
+            "1970-01-01 00:16:40 +00:00 (now)"
         );
         assert_eq!(
             format(
                 "value.datetime",
                 &Value::map([("value", Value::Int(0)), ("utc_offset", Value::Int(3_600)),])
             ),
-            "1970-01-01 01:00:00"
+            "1970-01-01 01:00:00 +01:00"
         );
         assert_eq!(
             format(
@@ -697,6 +805,22 @@ mod tests {
             ),
             "Long ago"
         );
+    }
+
+    #[test]
+    fn the_default_datetime_path_names_a_local_offset() {
+        let millis = 1_710_079_200_000;
+        let rendered = format("value.datetime", &Value::Int(millis / 1_000));
+        assert_eq!(
+            rendered,
+            format_millis(millis, crate::local_offset::offset_seconds(millis))
+        );
+        let tail = &rendered[rendered.len() - 6..];
+        assert!(
+            tail.starts_with('+') || tail.starts_with('-'),
+            "no offset in {rendered:?}"
+        );
+        assert_eq!(tail.as_bytes()[3], b':');
     }
 
     #[test]
