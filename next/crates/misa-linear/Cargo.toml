@@ -1,0 +1,15 @@
+[package]
+name = "misa-linear"
+description = "The generic streaming line renderer and terminal graphics encoder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+image.workspace = true
+misa-proto.workspace = true
+misa-render.workspace = true
+misa-lines.workspace = true
+misa-markdown.workspace = true

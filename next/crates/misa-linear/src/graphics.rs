@@ -1,10 +1,9 @@
 //! Kitty graphics: an encoder, a decoded-image cache, and a placement planner.
 //!
 //! This module knows the terminal graphics protocol and image sizing, and nothing
-//! about the [`Screen`](crate::Screen), the event loop, or the retained renderer.
-//! It can be moved into a shared rendering crate without dragging the terminal
-//! frontend along, which is the reason it is a module rather than methods on the
-//! renderer.
+//! about a screen, the event loop, or the retained renderer. It is a module rather
+//! than methods on the renderer so a client can reuse the encoder without dragging
+//! the terminal frontend along.
 //!
 //! # What it decides
 //!

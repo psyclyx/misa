@@ -1,11 +1,11 @@
 //! Retained line owners. Canonical operations format only their affected owner;
 //! stream appends visit appended characters, then the visible viewport.
 use crate::Screen;
+use misa_linear::{Live, Paint, THINKING_TAIL_LINES, stream_order, thinking_stream};
 use misa_lines::Line;
 use misa_proto::Node;
 use misa_proto::sync::{IndexedTree, Stream, StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, Kind};
-use misa_render::{Style, Theme};
 use std::collections::HashMap;
 
 /// Rows an image may occupy in the current view. The verbose transcript lets an
@@ -97,51 +97,11 @@ struct Owner {
     branch: bool,
     footer: bool,
 }
-struct Live {
-    stream: Stream,
-    lines: Vec<Line>,
-    /// The parsed markdown of the in-flight text, reused block by block as the
-    /// stream grows, so streaming renders through the same path as a settled body.
-    document: Option<misa_markdown::Document>,
-    /// Each block's laid-out lines, so only the blocks an append changed are
-    /// rendered again. Invalidated by a width change.
-    rendered: Vec<(misa_proto::Node, Vec<Line>)>,
-    rendered_width: usize,
-    last_nonblank: usize,
-    /// Some(limit) while a collapsed thinking stream follows its own tail: the
-    /// reader is watching the current reasoning, not the beginning of a summary
-    /// that has not been written yet. An opened stream keeps every line.
-    tail: Option<usize>,
-}
-
-/// How many trailing lines of a collapsed thinking stream stay visible while it
-/// grows. The settled block replaces them with its head preview.
-const THINKING_TAIL_LINES: usize = 3;
-
-/// Whether a stream role belongs to the model reasoning rather than to its answer.
-fn thinking_stream(role: &str) -> bool {
-    role.starts_with("message.assistant.thinking") || role.starts_with("message.thinking")
-}
 
 #[derive(Clone)]
 enum Segment {
     Owner(String),
     Live(String),
-}
-
-/// The order two live streams of one pending message render in.
-///
-/// A message has a thinking stream and a text stream, and the answer must not
-/// appear above the reasoning that produced it. The suffix decides that, not the
-/// stream id's alphabetical order (`text` sorts before `thinking`).
-fn stream_order(id: &str) -> (String, u8) {
-    let (owner, suffix) = id.rsplit_once('.').unwrap_or((id, ""));
-    let rank = match suffix {
-        "thinking" => 0,
-        "text" => 1,
-        _ => 2,
-    };
-    (owner.to_string(), rank)
 }
 
 /// Prefix sums support viewport lookup and stream growth in logarithmic work.
@@ -207,6 +167,7 @@ struct Anchor {
     offset: usize,
 }
 
+// TODO(misa-linear): move the retained viewport once it is decoupled from Screen
 pub struct Retained {
     tree: IndexedTree,
     owners: HashMap<String, Owner>,
@@ -758,19 +719,15 @@ impl Retained {
         let id = stream.id.clone();
         let tail = (thinking_stream(&stream.role) && !screen.prefs.is_open(&id))
             .then_some(THINKING_TAIL_LINES);
-        let mut live = Live {
-            stream: Stream {
+        let paint = Paint::of(&screen.theme, screen.width, &stream.role);
+        let mut live = Live::of(
+            Stream {
                 text: String::new(),
                 ..stream.clone()
             },
-            lines: vec![],
-            document: None,
-            rendered: vec![],
-            rendered_width: 0,
-            last_nonblank: 0,
             tail,
-        };
-        live.append(&stream.text, screen);
+        );
+        live.append(&stream.text, &paint);
         self.live.insert(id, live);
     }
     /// Apply a complete shared-client document transaction to derived render
@@ -820,11 +777,19 @@ impl Retained {
                             structural = true;
                         }
                         StreamUpdate::Append { id, offset, text } => {
+                            let role = self
+                                .live
+                                .get(id)
+                                .ok_or("Missing rendered stream")?
+                                .stream
+                                .role
+                                .clone();
+                            let paint = Paint::of(&screen.theme, screen.width, &role);
                             let live = self.live.get_mut(id).ok_or("Missing rendered stream")?;
                             if live.stream.text.len() != *offset {
                                 return Err("Rendered stream offset gap".into());
                             }
-                            live.append(text, screen);
+                            live.append(text, &paint);
                             self.work.appended_bytes += text.len();
                             if !structural {
                                 if let Some(&index) = self.live_positions.get(id) {
@@ -1206,95 +1171,6 @@ impl Retained {
             cursor_column: input.cursor_column,
             images,
         }
-    }
-}
-
-/// Resolved presentation of one live stream at the current terminal width.
-struct Paint {
-    rail: Option<(String, Style)>,
-    surface: Option<Style>,
-    width: usize,
-}
-
-impl Paint {
-    fn of(screen: &Screen, role: &str) -> Self {
-        let rail = screen.theme.rail(role);
-        let inset = rail
-            .as_ref()
-            .map_or(0, |(glyph, _)| misa_render::width(glyph));
-        Self {
-            surface: screen.theme.surface(role),
-            rail,
-            width: (screen.width as usize).saturating_sub(inset).max(1),
-        }
-    }
-}
-
-impl Live {
-    fn append(&mut self, text: &str, screen: &Screen) {
-        self.stream.text.push_str(text);
-        let paint = Paint::of(screen, &self.stream.role);
-        // Every live stream, collapsed thinking included, renders through the
-        // markdown path a settled body uses. The tail is a view over the result.
-        self.markdown(&paint, &screen.theme);
-    }
-
-    /// Parse the in-flight text as markdown and lay it out, reusing the previous
-    /// parse's blocks where it can.
-    fn markdown(&mut self, paint: &Paint, theme: &Theme) {
-        let text = std::mem::take(&mut self.stream.text);
-        let id = self.stream.id.clone();
-        let document = misa_markdown::document(&self.stream.role, &text, self.document.as_ref());
-        let changed = self
-            .document
-            .as_ref()
-            .is_none_or(|previous| previous.source != document.source);
-        if changed {
-            let width = paint.width;
-            let reuse = self.rendered_width == width;
-            let mut rendered = Vec::with_capacity(document.blocks.len());
-            for (index, block) in document.blocks.iter().enumerate() {
-                if let Some((node, lines)) = self.rendered.get(index)
-                    && reuse
-                    && node == block
-                {
-                    rendered.push((node.clone(), lines.clone()));
-                    continue;
-                }
-                let lines = misa_lines::render_block(block, theme, width, 0)
-                    .into_iter()
-                    .map(|mut line| {
-                        line.node = Some(id.clone());
-                        if let Some((glyph, rail_style)) = &paint.rail {
-                            line.spans.insert(0, (*rail_style, glyph.clone()));
-                        }
-                        line.surface = line.surface.or(paint.surface);
-                        line
-                    })
-                    .collect();
-                rendered.push((block.clone(), lines));
-            }
-            self.lines = rendered
-                .iter()
-                .flat_map(|(_, lines)| lines.iter().cloned())
-                .collect();
-            self.rendered = rendered;
-            self.rendered_width = width;
-            // A collapsed thinking stream is a window onto the tail of the same
-            // lines every other stream renders. Keeping only the last rows here
-            // means the window holds no rows the viewport can scroll to.
-            if let Some(limit) = self.tail {
-                let skip = self.lines.len().saturating_sub(limit);
-                self.lines.drain(..skip);
-            }
-            self.last_nonblank = self
-                .lines
-                .iter()
-                .rposition(|line| !line.is_blank())
-                .map_or(0, |index| index + 1);
-        }
-        self.document = Some(document);
-        self.stream.text = text;
     }
 }
 
@@ -1873,8 +1749,9 @@ mod tests {
             &screen,
         );
         let live = retained.live.get_mut("msg1.body").unwrap();
+        let paint = Paint::of(&screen.theme, screen.width, "message.assistant");
         for delta in ["alpha ", "beta\n", "gamma ", "delta"] {
-            live.append(delta, &screen);
+            live.append(delta, &paint);
         }
         assert_eq!(
             live.lines.iter().map(Line::text).collect::<Vec<_>>(),

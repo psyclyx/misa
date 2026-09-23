@@ -24,7 +24,7 @@ mod chrome;
 pub mod clipboard;
 mod dialogs;
 mod event_loop;
-pub mod graphics;
+pub use misa_linear::graphics;
 pub mod output;
 pub mod prefs;
 pub mod presentation;

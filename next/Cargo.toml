@@ -17,6 +17,7 @@ misa-render = { path = "crates/misa-render" }
 misa-lines = { path = "crates/misa-lines" }
 misa-syntax = { path = "crates/misa-syntax" }
 misa-markdown = { path = "crates/misa-markdown" }
+misa-linear = { path = "crates/misa-linear" }
 misa-kernel = { path = "crates/misa-kernel" }
 misa-session = { path = "crates/misa-session" }
 misa-protocol = { path = "crates/misa-protocol" }

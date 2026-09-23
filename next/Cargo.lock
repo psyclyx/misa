@@ -2783,6 +2783,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "misa-linear"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "image",
+ "misa-lines",
+ "misa-markdown",
+ "misa-proto",
+ "misa-render",
+]
+
+[[package]]
 name = "misa-lines"
 version = "0.1.0"
 dependencies = [
@@ -2951,8 +2963,8 @@ dependencies = [
  "misa-daemon",
  "misa-kernel",
  "misa-kit",
+ "misa-linear",
  "misa-lines",
- "misa-markdown",
  "misa-proto",
  "misa-protocol",
  "misa-render",
