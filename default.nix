@@ -1,19 +1,22 @@
 let
   npins = import ./npins;
-
-  nextOverlay = (import ./next { }).overlay;
+in
+{
+  sources ? npins,
+  nixpkgs ? sources.nixpkgs,
+  # External dep — the gradle2nix builders used for misa-android.
+  gradle2nix ? sources.gradle2nix,
+  pkgs ? import nixpkgs { },
+  ...
+}:
+let
+  nextOverlay = (import ./next { inherit gradle2nix; }).overlay;
   overlay =
     final: prev:
     nextOverlay final prev
     // {
       misa-legacy = final.callPackage ./nix/packages/misa.nix { };
     };
-in
-{
-  nixpkgs ? npins.nixpkgs,
-  pkgs ? import nixpkgs { },
-}:
-let
   finalPkgs = pkgs.extend overlay;
   packages = overlay finalPkgs pkgs;
   misaLib = import ./nix/lib.nix { pkgs = finalPkgs; };
