@@ -64,6 +64,49 @@ fn walk_ops(ops: &[Op], visit: &mut impl FnMut(&Op)) {
 }
 
 #[test]
+fn consecutive_frames_drop_quote_prefix_and_stale_hits() {
+    let control = Control::Action {
+        node: "quoted".into(),
+        action: "open".into(),
+    };
+    let quoted = Node::new("markdown.quote", Kind::Quote).id("quote").child(
+        Node::text("plain", [Span::plain("inside")])
+            .id("quoted")
+            .action(Action {
+                id: "open".into(),
+                on: ActionOn::Submit,
+                label: None,
+                args: Value::Null,
+            }),
+    );
+    let mut app = App::new(quoted, test_metrics());
+    app.frame_at(400, 300, Duration::ZERO);
+    assert!(
+        app.interaction
+            .rows()
+            .iter()
+            .any(|row| row.geometry.text.contains('▏'))
+    );
+    assert!(app.control_center(&control).is_some());
+
+    app.set_view(Node::text("plain", [Span::plain("outside")]).id("plain"));
+    app.frame_at(400, 300, Duration::ZERO);
+    assert!(
+        app.interaction
+            .rows()
+            .iter()
+            .any(|row| row.geometry.text == "outside")
+    );
+    assert!(
+        app.interaction
+            .rows()
+            .iter()
+            .all(|row| !row.geometry.text.contains('▏'))
+    );
+    assert!(app.control_center(&control).is_none());
+}
+
+#[test]
 fn viewport_follows_new_output_but_report_wheel_and_offline_pin_do_not() {
     let view = |count| {
         Node::section("session")
@@ -137,12 +180,14 @@ fn narrow_code_clips_before_highlighting_but_keeps_fence_and_visible_colours() {
     let scene = app.frame(144, 180);
     assert_eq!(app.interaction.rows().len(), 3);
     assert_eq!(app.interaction.rows()[0].geometry.text, "rust");
-    let visible = app.clip(&raw, 104.0); // 144px frame minus the 40px document inset
+    let visible = misa_pixel_ui::TextFlow::new(app.metrics.as_ref(), FONT_SIZE)
+        .clip(&raw, 104.0)
+        .0; // 144px frame minus the 40px document inset
     assert_eq!(app.interaction.rows()[1].geometry.text, visible);
-    assert_eq!(
-        app.interaction.rows()[2].geometry.text,
-        app.clip("let y = 2;", 104.0)
-    );
+    let last = misa_pixel_ui::TextFlow::new(app.metrics.as_ref(), FONT_SIZE)
+        .clip("let y = 2;", 104.0)
+        .0;
+    assert_eq!(app.interaction.rows()[2].geometry.text, last);
     let theme = Theme::dark();
     assert_eq!(
         app.interaction.rows()[0].geometry.runs[0].0,
@@ -1567,7 +1612,7 @@ fn narrow_quote_table_rows_clip_without_losing_copy_or_hit_bounds() {
     });
     assert_eq!(clips.len(), app.interaction.rows().len());
     assert!(clips.iter().all(|(_, width, _)| *width == viewport));
-    assert!(clips.iter().any(|(left, width, ops)| ops.iter().any(|op| matches!(op, Op::Text { x, text, .. } if text.contains('界') && x + app.measure(text) > left + width))));
+    assert!(clips.iter().any(|(left, width, ops)| ops.iter().any(|op| matches!(op, Op::Text { x, text, .. } if text.contains('界') && x + app.metrics.measure(text, FONT_SIZE) > left + width))));
     for hit in app.interaction.hits() {
         if let Control::Text(index) = hit.control {
             let row = &app.interaction.rows()[index];
@@ -1586,7 +1631,7 @@ fn narrow_quote_table_rows_clip_without_losing_copy_or_hit_bounds() {
     let copied = app.selected_text();
     assert!(copied.contains('W') && copied.contains('界'));
     let selected = app.frame(95, 500);
-    assert!(selected.ops.iter().any(|op| matches!(op, Op::ClipRect { ops, .. } if ops.iter().any(|op| matches!(op, Op::Rect { style, .. } if *style == app.colors().selection)))));
+    assert!(selected.ops.iter().any(|op| matches!(op, Op::ClipRect { ops, .. } if ops.iter().any(|op| matches!(op, Op::Rect { style, .. } if *style == crate::appearance::Palette::new(app.light).selection)))));
 }
 
 #[test]
@@ -1627,7 +1672,11 @@ fn report_reflows_at_measured_pixel_width() {
     let lines = app.overlays.report_mut().unwrap().lines.clone();
     assert!(lines.len() > 2);
     assert_eq!(lines.concat(), "WWWWiiii界界");
-    assert!(lines.iter().all(|line| app.measure(line) <= 36.0));
+    assert!(
+        lines
+            .iter()
+            .all(|line| app.metrics.measure(line, FONT_SIZE) <= 36.0)
+    );
     app.frame(300, 280);
     assert_eq!(
         app.overlays.report_mut().unwrap().lines,

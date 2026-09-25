@@ -1,10 +1,10 @@
-use super::{App, FONT_SIZE};
+use super::{FONT_SIZE, layout::LayoutBuilder};
 use misa_pixel_ui::{Rect, Scene, TextFlow};
 use misa_proto::view::{Node, Span};
 use misa_render::Theme;
 use misa_style::Style;
 
-impl App {
+impl LayoutBuilder<'_> {
     pub(super) fn line_height(&self) -> f32 {
         self.metrics.line_metrics(FONT_SIZE).line_height
     }
@@ -15,9 +15,7 @@ impl App {
 
     /// Clip at a measured character boundary (also used for unwrapped code rows).
     pub(super) fn clip(&self, value: &str, budget: f32) -> String {
-        TextFlow::new(self.metrics.as_ref(), FONT_SIZE)
-            .clip(value, budget)
-            .0
+        TextFlow::new(self.metrics, FONT_SIZE).clip(value, budget).0
     }
 
     pub(super) fn prefix_width(&self) -> f32 {
@@ -37,7 +35,7 @@ impl App {
         spans: Vec<(Style, String)>,
     ) {
         let spans = self.prefixes.iter().cloned().chain(spans).collect();
-        let flow = TextFlow::new(self.metrics.as_ref(), FONT_SIZE);
+        let flow = TextFlow::new(self.metrics, FONT_SIZE);
         let bounds = Rect {
             x,
             y,
@@ -56,7 +54,7 @@ impl App {
         spans: Vec<(Style, String)>,
         budget: f32,
     ) -> Vec<Vec<(Style, String)>> {
-        TextFlow::new(self.metrics.as_ref(), FONT_SIZE).wrap(spans, budget)
+        TextFlow::new(self.metrics, FONT_SIZE).wrap(spans, budget)
     }
 
     pub(super) fn wrapped(

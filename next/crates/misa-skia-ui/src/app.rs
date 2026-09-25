@@ -22,6 +22,7 @@ mod interaction;
 #[cfg(test)]
 mod interaction_tests;
 mod layout;
+mod nodes;
 mod overlays;
 mod retained;
 use interaction::Hit;
@@ -81,7 +82,6 @@ pub struct App {
     overlays: LocalOverlays,
     interaction: InteractionMap,
     drafts: drafts::Drafts,
-    prefixes: Vec<(Style, String)>,
     viewport: Viewport,
     offline_elapsed: Duration,
 }
@@ -95,7 +95,6 @@ impl App {
             overlays: LocalOverlays::default(),
             interaction: InteractionMap::default(),
             drafts: drafts::Drafts::default(),
-            prefixes: vec![],
             viewport: Viewport::new(0.0, 600.0),
             offline_elapsed: Duration::ZERO,
         };
@@ -148,10 +147,6 @@ impl App {
             self.retained.clear();
         }
     }
-    fn colors(&self) -> crate::appearance::Palette {
-        crate::appearance::Palette::new(self.light)
-    }
-
     /// Only painted moving groups intersecting the viewport need a pulse.
     pub fn animating(&self) -> bool {
         self.retained.animating(
