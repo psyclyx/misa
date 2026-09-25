@@ -20,4 +20,4 @@ pub mod theme;
 
 pub use animations::{Animation, Registry as Animations};
 pub use text::{clip, columns, pad, width, wrap_spans, wrap_styled};
-pub use theme::{Color, Palette, Style, StylePatch, Theme, ThemeOverrides, alert_role};
+pub use theme::{Palette, Theme, ThemeOverrides, alert_role};

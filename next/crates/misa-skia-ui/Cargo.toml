@@ -11,6 +11,7 @@ image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 misa-kit = { path = "../misa-kit" }
 misa-proto.workspace = true
 misa-render.workspace = true
+misa-style.workspace = true
 misa-syntax.workspace = true
 misa-value.workspace = true
 misa-window-core = { path = "../misa-window-core" }

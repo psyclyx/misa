@@ -1,9 +1,9 @@
 //! Direct Ganesh rendering into acquired Vulkan swapchain images.
 use super::{Renderer, error};
 use ash::{vk, vk::Handle};
-use misa_render::Color;
 use misa_skia_paint::draw_scene;
 use misa_skia_ui::Scene;
+use misa_style::Color;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use skia_safe::{ColorType, gpu};
 use std::ffi::CString;

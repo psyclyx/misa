@@ -2782,6 +2782,7 @@ dependencies = [
  "misa-markdown",
  "misa-proto",
  "misa-render",
+ "misa-style",
 ]
 
 [[package]]
@@ -2791,6 +2792,7 @@ dependencies = [
  "misa-markdown",
  "misa-proto",
  "misa-render",
+ "misa-style",
  "misa-syntax",
  "misa-value",
  "serde",
@@ -2864,6 +2866,7 @@ name = "misa-render"
 version = "0.1.0"
 dependencies = [
  "misa-proto",
+ "misa-style",
  "misa-value",
  "serde",
  "time",
@@ -2904,6 +2907,7 @@ dependencies = [
  "misa-skia-paint",
  "misa-skia-ui",
  "misa-skia-vulkan",
+ "misa-style",
  "misa-transport",
  "misa-value",
  "misa-window-core",
@@ -2919,8 +2923,8 @@ version = "0.1.0"
 dependencies = [
  "image",
  "misa-proto",
- "misa-render",
  "misa-skia-ui",
+ "misa-style",
  "skia-safe",
 ]
 
@@ -2934,6 +2938,7 @@ dependencies = [
  "misa-skia-paint",
  "misa-skia-ui",
  "misa-skia-vulkan",
+ "misa-style",
  "misa-value",
  "misa-window-core",
  "raw-window-handle",
@@ -2948,6 +2953,7 @@ dependencies = [
  "misa-kit",
  "misa-proto",
  "misa-render",
+ "misa-style",
  "misa-syntax",
  "misa-value",
  "misa-window-core",
@@ -2962,11 +2968,18 @@ dependencies = [
  "ash-window",
  "image",
  "misa-proto",
- "misa-render",
  "misa-skia-paint",
  "misa-skia-ui",
+ "misa-style",
  "raw-window-handle",
  "skia-safe",
+]
+
+[[package]]
+name = "misa-style"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -3061,6 +3074,7 @@ dependencies = [
  "misa-lines",
  "misa-proto",
  "misa-render",
+ "misa-style",
  "misa-value",
  "serde",
  "serde_json",

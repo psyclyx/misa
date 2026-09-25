@@ -35,7 +35,9 @@ use the same shared client replica and invocation machinery.
 | `misa-value`                        | immutable, structurally shared values and explicit patches              |
 | `misa-reframe`                      | the loop: events, coeffects, effects, subscriptions, transactions       |
 | `misa-proto`                        | pure query, invocation, observation, document and framing contracts     |
-| `misa-render`                       | text measurement, a role-addressed theme, tree → styled lines           |
+| `misa-style`                        | shared colour, style and attribute-patch values (serde only)            |
+| `misa-render`                       | text measurement, semantic theme roles and value formatting             |
+| `misa-lines`                        | semantic tree → styled lines for linear clients                         |
 | `misa-kernel`                       | facts and capability: the log, the attempt ledger, providers, tools     |
 | `misa-session`                      | session domain state, installed commands and exported projections       |
 | `misa-protocol`                     | owner publication, typed replicas and scoped protocol state machines    |

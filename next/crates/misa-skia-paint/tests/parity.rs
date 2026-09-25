@@ -2,12 +2,12 @@ use misa_proto::{
     sync::{IndexedTree, Stream, StreamUpdate, ViewOp},
     view::{Kind, Node, Span},
 };
-use misa_render::Color;
 use misa_skia_paint::{draw_scene, png, raster, text_metrics};
 use misa_skia_ui::{
     Op, Scene,
     app::{App, DocumentUpdate},
 };
+use misa_style::Color;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -200,7 +200,7 @@ fn canvas_and_raster_share_clear_and_ops() {
             y: 1.0,
             width: 2.0,
             height: 2.0,
-            style: misa_render::Style::rgb(255, 0, 0),
+            style: misa_style::Style::rgb(255, 0, 0),
         }],
     };
     let mut surface = skia_safe::surfaces::raster_n32_premul((8, 8)).unwrap();
@@ -232,14 +232,14 @@ fn measured_advance_and_baseline_agree_with_painted_text() {
                 x,
                 y,
                 size,
-                style: misa_render::Style::rgb(255, 0, 0),
+                style: misa_style::Style::rgb(255, 0, 0),
                 text: "MMMM".into(),
             },
             Op::Text {
                 x: x + advance,
                 y,
                 size,
-                style: misa_render::Style::rgb(0, 255, 0),
+                style: misa_style::Style::rgb(0, 255, 0),
                 text: "MMMM".into(),
             },
         ],

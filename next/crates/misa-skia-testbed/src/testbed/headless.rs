@@ -3,8 +3,8 @@
 //! handle, swapchain, transport, or raster fallback is constructed here.
 use super::Fixtures;
 use crate::app::Control;
-use misa_render::Color;
 use misa_skia_vulkan::Renderer;
+use misa_style::Color;
 use misa_window_core::{Clock, Event, Key, Size};
 use std::time::Duration;
 

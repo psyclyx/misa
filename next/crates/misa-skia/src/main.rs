@@ -236,7 +236,7 @@ fn write_frame(
     metrics: std::sync::Arc<dyn misa_skia_ui::TextMetrics>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scene = snapshot_scene(view, columns, rows, metrics);
-    let pixels = renderer.render(&scene, misa_render::Color::Rgb(20, 22, 26))?;
+    let pixels = renderer.render(&scene, misa_style::Color::Rgb(20, 22, 26))?;
     let mut png = std::io::Cursor::new(Vec::new());
     pixels.write_to(&mut png, image::ImageFormat::Png)?;
     std::fs::write(out, png.into_inner())?;
@@ -282,7 +282,7 @@ mod snapshot_tests {
                 "snapshot must start at the top for {rows} rows"
             );
             let pixels = renderer
-                .render(&scene, misa_render::Color::Rgb(20, 22, 26))
+                .render(&scene, misa_style::Color::Rgb(20, 22, 26))
                 .expect("GPU render/readback");
             let (width, height) = pixels.dimensions();
             assert_eq!((width, height), (scene.width as u32, scene.height as u32));

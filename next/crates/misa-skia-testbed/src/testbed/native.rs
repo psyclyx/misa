@@ -1,6 +1,6 @@
 //! Toolkit-owned scene: no semantic tree or protocol types involved.
 use crate::{Op, Scene};
-use misa_render::Style;
+use misa_style::Style;
 
 pub(super) struct Dashboard {
     pub selected: bool,

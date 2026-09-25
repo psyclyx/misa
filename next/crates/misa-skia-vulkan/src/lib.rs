@@ -4,9 +4,9 @@
 use ash::{vk, vk::Handle};
 #[cfg(feature = "window")]
 mod window;
-use misa_render::Color;
 use misa_skia_paint::draw_scene;
 use misa_skia_ui::{Scene, app::App};
+use misa_style::Color;
 use skia_safe::{AlphaType, ColorType, ImageInfo, gpu};
 use std::{
     ffi::{CStr, CString},

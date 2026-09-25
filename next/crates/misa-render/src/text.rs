@@ -7,7 +7,7 @@
 use misa_proto::view::{Span, SpanKind};
 use unicode_width::UnicodeWidthStr;
 
-use crate::Style;
+use misa_style::Style;
 
 /// The display width of text, in columns.
 ///

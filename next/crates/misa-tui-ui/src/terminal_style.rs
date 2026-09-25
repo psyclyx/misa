@@ -1,6 +1,6 @@
 //! ANSI style encoding shared by the production renderer and the fixture runner.
-pub fn sgr(style: &misa_render::Style) -> String {
-    use misa_render::Color;
+pub fn sgr(style: &misa_style::Style) -> String {
+    use misa_style::Color;
     let mut codes: Vec<String> = Vec::new();
     match style.fg {
         Color::Default => {}

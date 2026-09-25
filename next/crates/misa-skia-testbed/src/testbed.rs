@@ -10,7 +10,7 @@ use crate::app::PULSE_PERIOD;
 use crate::app::{App, Key};
 use crate::{Op, Scene};
 use misa_proto::view::{Action, ActionOn, Field, FieldKind, Kind, Node, Span};
-use misa_render::Style;
+use misa_style::Style;
 use misa_window_core::{Event, Size};
 use std::time::Duration;
 #[cfg(any(feature = "native", test))]

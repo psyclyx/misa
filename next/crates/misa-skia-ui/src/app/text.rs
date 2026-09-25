@@ -1,7 +1,8 @@
 use super::{App, Control, FONT_SIZE, Hit, RowGeometry, TextRow, text};
 use crate::{Op, Scene};
 use misa_proto::view::{Node, Span};
-use misa_render::{Style, Theme};
+use misa_render::Theme;
+use misa_style::Style;
 use std::sync::Arc;
 
 impl App {

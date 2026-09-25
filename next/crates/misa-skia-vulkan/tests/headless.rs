@@ -1,7 +1,7 @@
 use misa_proto::view::{Node, Span};
-use misa_render::Color;
 use misa_skia_ui::{Op, Scene, app::App};
 use misa_skia_vulkan::Renderer;
+use misa_style::Color;
 use std::{sync::Arc, time::Duration};
 
 const BG: Color = Color::Rgb(20, 22, 26);
@@ -22,7 +22,7 @@ fn ganesh_draws_scene_ops_and_reads_rgba() {
             y: 0.0,
             width: 20.0,
             height: 20.0,
-            style: misa_render::Style::rgb(0, 255, 0),
+            style: misa_style::Style::rgb(0, 255, 0),
         },
         Op::Image {
             x: 30.0,
@@ -45,7 +45,7 @@ fn ganesh_draws_scene_ops_and_reads_rgba() {
                 x: 10.0,
                 y: 32.0,
                 size: 18.0,
-                style: misa_render::Style::rgb(255, 255, 255),
+                style: misa_style::Style::rgb(255, 255, 255),
                 text: "GPU".into(),
             },
         ],
@@ -80,7 +80,7 @@ fn measured_text_clip_reaches_the_headless_gpu_painter() {
                 x: 10.0,
                 y: 5.0,
                 size: 24.0,
-                style: misa_render::Style::rgb(255, 255, 255),
+                style: misa_style::Style::rgb(255, 255, 255),
                 text: "WWWWWWWW".into(),
             }]),
         }],

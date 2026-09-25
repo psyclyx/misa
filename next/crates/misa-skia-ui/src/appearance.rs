@@ -1,5 +1,5 @@
 //! Native appearance is local to the window/profile, never an owner query.
-use misa_render::{Color, Style};
+use misa_style::{Color, Style};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Choice {
     #[default]

@@ -9,7 +9,8 @@
 use misa_lines::Line;
 use misa_proto::Node;
 use misa_proto::sync::Stream;
-use misa_render::{Style, Theme};
+use misa_render::Theme;
+use misa_style::Style;
 
 /// How many trailing lines of a collapsed thinking stream stay visible while it
 /// grows. The settled block replaces them with its head preview.

@@ -4,7 +4,8 @@ use super::{
 };
 use crate::{Op, Scene};
 use misa_proto::view::{FieldKind, Kind, Node};
-use misa_render::{Style, Theme};
+use misa_render::Theme;
+use misa_style::Style;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1077,7 +1078,7 @@ impl App {
                 let height = last - first;
                 let mut at = start;
                 if let Some(surface) = theme.surface(&node.role)
-                    && surface.bg != misa_render::Color::Default
+                    && surface.bg != misa_style::Color::Default
                 {
                     scene.ops.insert(
                         at,

@@ -10,6 +10,7 @@ rust-version.workspace = true
 misa-proto.workspace = true
 misa-value.workspace = true
 misa-render.workspace = true
+misa-style.workspace = true
 misa-syntax.workspace = true
 serde.workspace = true
 

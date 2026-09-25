@@ -15,6 +15,7 @@ misa-kit = { path = "../misa-kit" }
 misa-linear.workspace = true
 misa-proto.workspace = true
 misa-render.workspace = true
+misa-style.workspace = true
 misa-lines.workspace = true
 misa-value.workspace = true
 tokio.workspace = true

@@ -8,9 +8,9 @@ use misa_proto::{
     sync::ViewOp,
     view::{BlobRef, Kind, Node, Span},
 };
-use misa_render::Color;
 use misa_skia_paint as paint;
 use misa_skia_vulkan::Renderer;
+use misa_style::Color;
 use std::{
     hint::black_box,
     sync::Arc,

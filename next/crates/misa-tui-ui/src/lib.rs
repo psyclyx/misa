@@ -2106,7 +2106,7 @@ fn choice_spans(
     index: usize,
     selected: bool,
     picker: &Picker,
-) -> Vec<(misa_render::Style, String)> {
+) -> Vec<(misa_style::Style, String)> {
     let row_style = theme.role(if selected {
         "choice.row.selected"
     } else {
@@ -2149,10 +2149,10 @@ fn choice_spans(
 }
 
 fn pad_styled(
-    mut spans: Vec<(misa_render::Style, String)>,
+    mut spans: Vec<(misa_style::Style, String)>,
     width: usize,
-    style: misa_render::Style,
-) -> Vec<(misa_render::Style, String)> {
+    style: misa_style::Style,
+) -> Vec<(misa_style::Style, String)> {
     let used = spans
         .iter()
         .map(|(_, text)| misa_render::width(text))
@@ -2282,7 +2282,7 @@ pub fn select_highlight(line: &mut Line, from: usize, to: usize, theme: &Theme) 
         return;
     }
     let selected = theme.role("selection");
-    let mut spans: Vec<(misa_render::Style, String)> = Vec::new();
+    let mut spans: Vec<(misa_style::Style, String)> = Vec::new();
     let mut cursor = 0usize;
     for (style, text) in line.spans.drain(..) {
         let start = cursor;
@@ -3126,22 +3126,22 @@ mod tests {
         let mut prefs = Prefs::default();
         prefs.theme_overrides.roles.insert(
             "error".into(),
-            misa_render::StylePatch {
-                fg: Some(misa_render::Color::Rgb(1, 2, 3)),
-                ..misa_render::StylePatch::default()
+            misa_style::StylePatch {
+                fg: Some(misa_style::Color::Rgb(1, 2, 3)),
+                ..misa_style::StylePatch::default()
             },
         );
         let screen = memory.screen(prefs);
         assert_eq!(
             screen.theme.role("error").fg,
-            misa_render::Color::Rgb(1, 2, 3)
+            misa_style::Color::Rgb(1, 2, 3)
         );
         // Switching the base theme keeps the override.
         let mut screen = screen;
         screen.key(Key::Action(Action::ThemeLight));
         assert_eq!(
             screen.theme.role("error").fg,
-            misa_render::Color::Rgb(1, 2, 3)
+            misa_style::Color::Rgb(1, 2, 3)
         );
     }
 

@@ -322,7 +322,7 @@ fn indicator_spans(
     selection: &Selection,
     values: &misa_render::fact::Registry,
     theme: &Theme,
-) -> Vec<(misa_render::Style, String)> {
+) -> Vec<(misa_style::Style, String)> {
     let value = indicator_value(node, values);
     let label = match selection.representation {
         Representation::Value => None,

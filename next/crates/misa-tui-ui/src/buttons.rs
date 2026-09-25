@@ -1,6 +1,7 @@
 use crate::prefs::DialogSettings;
 use misa_lines::Line;
-use misa_render::{Style, Theme};
+use misa_render::Theme;
+use misa_style::Style;
 
 /// The terminal's button/reference grammar. Actions remain semantic data; this is only the
 /// client-side projection of their configured keys and labels.

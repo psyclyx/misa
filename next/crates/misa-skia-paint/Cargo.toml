@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 image.workspace = true
-misa-render.workspace = true
+misa-style.workspace = true
 misa-skia-ui = { path = "../misa-skia-ui" }
 skia-safe.workspace = true
 

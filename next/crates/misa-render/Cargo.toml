@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 misa-proto.workspace = true
+misa-style.workspace = true
 misa-value.workspace = true
 unicode-width.workspace = true
 serde.workspace = true

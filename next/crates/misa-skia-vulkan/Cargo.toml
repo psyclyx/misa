@@ -17,7 +17,7 @@ raw-window-handle = { version = "0.6", optional = true }
 image.workspace = true
 misa-skia-ui = { path = "../misa-skia-ui" }
 misa-skia-paint = { path = "../misa-skia-paint" }
-misa-render.workspace = true
+misa-style.workspace = true
 skia-safe.workspace = true
 
 [dev-dependencies]

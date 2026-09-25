@@ -314,7 +314,7 @@ impl Host {
                     y: self.panel_top,
                     width: size.width as f32,
                     height: panel_height as f32,
-                    style: misa_render::Style {
+                    style: misa_style::Style {
                         fg: colors.background,
                         ..Default::default()
                     },

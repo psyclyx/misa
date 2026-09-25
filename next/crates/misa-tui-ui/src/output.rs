@@ -111,7 +111,7 @@ impl Output {
                     write!(
                         writer,
                         "{}{}\x1b[0m",
-                        crate::sgr(&style.over(line.surface.unwrap_or(misa_render::Style::PLAIN))),
+                        crate::sgr(&style.over(line.surface.unwrap_or(misa_style::Style::PLAIN))),
                         text
                     )?;
                 }
@@ -164,7 +164,7 @@ impl Output {
     }
 }
 
-fn append_suffix<'a>(old: &Line, new: &'a Line) -> Option<(usize, misa_render::Style, &'a str)> {
+fn append_suffix<'a>(old: &Line, new: &'a Line) -> Option<(usize, misa_style::Style, &'a str)> {
     if old.indent != new.indent || old.surface != new.surface || old.spans.len() != new.spans.len()
     {
         return None;
@@ -188,7 +188,7 @@ fn append_suffix<'a>(old: &Line, new: &'a Line) -> Option<(usize, misa_render::S
         column,
         new_last
             .0
-            .over(new.surface.unwrap_or(misa_render::Style::PLAIN)),
+            .over(new.surface.unwrap_or(misa_style::Style::PLAIN)),
         suffix,
     ))
 }

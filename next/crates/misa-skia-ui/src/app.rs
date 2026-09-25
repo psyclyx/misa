@@ -5,9 +5,9 @@ use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
 use misa_proto::sync::{IndexedTree, StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, FieldKind, Kind, Node};
-use misa_render::Style;
 #[cfg(test)]
 use misa_render::Theme;
+use misa_style::Style;
 use misa_value::Value;
 pub use misa_window_core::Key;
 use misa_window_core::{Event, Output, Size};

@@ -18,9 +18,10 @@
 use misa_proto::view::{Alignment, Kind, Node, Span, State};
 use misa_value::Value;
 
-use misa_render::Color;
 use misa_render::text::{clip, pad, width, wrap_spans};
-use misa_render::theme::{Style, Theme};
+use misa_render::theme::Theme;
+use misa_style::Color;
+use misa_style::Style;
 
 /// One rendered line: indentation, styled runs, and the node it came from.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1536,7 +1537,7 @@ mod tests {
     use misa_proto::view::{
         Action, ActionOn, Alignment, Definition, Field, FieldKind, SpanKind, State,
     };
-    use misa_render::Color;
+    use misa_style::Color;
 
     /// A table node with the given columns, alignment, and cells.
     fn table_node(head: Vec<Vec<Span>>, rows: Vec<Vec<Vec<Span>>>, align: Vec<Alignment>) -> Node {

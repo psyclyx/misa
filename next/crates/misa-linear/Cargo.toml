@@ -11,5 +11,6 @@ base64.workspace = true
 image.workspace = true
 misa-proto.workspace = true
 misa-render.workspace = true
+misa-style.workspace = true
 misa-lines.workspace = true
 misa-markdown.workspace = true

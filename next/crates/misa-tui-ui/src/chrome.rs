@@ -33,7 +33,7 @@ fn row(screen: &Screen, first: bool) -> Line {
         ],
     }
 }
-fn text_style(screen: &Screen, byte: usize) -> misa_render::Style {
+fn text_style(screen: &Screen, byte: usize) -> misa_style::Style {
     let base = screen.theme.role("user");
     let selected = screen
         .editor
@@ -45,7 +45,7 @@ fn text_style(screen: &Screen, byte: usize) -> misa_render::Style {
         base
     }
 }
-fn push_text(line: &mut Line, style: misa_render::Style, text: &str) {
+fn push_text(line: &mut Line, style: misa_style::Style, text: &str) {
     if text.is_empty() {
         return;
     }

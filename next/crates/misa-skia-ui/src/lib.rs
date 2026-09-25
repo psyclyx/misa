@@ -18,7 +18,8 @@
 //! below a role becomes a terminal cell.
 
 use misa_proto::view::{Span, SpanKind};
-use misa_render::{Style, Theme};
+use misa_render::Theme;
+use misa_style::Style;
 
 /// Skia-independent font measurements for pixel text layout.
 ///
