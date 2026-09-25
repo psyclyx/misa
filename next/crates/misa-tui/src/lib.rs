@@ -1,3 +1,4 @@
+#![cfg(feature = "production")]
 //! The terminal frontend.
 //!
 //! It renders observed semantic documents and owns local themes and drafts.
@@ -33,7 +34,9 @@ mod retained;
 pub mod save;
 pub mod scoped_remote;
 pub mod storage;
+mod terminal_style;
 pub mod workspace;
+pub use terminal_style::sgr;
 
 #[cfg(test)]
 thread_local! { static RESOLVE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
@@ -2599,41 +2602,6 @@ fn translate(
         KeyCode::PageDown => Key::Motion(ed::Motion::Down),
         _ => return None,
     })
-}
-
-pub fn sgr(style: &misa_render::Style) -> String {
-    use misa_render::Color;
-    let mut codes: Vec<String> = Vec::new();
-    match style.fg {
-        Color::Default => {}
-        Color::Indexed(index) => codes.push(format!("38;5;{index}")),
-        Color::Rgb(r, g, b) => codes.push(format!("38;2;{r};{g};{b}")),
-    }
-    match style.bg {
-        Color::Default => {}
-        Color::Indexed(index) => codes.push(format!("48;5;{index}")),
-        Color::Rgb(r, g, b) => codes.push(format!("48;2;{r};{g};{b}")),
-    }
-    if style.bold {
-        codes.push("1".into());
-    }
-    if style.dim {
-        codes.push("2".into());
-    }
-    if style.italic {
-        codes.push("3".into());
-    }
-    if style.underline {
-        codes.push("4".into());
-    }
-    if style.strikethrough {
-        codes.push("9".into());
-    }
-    if codes.is_empty() {
-        String::new()
-    } else {
-        format!("\u{1b}[{}m", codes.join(";"))
-    }
 }
 
 /// What the composer's field is called.

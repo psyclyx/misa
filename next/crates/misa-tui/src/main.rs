@@ -4,12 +4,14 @@ use std::io::{BufRead, IsTerminal};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut force_print = false;
+    let mut start_local = false;
     let mut positional = Vec::new();
     let mut targets = Vec::new();
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--print" | "-p" => force_print = true,
+            "--start-local" => start_local = true,
             "--daemon" | "-d" => targets.push(
                 arguments
                     .next()
@@ -17,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
             "--help" | "-h" => {
                 println!(
-                    "usage: misa [--print|-p] [--daemon ADDRESS]... [misa:<endpoint>:<session>] [prompt]\nWithout an address, discovers local daemons. /daemon selects a daemon; /session selects its session."
+                    "usage: misa [--print|-p] [--start-local] [--daemon ADDRESS]... [misa:<endpoint>:<session>] [prompt]\nWithout an address, discovers local daemons. --start-local starts one only if none is live; /daemon selects a daemon; /session selects its session."
                 );
                 return Ok(());
             }
@@ -32,6 +34,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if positional.len() > 1 {
         return Err("Pass the prompt as one quoted argument".into());
+    }
+    if start_local {
+        validate_start_local(&targets)?;
+        #[cfg(unix)]
+        misa_local_start::discover_or_start().await?;
+        #[cfg(not(unix))]
+        return Err("--start-local requires Unix".into());
     }
     let mut remote = Workspace::start(&targets).await?;
     if misa_tui::print::interactive(
@@ -75,4 +84,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     }
     Ok(())
+}
+
+fn validate_start_local(targets: &[String]) -> Result<(), &'static str> {
+    if !targets.is_empty() {
+        return Err("--start-local cannot be used with an explicit daemon target");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_start_local;
+    #[test]
+    fn cold_start_refuses_explicit_targets() {
+        assert!(validate_start_local(&[]).is_ok());
+        for target in ["misa:node:session", "misa-pair:node:code", "node"] {
+            assert!(validate_start_local(&[target.into()]).is_err());
+        }
+    }
 }
