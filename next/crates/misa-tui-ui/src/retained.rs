@@ -1,87 +1,13 @@
-//! Retained line owners. Canonical operations format only their affected owner;
-//! stream appends visit appended characters, then the visible viewport.
+//! Retained terminal viewport, selection and frame assembly.
+mod document;
 use crate::Screen;
-use misa_linear::{Live, Paint, THINKING_TAIL_LINES, stream_order, thinking_stream};
+use document::image_max_rows;
+use document::{DocumentIndex, Mutation};
 use misa_lines::Line;
 use misa_proto::Node;
-use misa_proto::sync::StreamUpdate;
-use misa_proto::sync::{IndexedTree, Stream, ViewOp};
-use misa_proto::view::{ActionOn, Kind};
+use misa_proto::sync::{Stream, StreamUpdate, ViewOp};
 use misa_terminal_ui::viewport::{Head, Request, Viewport};
-use std::collections::HashMap;
-
-/// Rows an image may occupy in the current view. The verbose transcript lets an
-/// image use more of the viewport; otherwise it stays a compact thumbnail so a
-/// single screenshot cannot push the whole conversation off screen.
-fn image_max_rows(screen: &Screen) -> u16 {
-    if screen.prefs.is_open("*") {
-        misa_terminal_ui::graphics::VERBOSE_ROWS
-    } else {
-        misa_terminal_ui::graphics::COMPACT_ROWS
-    }
-}
-
-/// The native pixel dimensions of every image node in a resolved subtree.
-fn collect_image_dims(node: &Node, out: &mut HashMap<String, (u32, u32)>) {
-    if let Kind::Image { width, height, .. } = &node.kind {
-        out.insert(node.id.clone(), (*width, *height));
-    }
-    for child in &node.children {
-        collect_image_dims(child, out);
-    }
-}
-
-/// Replace each rendered image placeholder with the rows its placement needs.
-///
-/// The linear renderer produces one row for a `Kind::Image`. The terminal knows
-/// the cell size and the column budget, so it owns how many rows the placement
-/// actually consumes; the first row keeps the alt/dimension label and the rest
-/// are blank rows the image will cover.
-fn reserve_image_rows(node: &Node, lines: Vec<Line>, screen: &Screen) -> Vec<Line> {
-    if !screen.graphics.enabled() {
-        return lines;
-    }
-    let mut images = HashMap::new();
-    collect_image_dims(node, &mut images);
-    if images.is_empty() {
-        return lines;
-    }
-    let max_rows = image_max_rows(screen);
-    let mut expanded = std::collections::HashSet::new();
-    let mut out = Vec::with_capacity(lines.len());
-    for line in lines {
-        let Some(id) = line.node.as_deref() else {
-            out.push(line);
-            continue;
-        };
-        let Some(&(width, height)) = images.get(id) else {
-            out.push(line);
-            continue;
-        };
-        // A component may draw more than one row for one image node; only the
-        // first anchors a placement, so only the first reserves rows.
-        if !expanded.insert(id.to_string()) {
-            out.push(line);
-            continue;
-        }
-        let plan = screen.graphics.plan(
-            width,
-            height,
-            screen.width.saturating_sub(line.indent as u16),
-            max_rows,
-        );
-        out.push(line.clone());
-        for _ in 1..plan.rows {
-            out.push(Line {
-                indent: line.indent,
-                surface: line.surface,
-                node: Some(id.to_string()),
-                spans: Vec::new(),
-            });
-        }
-    }
-    out
-}
+use std::ops::AddAssign;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Work {
@@ -90,164 +16,38 @@ pub struct Work {
     pub copied_rows: usize,
     pub index_steps: usize,
 }
-struct Owner {
-    lines: Vec<Line>,
-    members: Vec<String>,
-    role: String,
-    depth: usize,
-    level: usize,
-    branch: bool,
-    footer: bool,
-}
-
-#[derive(Clone)]
-enum Segment {
-    Owner(String),
-    Live(String),
-}
-
-/// Prefix sums support viewport lookup and stream growth in logarithmic work.
-#[derive(Default)]
-struct Rows {
-    sums: Vec<usize>,
-}
-impl Rows {
-    fn new(lengths: &[usize]) -> Self {
-        let mut rows = Self {
-            sums: vec![0; lengths.len() + 1],
-        };
-        for (i, &len) in lengths.iter().enumerate() {
-            rows.change(i, 0, len);
-        }
-        rows
-    }
-    fn change(&mut self, index: usize, old: usize, new: usize) -> usize {
-        let mut i = index + 1;
-        let mut steps = 0;
-        while i < self.sums.len() {
-            self.sums[i] = self.sums[i] - old + new;
-            i += i & i.wrapping_neg();
-            steps += 1;
-        }
-        steps
-    }
-    fn prefix(&self, mut end: usize) -> usize {
-        let mut sum = 0;
-        while end > 0 {
-            sum += self.sums[end];
-            end &= end - 1;
-        }
-        sum
-    }
-    fn total(&self) -> usize {
-        self.prefix(self.sums.len().saturating_sub(1))
-    }
-    fn locate(&self, row: usize) -> (usize, usize, usize) {
-        let (mut index, mut sum, mut steps) = (0, 0, 0);
-        let mut bit = self.sums.len().next_power_of_two() / 2;
-        while bit > 0 {
-            let next = index + bit;
-            if next < self.sums.len() && sum + self.sums[next] <= row {
-                index = next;
-                sum += self.sums[next];
-            }
-            bit /= 2;
-            steps += 1;
-        }
-        (index, row.saturating_sub(sum), steps)
+impl AddAssign for Work {
+    fn add_assign(&mut self, rhs: Self) {
+        self.formatted_nodes += rhs.formatted_nodes;
+        self.appended_bytes += rhs.appended_bytes;
+        self.copied_rows += rhs.copied_rows;
+        self.index_steps += rhs.index_steps;
     }
 }
 pub struct Retained {
-    tree: IndexedTree,
-    owners: HashMap<String, Owner>,
-    membership: HashMap<String, String>,
-    order: Vec<String>,
-    live: HashMap<String, Live>,
-    segments: Vec<Segment>,
-    live_positions: HashMap<String, usize>,
-    rows: Rows,
-    lengths: Vec<usize>,
-    attachments: usize,
-    panel: Option<String>,
+    document: DocumentIndex,
     selection_body: Option<crate::select::Body>,
-    width: u16,
-    theme: String,
-    opened: Vec<String>,
-    components: misa_lines::components::Settings,
     viewport: Viewport<String, crate::select::Spot>,
     pub work: Work,
 }
 impl Retained {
     pub fn new(view: Node, screen: &Screen) -> Self {
-        let tree = IndexedTree::new(view);
-        let view = tree.snapshot();
-        let mut out = Self {
-            tree,
-            owners: HashMap::new(),
-            membership: HashMap::new(),
-            order: vec![],
-            live: HashMap::new(),
-            segments: vec![],
-            live_positions: HashMap::new(),
-            rows: Rows::default(),
-            lengths: vec![],
-            attachments: 0,
-            panel: None,
+        let (document, work) = DocumentIndex::new(view, screen);
+        Self {
+            document,
             selection_body: None,
-            width: screen.width,
-            theme: screen.theme.name.clone(),
-            opened: screen.prefs.opened.clone(),
-            components: screen.prefs.components.clone(),
             viewport: Viewport::new(screen.follow),
-            work: Work::default(),
-        };
-        out.order = out.build(view, 0, 0, screen);
-        out.reindex();
-        out
+            work,
+        }
     }
     pub fn interaction(&self) -> Node {
-        let mut tree = self.tree.snapshot();
-        let mut overlay = Node::section("streams").id("streams");
-        let mut streams: Vec<_> = self.live.values().collect();
-        streams.sort_by_key(|live| stream_order(&live.stream.id));
-        for live in streams {
-            let stream = &live.stream;
-            if self.tree.contains(
-                stream
-                    .id
-                    .rsplit_once('.')
-                    .map(|(owner, _)| owner)
-                    .unwrap_or(&stream.id),
-            ) {
-                continue;
-            }
-            overlay.children.push(
-                Node::text(&stream.role, [misa_proto::view::Span::plain(&stream.text)])
-                    .id(&stream.id),
-            );
-        }
-        if !overlay.children.is_empty() {
-            if let Some(transcript) = tree.children.iter_mut().find(|n| n.id == "transcript") {
-                transcript.children.push(overlay);
-            } else {
-                tree.children.push(overlay);
-            }
-        }
-        tree
+        self.document.interaction()
     }
     pub fn has_turn(&self) -> bool {
-        self.tree.contains("turn")
+        self.document.has_turn()
     }
-    /// The blob references the current tree names. The client fetches these off
-    /// the render path; until the pixels are cached the image keeps its placeholder.
     pub fn image_blobs(&self) -> Vec<misa_proto::view::BlobRef> {
-        self.tree
-            .nodes()
-            .filter_map(|node| match &node.kind {
-                Kind::Image { blob, .. } => Some(blob.clone()),
-                _ => None,
-            })
-            .collect()
+        self.document.image_blobs()
     }
     /// Kitty placements for the image rows present in a finished frame.
     ///
@@ -272,11 +72,9 @@ impl Retained {
                 if !seen.insert(id) {
                     return None;
                 }
-                let Kind::Image { blob, .. } = &self.tree.node(id)?.kind else {
-                    return None;
-                };
+                let hash = self.document.image_hash(id)?;
                 screen.graphics.place(
-                    &blob.hash,
+                    hash,
                     (row as u16, line.indent as u16),
                     screen.width.saturating_sub(line.indent as u16),
                     max_rows,
@@ -300,277 +98,10 @@ impl Retained {
     }
     fn cache_selection(&mut self) {
         if self.selection_body.is_none() {
-            let all: Vec<_> = self
-                .segments
-                .iter()
-                .enumerate()
-                .flat_map(|(i, segment)| self.lines(segment)[..self.lengths[i]].iter().cloned())
-                .collect();
+            let all = self.document.selection_lines();
             self.selection_body = Some(crate::select::Body::of(&all));
         }
     }
-    fn build(
-        &mut self,
-        mut node: Node,
-        depth: usize,
-        level: usize,
-        screen: &Screen,
-    ) -> Vec<String> {
-        let id = node.id.clone();
-        let context = misa_lines::components::Context {
-            theme: &screen.theme,
-            columns: screen.width as usize,
-            settings: &screen.prefs.components,
-            values: &screen.values,
-        };
-        let component = screen
-            .components
-            .render(&screen.local_presentation.model(&node, screen), &context);
-        let footer = screen
-            .components
-            .placement(&node.role, &screen.prefs.components)
-            == misa_lines::components::Placement::Footer;
-        // A section is a structural layout boundary. A message or collapsible,
-        // however, is a complete semantic unit: keeping its children together
-        // is what lets the shared renderer apply its rail, markdown wrapping,
-        // and disclosure policy as one contract. Splitting those nodes into
-        // anonymous owners loses exactly the context the old transcript used.
-        let branch = component.is_none()
-            && matches!(node.kind, Kind::Section)
-            // Message sections are semantic render units, not layout containers.
-            // Keeping their subtree in one owner is what gives the common renderer
-            // the role needed to draw the transcript rail and markdown projection.
-            && !node.role.starts_with("message.");
-        let children = if branch {
-            std::mem::take(&mut node.children)
-        } else {
-            vec![]
-        };
-        let resolved = screen.resolve(&node);
-        let mut members = vec![];
-        fn ids(node: &Node, members: &mut Vec<String>, attachments: &mut usize) {
-            members.push(node.id.clone());
-            *attachments += usize::from(node.actions.iter().any(|a| a.id == "attachment.save"));
-            for child in &node.children {
-                ids(child, members, attachments);
-            }
-        }
-        ids(&node, &mut members, &mut self.attachments);
-        self.work.formatted_nodes += members.len();
-        for member in &members {
-            self.membership.insert(member.clone(), id.clone());
-        }
-        let child_depth = depth + usize::from(screen.theme.rail(&node.role).is_some());
-        let lines = component.unwrap_or_else(|| {
-            misa_lines::render_block(&resolved, &screen.theme, screen.width as usize, depth)
-        });
-        // The linear renderer degrades an image to one placeholder row. The
-        // terminal knows the placement height, so reserve the extra rows here: the
-        // viewport's row arithmetic then accounts for the space the image needs.
-        let lines = reserve_image_rows(&resolved, lines, screen);
-        self.owners.insert(
-            id.clone(),
-            Owner {
-                lines,
-                members,
-                role: node.role.clone(),
-                depth,
-                level,
-                branch,
-                footer,
-            },
-        );
-        let mut order = vec![id];
-        for child in children {
-            order.extend(self.build(child, child_depth, level + 1, screen));
-        }
-        order
-    }
-    fn range(&self, id: &str) -> std::ops::Range<usize> {
-        let start = self
-            .order
-            .iter()
-            .position(|candidate| candidate == id)
-            .expect("layout owner");
-        let level = self.owners[id].level;
-        let end = (start + 1..self.order.len())
-            .find(|&i| self.owners[&self.order[i]].level <= level)
-            .unwrap_or(self.order.len());
-        start..end
-    }
-    fn erase(&mut self, range: std::ops::Range<usize>) {
-        for id in self.order.drain(range) {
-            let owner = self.owners.remove(&id).unwrap();
-            for member in owner.members {
-                self.membership.remove(&member);
-            }
-        }
-    }
-    fn refresh(&mut self, id: &str, screen: &Screen) {
-        let range = self.range(id);
-        let at = range.start;
-        let owner = &self.owners[id];
-        let (depth, level) = (owner.depth, owner.level);
-        self.erase(range);
-        if let Some(node) = self.tree.subtree(id) {
-            let added = self.build(node, depth, level, screen);
-            self.order.splice(at..at, added);
-        }
-    }
-    fn op(&mut self, op: &ViewOp, screen: &Screen) -> Result<(), String> {
-        let target = match op {
-            ViewOp::Insert { parent, .. } => parent,
-            ViewOp::Remove { id } | ViewOp::Replace { id, .. } => id,
-        };
-        let owner = self
-            .membership
-            .get(target)
-            .cloned()
-            .ok_or("layout target missing")?;
-        let nested =
-            &owner != target || matches!(op, ViewOp::Insert { .. }) && !self.owners[&owner].branch;
-        if nested {
-            self.tree.apply(op)?;
-            self.refresh(&owner, screen);
-            return Ok(());
-        }
-        match op {
-            ViewOp::Insert {
-                parent,
-                before,
-                node,
-            } => {
-                let parent_owner = &self.owners[parent];
-                let parent_node = self.tree.node(parent).unwrap();
-                let (depth, level) = (
-                    parent_owner.depth
-                        + usize::from(screen.theme.rail(&parent_node.role).is_some()),
-                    parent_owner.level + 1,
-                );
-                let at = before
-                    .as_ref()
-                    .map(|id| self.range(id).start)
-                    .unwrap_or_else(|| self.range(parent).end);
-                self.tree.apply(op)?;
-                let added = self.build(node.clone(), depth, level, screen);
-                self.order.splice(at..at, added);
-            }
-            ViewOp::Remove { id } => {
-                let range = self.range(id);
-                self.tree.apply(op)?;
-                self.erase(range);
-            }
-            ViewOp::Replace { id, .. } => {
-                self.tree.apply(op)?;
-                self.refresh(id, screen);
-            }
-        }
-        Ok(())
-    }
-    fn reindex(&mut self) {
-        self.segments.clear();
-        self.live_positions.clear();
-        self.selection_body = None;
-        self.panel = self
-            .membership
-            .keys()
-            .find(|id| self.tree.node(id).is_some_and(|node| node.role == "panel"))
-            .cloned();
-        let panel_range = self.panel.clone().map(|id| self.range(&id));
-        self.attachments = self
-            .owners
-            .values()
-            .flat_map(|o| &o.members)
-            .filter_map(|id| self.tree.node(id))
-            .filter(|n| n.actions.iter().any(|a| a.id == "attachment.save"))
-            .count();
-        let insert = if self
-            .owners
-            .get("transcript")
-            .is_some_and(|owner| owner.branch)
-        {
-            self.range("transcript").end
-        } else {
-            self.order.len()
-        };
-        let mut streams: Vec<_> = self
-            .live
-            .keys()
-            .filter(|id| {
-                !self
-                    .tree
-                    .contains(id.rsplit_once('.').map(|(owner, _)| owner).unwrap_or(id))
-            })
-            .cloned()
-            .collect();
-        streams.sort_by_key(|id| stream_order(id));
-        for i in 0..=self.order.len() {
-            if i == insert {
-                for id in &streams {
-                    self.live_positions.insert(id.clone(), self.segments.len());
-                    self.segments.push(Segment::Live(id.clone()));
-                }
-            }
-            if let Some(id) = self.order.get(i)
-                && !panel_range.as_ref().is_some_and(|range| range.contains(&i))
-                && !self.owners[id].footer
-                // The session declares the composer so its action can be
-                // addressed authoritatively, but the terminal owns its local
-                // draft and physical editor rows.
-                && self.owners[id].role != "composer"
-                && !self.owners[id].lines.is_empty()
-            {
-                self.segments.push(Segment::Owner(id.clone()));
-            }
-        }
-        self.lengths = self
-            .segments
-            .iter()
-            .map(|segment| self.lines(segment).len())
-            .collect();
-        for index in (0..self.segments.len()).rev() {
-            let rows = self.lines(&self.segments[index]);
-            let trimmed = rows
-                .iter()
-                .rposition(|line| self.line_occupied(line))
-                .map_or(0, |at| at + 1);
-            self.lengths[index] = trimmed;
-            if trimmed > 0 {
-                break;
-            }
-        }
-        self.rows = Rows::new(&self.lengths);
-        self.viewport.layout_changed();
-    }
-    fn lines(&self, segment: &Segment) -> &[Line] {
-        match segment {
-            Segment::Owner(id) => &self.owners[id].lines,
-            Segment::Live(id) => &self.live[id].lines,
-        }
-    }
-
-    /// Whether a row holds something that must survive trailing-whitespace
-    /// trimming. A reserved image row is blank but occupied: the terminal draws
-    /// the image over it, so trimming it would let the image overrun what follows.
-    fn line_occupied(&self, line: &Line) -> bool {
-        !line.is_blank()
-            || line.node.as_deref().is_some_and(|id| {
-                self.tree
-                    .node(id)
-                    .is_some_and(|node| matches!(&node.kind, Kind::Image { .. }))
-            })
-    }
-
-    /// The line at a physical row, or `None` for a row outside the document.
-    #[cfg(test)]
-    fn row_line(&self, row: usize) -> Option<&Line> {
-        let (index, offset, _) = self.rows.locate(row);
-        if index >= self.segments.len() {
-            return None;
-        }
-        self.lines(&self.segments[index])[..self.lengths[index]].get(offset)
-    }
-
     fn viewport_start(&mut self, screen: &Screen, room: usize) -> usize {
         let request = Request {
             scroll: screen.scroll,
@@ -585,78 +116,36 @@ impl Retained {
                 }
             }),
         };
-        let total = self.rows.total();
-        // Separate viewport mutation from immutable document lookups.
-        let rows = &self.rows;
-        let segments = &self.segments;
-        let lengths = &self.lengths;
-        let owners = &self.owners;
-        let live = &self.live;
-        let lines = |segment: &Segment| -> &[Line] {
-            match segment {
-                Segment::Owner(id) => &owners[id].lines,
-                Segment::Live(id) => &live[id].lines,
-            }
-        };
+        let document = &self.document;
         self.viewport.resolve(
             request,
-            total,
-            |row| {
-                let (index, offset, _) = rows.locate(row);
-                segments
-                    .get(index)
-                    .and_then(|segment| lines(segment)[..lengths[index]].get(offset))
-                    .and_then(|line| line.node.clone())
-            },
-            |key, offset| {
-                let mut row = 0;
-                for (index, segment) in segments.iter().enumerate() {
-                    for line in &lines(segment)[..lengths[index]] {
-                        if line.node.as_deref() == Some(key.as_str()) {
-                            return Some(row + offset);
-                        }
-                        row += 1;
-                    }
-                }
-                None
-            },
+            document.total_rows(),
+            |row| document.row_node(row),
+            |key, offset| document.node_row(key, offset),
         )
     }
-
+    fn apply_mutation(&mut self, mutation: Mutation) {
+        if mutation.rebuilt {
+            self.work = mutation.work;
+        } else {
+            self.work += mutation.work;
+        }
+        if mutation.layout_changed {
+            self.viewport.layout_changed();
+            self.selection_body = None;
+        }
+    }
     pub fn resolved_scroll(&self) -> usize {
         self.viewport.resolved_scroll()
     }
-
     pub fn following(&self) -> bool {
         self.viewport.following()
     }
-    fn current(&mut self, stream: Stream, screen: &Screen) {
-        let id = stream.id.clone();
-        let tail = (thinking_stream(&stream.role) && !screen.prefs.is_open(&id))
-            .then_some(THINKING_TAIL_LINES);
-        let paint = Paint::of(&screen.theme, screen.width, &stream.role);
-        let mut live = Live::of(
-            Stream {
-                text: String::new(),
-                ..stream.clone()
-            },
-            tail,
-        );
-        live.append(&stream.text, &paint);
-        self.live.insert(id, live);
-    }
-    /// Apply protocol view operations from a local document owner. The remote
-    /// replica still owns sequencing/recovery for network transactions.
     pub fn apply_ops(&mut self, ops: &[ViewOp], screen: &Screen) -> Result<(), String> {
-        for op in ops {
-            self.op(op, screen)?;
-        }
-        self.reindex();
+        let mutation = self.document.apply_ops(ops, screen)?;
+        self.apply_mutation(mutation);
         Ok(())
     }
-
-    /// Apply a transaction translated by the connected host, without losing
-    /// incremental stream append accounting or the canonical tree index.
     pub fn changed(
         &mut self,
         tree: &[ViewOp],
@@ -664,85 +153,36 @@ impl Retained {
         reset_live: bool,
         screen: &Screen,
     ) -> Result<(), String> {
-        let mut structural = !tree.is_empty() || reset_live;
-        for op in tree {
-            self.op(op, screen)?;
-        }
-        if reset_live {
-            self.live.clear();
-        }
-        for update in live {
-            match update {
-                StreamUpdate::Current { stream } => {
-                    self.current(stream.clone(), screen);
-                    structural = true;
-                }
-                StreamUpdate::End { id } => {
-                    self.live.remove(id);
-                    structural = true;
-                }
-                StreamUpdate::Append { id, offset, text } => {
-                    let role = self
-                        .live
-                        .get(id)
-                        .ok_or("Missing rendered stream")?
-                        .stream
-                        .role
-                        .clone();
-                    let paint = Paint::of(&screen.theme, screen.width, &role);
-                    let live = self.live.get_mut(id).ok_or("Missing rendered stream")?;
-                    if live.stream.text.len() != *offset {
-                        return Err("Rendered stream offset gap".into());
-                    }
-                    live.append(text, &paint);
-                    self.work.appended_bytes += text.len();
-                    if !structural {
-                        if let Some(&index) = self.live_positions.get(id) {
-                            let new = if self.rows.total() == self.rows.prefix(index + 1) {
-                                live.last_nonblank
-                            } else {
-                                live.lines.len()
-                            };
-                            self.work.index_steps +=
-                                self.rows.change(index, self.lengths[index], new);
-                            self.lengths[index] = new;
-                            self.viewport.layout_changed();
-                        }
-                    }
-                }
-            }
-        }
-        if structural {
-            self.reindex();
-        }
+        let mutation = self.document.changed(tree, live, reset_live, screen)?;
+        self.apply_mutation(mutation);
         Ok(())
     }
     pub fn reset(&mut self, tree: Node, streams: &[Stream], screen: &Screen) {
-        *self = Self::new(tree, screen);
-        for stream in streams {
-            self.current(stream.clone(), screen);
-        }
-        self.reindex();
+        let mutation = self.document.reset(tree, streams, screen);
+        self.work = mutation.work;
+        self.selection_body = None;
+        self.viewport = Viewport::new(screen.follow);
+        self.viewport.layout_changed();
     }
     pub fn local(&mut self, screen: &Screen) {
-        if self.width != screen.width
-            || self.theme != screen.theme.name
-            || self.opened != screen.prefs.opened
-            || self.components != screen.prefs.components
-        {
-            let streams: Vec<_> = self.live.values().map(|live| live.stream.clone()).collect();
-            *self = Self::new(self.tree.snapshot(), screen);
-            for stream in streams {
-                self.current(stream, screen);
-            }
-            self.reindex();
-        } else if let Some(panel) = self.panel.clone() {
-            if let Some(id) = self.membership.get(&panel).cloned() {
-                self.refresh(&id, screen);
-                self.reindex();
-            }
+        let mutation = self.document.local(screen);
+        if mutation.rebuilt {
+            self.viewport = Viewport::new(screen.follow);
         }
+        self.apply_mutation(mutation);
         self.selection_body = None;
+    }
+    pub fn placed_lines(&self, limit: usize) -> (Vec<Line>, Vec<Line>) {
+        self.document.placed_lines(limit)
+    }
+    #[cfg(test)]
+    fn current(&mut self, stream: Stream, screen: &Screen) {
+        self.changed(&[], &[StreamUpdate::Current { stream }], false, screen)
+            .unwrap();
+    }
+    #[cfg(test)]
+    fn op(&mut self, op: &ViewOp, screen: &Screen) -> Result<(), String> {
+        self.apply_ops(std::slice::from_ref(op), screen)
     }
     #[cfg(test)]
     pub fn draw(&mut self, screen: &Screen) -> Vec<Line> {
@@ -752,82 +192,6 @@ impl Retained {
     pub fn frame(&mut self, screen: &Screen, staging: Option<&str>) -> crate::chrome::Frame {
         self.frame_with(screen, staging, &[], &[])
     }
-    /// Independent documents share placement and components, never node identity.
-    pub fn placed_lines(&self, limit: usize) -> (Vec<Line>, Vec<Line>) {
-        let document = self
-            .segments
-            .iter()
-            .enumerate()
-            .flat_map(|(index, segment)| self.lines(segment)[..self.lengths[index]].iter().cloned())
-            .take(limit)
-            .collect();
-        let footer = self
-            .order
-            .iter()
-            .filter_map(|id| self.owners.get(id))
-            .filter(|owner| owner.footer)
-            .flat_map(|owner| owner.lines.iter().cloned())
-            .take(limit)
-            .collect();
-        (document, footer)
-    }
-    fn panel_lines(&self) -> Vec<Line> {
-        let Some(panel) = &self.panel else {
-            return Vec::new();
-        };
-        self.range(panel)
-            .skip(1)
-            .filter_map(|index| self.order.get(index).and_then(|id| self.owners.get(id)))
-            .filter(|owner| !owner.footer)
-            .flat_map(|owner| owner.lines.iter().cloned())
-            .collect()
-    }
-    fn surface_lines(&self, screen: &Screen) -> Vec<Line> {
-        let Some(panel) = &self.panel else {
-            return Vec::new();
-        };
-        let title = self
-            .tree
-            .node(panel)
-            .and_then(|node| node.label.clone())
-            .unwrap_or_else(|| "Interaction".into());
-        let mut lines = vec![Line {
-            surface: screen.theme.surface("dialog"),
-            indent: 0,
-            node: None,
-            spans: vec![
-                (screen.theme.role("dialog.label"), "┌─ ".into()),
-                (screen.theme.role("dialog.title"), title),
-            ],
-        }];
-        for mut line in self.panel_lines() {
-            line.surface = line.surface.or_else(|| screen.theme.surface("dialog"));
-            line.spans
-                .insert(0, (screen.theme.role("dialog.label"), "│ ".into()));
-            lines.push(line);
-        }
-        let actions = self
-            .tree
-            .node(panel)
-            .into_iter()
-            .flat_map(|node| {
-                node.actions
-                    .iter()
-                    .chain(node.children.iter().flat_map(|child| child.actions.iter()))
-            })
-            .filter(|action| matches!(action.on, ActionOn::Click | ActionOn::Submit))
-            .map(|action| {
-                (
-                    action.id.as_str(),
-                    action.label.as_deref().unwrap_or(action.id.as_str()),
-                )
-            })
-            .collect::<Vec<_>>();
-        let mut footer = crate::buttons::footer(&screen.theme, &screen.prefs.dialogs, actions);
-        footer.surface = screen.theme.surface("dialog");
-        lines.push(footer);
-        lines
-    }
     pub fn frame_with(
         &mut self,
         screen: &Screen,
@@ -835,16 +199,13 @@ impl Retained {
         extra_document: &[Line],
         extra_footer: &[Line],
     ) -> crate::chrome::Frame {
-        let mut top = crate::chrome::top(screen, self.attachments, None);
-        if screen.dialogs.modal() || self.panel.is_some() {
+        let mut top = crate::chrome::top(screen, self.document.attachments(), None);
+        if screen.dialogs.modal() || self.document.has_panel() {
             // Dialogs and session panels are overlays. They own input focus, but
             // do not erase the transcript or the status bar beneath them.
             let status: Vec<_> = self
-                .order
-                .iter()
-                .filter_map(|id| self.owners.get(id))
-                .filter(|owner| owner.footer && owner.role != "queue")
-                .flat_map(|owner| owner.lines.iter().cloned())
+                .document
+                .footer_lines(false)
                 .chain(extra_footer.iter().cloned())
                 .take(1)
                 .collect();
@@ -855,22 +216,14 @@ impl Retained {
                     .dialogs
                     .lines(&screen.theme, screen.width as usize, &screen.prefs.dialogs)
             } else {
-                self.surface_lines(screen)
+                self.document.surface_lines(screen)
             };
             let overlay = crate::chrome::physical(overlay, screen.width as usize);
             let overlay_len = overlay.len().min(available);
             let room = available.saturating_sub(overlay_len);
             let start = self.viewport_start(screen, room);
-            let (mut segment, mut offset, steps) = self.rows.locate(start);
+            let (mut middle, steps) = self.document.visible_rows(start, room);
             self.work.index_steps += steps;
-            let mut middle = Vec::new();
-            while middle.len() < room && segment < self.segments.len() {
-                let rows = &self.lines(&self.segments[segment])[..self.lengths[segment]];
-                let take = (room - middle.len()).min(rows.len().saturating_sub(offset));
-                middle.extend_from_slice(&rows[offset..offset + take]);
-                segment += 1;
-                offset = 0;
-            }
             middle.extend_from_slice(
                 &extra_document[..extra_document.len().min(room.saturating_sub(middle.len()))],
             );
@@ -902,13 +255,7 @@ impl Retained {
             // above it, the picker occupies the available middle rows, and status
             // remains the bottom region. The normal composer is intentionally not
             // part of this layout while the picker owns input focus.
-            let status: Vec<_> = self
-                .order
-                .iter()
-                .filter_map(|id| self.owners.get(id))
-                .filter(|owner| owner.footer && owner.role != "queue")
-                .flat_map(|owner| owner.lines.iter().cloned())
-                .collect();
+            let status: Vec<_> = self.document.footer_lines(false).collect();
             let status = status
                 .into_iter()
                 .chain(extra_footer.iter().cloned())
@@ -922,16 +269,8 @@ impl Retained {
             let picker_len = picker.len().min(available);
             let room = available.saturating_sub(picker_len);
             let start = self.viewport_start(screen, room);
-            let (mut segment, mut offset, steps) = self.rows.locate(start);
+            let (mut lines, steps) = self.document.visible_rows(start, room);
             self.work.index_steps += steps;
-            let mut lines = Vec::new();
-            while lines.len() < room && segment < self.segments.len() {
-                let rows = &self.lines(&self.segments[segment])[..self.lengths[segment]];
-                let take = (room - lines.len()).min(rows.len().saturating_sub(offset));
-                lines.extend_from_slice(&rows[offset..offset + take]);
-                segment += 1;
-                offset = 0;
-            }
             // Contributions are document furniture, so an overlay must not make
             // them disappear. They consume the same document room as the retained
             // transcript, just as they do in the normal frame.
@@ -965,13 +304,7 @@ impl Retained {
             };
         }
         let preferred_input = crate::chrome::composer(screen);
-        let dock: Vec<_> = self
-            .order
-            .iter()
-            .filter_map(|id| self.owners.get(id))
-            .filter(|owner| owner.footer && owner.role == "queue")
-            .flat_map(|owner| owner.lines.iter().cloned())
-            .collect();
+        let dock: Vec<_> = self.document.footer_lines(true).collect();
         let dock = dock
             .into_iter()
             .chain(staging.into_iter().map(|text| Line {
@@ -982,13 +315,7 @@ impl Retained {
             }))
             .collect::<Vec<_>>();
         let dock = crate::chrome::physical(dock, screen.width as usize);
-        let status: Vec<_> = self
-            .order
-            .iter()
-            .filter_map(|id| self.owners.get(id))
-            .filter(|owner| owner.footer && owner.role != "queue")
-            .flat_map(|owner| owner.lines.iter().cloned())
-            .collect();
+        let status: Vec<_> = self.document.footer_lines(false).collect();
         // The reference reserves one status row, the queue immediately above the
         // editor, and at least one row for the transcript when the terminal allows
         // it. The editor itself is capped at half the terminal height.
@@ -1025,26 +352,13 @@ impl Retained {
         let extra_document = &extra_document[..extra_document.len().min(room)];
         let room = room.saturating_sub(extra_document.len());
         let start = self.viewport_start(screen, room);
-        let (mut segment, mut offset, steps) = self.rows.locate(start);
+        let (mut lines, steps) = self.document.visible_rows(start, room);
         self.work.index_steps += steps;
-        let mut lines = vec![];
-        while lines.len() < room && segment < self.segments.len() {
-            let rows = &self.lines(&self.segments[segment])[..self.lengths[segment]];
-            let take = (room - lines.len()).min(rows.len().saturating_sub(offset));
-            lines.extend_from_slice(&rows[offset..offset + take]);
-            segment += 1;
-            offset = 0;
-        }
         self.work.copied_rows += lines.len();
         if let Some(selection) = &screen.selection {
             // Selection is explicit local work. It uses cached rows, never tree formatting.
             if self.selection_body.is_none() {
-                let all: Vec<_> = self
-                    .segments
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(i, segment)| self.lines(segment)[..self.lengths[i]].iter().cloned())
-                    .collect();
+                let all = self.document.selection_lines();
                 self.selection_body = Some(crate::select::Body::of(&all));
             }
             for (i, line) in lines.iter_mut().enumerate() {
@@ -1086,6 +400,40 @@ impl Retained {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn stream_growth_invalidates_selection_without_rebuilding_owners() {
+        use super::*;
+        let screen = Screen::new(20, 12);
+        let mut retained = Retained::new(Node::section("session").id("session"), &screen);
+        retained.current(
+            Stream {
+                id: "reply.body".into(),
+                role: "assistant".into(),
+                text: "hello".into(),
+            },
+            &screen,
+        );
+        retained.cache_selection();
+        assert!(retained.selection_body.is_some());
+        retained.work = Work::default();
+        retained
+            .changed(
+                &[],
+                &[StreamUpdate::Append {
+                    id: "reply.body".into(),
+                    offset: 5,
+                    text: " world".into(),
+                }],
+                false,
+                &screen,
+            )
+            .unwrap();
+        assert!(retained.selection_body.is_none());
+        assert_eq!(retained.work.formatted_nodes, 0);
+        assert_eq!(retained.work.appended_bytes, 6);
+        assert_eq!(retained.document.stream_text("reply.body"), "hello world");
+    }
+
+    #[test]
     fn independent_documents_keep_their_own_node_identities_and_placement() {
         let screen = crate::Screen::new(80, 20);
         let make = |text: &str| {
@@ -1101,7 +449,7 @@ mod tests {
             &screen,
         )
         .unwrap();
-        left.reindex();
+
         assert!(
             left.placed_lines(20)
                 .0
@@ -1138,6 +486,8 @@ mod tests {
         assert!(frame.lines.iter().any(|line| line.text().contains("right")));
     }
     use super::*;
+    use misa_linear::{Paint, THINKING_TAIL_LINES};
+    use misa_proto::view::Kind;
     use misa_proto::view::Span;
     fn text(id: &str, value: &str) -> Node {
         Node::text("assistant", [Span::plain(value)]).id(id)
@@ -1157,11 +507,7 @@ mod tests {
             .child(transcript)
     }
     fn all(retained: &Retained) -> Vec<Line> {
-        let mut lines: Vec<_> = retained
-            .segments
-            .iter()
-            .flat_map(|segment| retained.lines(segment).iter().cloned())
-            .collect();
+        let mut lines = retained.document.all_lines();
         while lines.last().is_some_and(Line::is_blank) {
             lines.pop();
         }
@@ -1171,7 +517,7 @@ mod tests {
         assert_eq!(
             all(retained),
             misa_lines::render(
-                &screen.resolve(&retained.tree.snapshot()),
+                &screen.resolve(&retained.document.snapshot()),
                 &screen.theme,
                 screen.width as usize
             )
@@ -1210,7 +556,7 @@ mod tests {
         );
         let mut retained = Retained::new(image_node(400, 100), &screen);
         // 400px at 10px/cell is 40 columns wide, 100px at 20px/cell is 5 rows.
-        assert_eq!(retained.rows.total(), 5);
+        assert_eq!(retained.document.total_rows(), 5);
         let frame = retained.frame(&screen, None);
         assert_eq!(frame.images.len(), 1);
         assert_eq!(frame.images[0].rows, 5);
@@ -1220,7 +566,7 @@ mod tests {
     fn an_unsupported_image_keeps_its_single_placeholder_row() {
         let screen = Screen::new(80, 24);
         let retained = Retained::new(image_node(400, 100), &screen);
-        assert_eq!(retained.rows.total(), 1);
+        assert_eq!(retained.document.total_rows(), 1);
         assert!(
             all(&retained)
                 .iter()
@@ -1247,6 +593,7 @@ mod tests {
         assert_eq!(start, 3);
         assert_eq!(
             retained
+                .document
                 .row_line(start)
                 .and_then(|line| line.node.as_deref()),
             Some("t3")
@@ -1263,11 +610,12 @@ mod tests {
                 &screen,
             )
             .unwrap();
-        retained.reindex();
+
         let after = retained.viewport_start(&screen, 5);
         assert_eq!(after, 4, "the anchor moved down with its node");
         assert_eq!(
             retained
+                .document
                 .row_line(after)
                 .and_then(|line| line.node.as_deref()),
             Some("t3")
@@ -1283,13 +631,22 @@ mod tests {
             root.children.push(text(&format!("tail{i}"), "tail"));
         }
         let mut retained = Retained::new(root, &screen);
-        let first = (0..retained.rows.total())
+        let first = (0..retained.document.total_rows())
             .find(|&row| {
-                retained.row_line(row).and_then(|line| line.node.as_deref()) == Some("wrapped")
+                retained
+                    .document
+                    .row_line(row)
+                    .and_then(|line| line.node.as_deref())
+                    == Some("wrapped")
             })
             .unwrap();
         assert_eq!(
-            retained.row_line(first + 1).unwrap().node.as_deref(),
+            retained
+                .document
+                .row_line(first + 1)
+                .unwrap()
+                .node
+                .as_deref(),
             Some("wrapped")
         );
         screen.follow = false;
@@ -1309,7 +666,7 @@ mod tests {
         let start = retained.viewport_start(&screen, 2);
         assert_eq!(start, first + 2);
         assert_eq!(
-            retained.row_line(start).unwrap().node.as_deref(),
+            retained.document.row_line(start).unwrap().node.as_deref(),
             Some("wrapped")
         );
     }
@@ -1335,6 +692,7 @@ mod tests {
         assert_eq!(scrolled, 4);
         assert_eq!(
             retained
+                .document
                 .row_line(scrolled)
                 .and_then(|line| line.node.as_deref()),
             Some("msg3.body")
@@ -1371,7 +729,7 @@ mod tests {
     fn following_tracks_the_tail_and_ignores_the_anchor() {
         let screen = Screen::new(40, 12);
         let mut retained = Retained::new(document(6), &screen);
-        let total = retained.rows.total();
+        let total = retained.document.total_rows();
         assert!(screen.follow);
         assert_eq!(retained.viewport_start(&screen, 3), total.saturating_sub(3));
         assert!(retained.following());
@@ -1382,7 +740,7 @@ mod tests {
         let mut screen = Screen::new(40, 12);
         let mut retained = Retained::new(document(20), &screen);
         let room = 4;
-        let total = retained.rows.total();
+        let total = retained.document.total_rows();
         let bottom = total.saturating_sub(room);
         screen.follow = false;
         // A scroll well past the end lands on the last full page, never on
@@ -1405,8 +763,8 @@ mod tests {
                 &screen,
             )
             .unwrap();
-        retained.reindex();
-        let grown = retained.rows.total();
+
+        let grown = retained.document.total_rows();
         assert_eq!(
             retained.viewport_start(&screen, room),
             grown.saturating_sub(room)
@@ -1420,7 +778,7 @@ mod tests {
         let mut screen = Screen::new(40, 12);
         let mut retained = Retained::new(document(20), &screen);
         let room = 4;
-        let total = retained.rows.total();
+        let total = retained.document.total_rows();
         let bottom = total.saturating_sub(room);
         screen.follow = false;
         // A wheel-up at the top cannot scroll past row zero.
@@ -1461,7 +819,7 @@ mod tests {
         screen.scroll = 4;
         screen.scroll_intent = 1;
         assert_eq!(composer_row(&retained.frame(&screen, None)), following);
-        screen.scroll = retained.rows.total();
+        screen.scroll = retained.document.total_rows();
         screen.scroll_intent = 2;
         assert_eq!(composer_row(&retained.frame(&screen, None)), following);
     }
@@ -1479,7 +837,7 @@ mod tests {
                 },
                 &screen,
             );
-            retained.reindex();
+
             retained.work = Work::default();
             retained
                 .changed(
@@ -1510,8 +868,8 @@ mod tests {
                     &screen,
                 )
                 .unwrap();
-            assert!(retained.live.is_empty());
-            assert!(retained.tree.contains("new"));
+            assert!(retained.document.stream_count() == 0);
+            assert!(retained.document.contains("new"));
             oracle(&retained, &screen);
         }
     }
@@ -1547,7 +905,7 @@ mod tests {
             ];
             for op in operations {
                 retained.op(&op, &screen).unwrap();
-                retained.reindex();
+
                 oracle(&retained, &screen);
             }
             screen.width = 19;
@@ -1594,7 +952,7 @@ mod tests {
             },
             &screen,
         );
-        retained.reindex();
+
         let lines = all(&retained);
         let body = lines
             .iter()
@@ -1627,7 +985,7 @@ mod tests {
             },
             &screen,
         );
-        retained.reindex();
+
         let rows: Vec<String> = all(&retained).iter().map(Line::text).collect();
         let thinking = rows.iter().position(|row| row.contains("reason")).unwrap();
         let answer = rows.iter().position(|row| row.contains("answer")).unwrap();
@@ -1646,7 +1004,7 @@ mod tests {
             },
             &screen,
         );
-        retained.reindex();
+
         let lines = all(&retained);
         let rows: Vec<String> = lines.iter().map(Line::text).collect();
         // The bold run is styled, not shown as `**bold**`.
@@ -1682,13 +1040,20 @@ mod tests {
             },
             &screen,
         );
-        let live = retained.live.get_mut("msg1.body").unwrap();
+
         let paint = Paint::of(&screen.theme, screen.width, "message.assistant");
         for delta in ["alpha ", "beta\n", "gamma ", "delta"] {
-            live.append(delta, &paint);
+            retained
+                .document
+                .append_unindexed("msg1.body", delta, &paint);
         }
         assert_eq!(
-            live.lines.iter().map(Line::text).collect::<Vec<_>>(),
+            retained
+                .document
+                .stream_lines("msg1.body")
+                .iter()
+                .map(Line::text)
+                .collect::<Vec<_>>(),
             vec!["┃ alpha beta", "┃ gamma delta"]
         );
     }
@@ -1704,14 +1069,14 @@ mod tests {
         let screen = Screen::new(40, 20);
         let mut collapsed = Retained::new(Node::section("session").id("session"), &screen);
         collapsed.current(stream(), &screen);
-        collapsed.reindex();
+
         let tail = all(&collapsed);
 
         let mut opened = Screen::new(40, 20);
         opened.prefs.opened = vec!["msg1.thinking".into()];
         let mut expanded = Retained::new(Node::section("session").id("session"), &opened);
         expanded.current(stream(), &opened);
-        expanded.reindex();
+
         let full = all(&expanded);
         // The collapsed window is exactly the last rows of the same rendering.
         assert_eq!(tail, full[full.len() - THINKING_TAIL_LINES..].to_vec());
@@ -1744,7 +1109,7 @@ mod tests {
         let mut screen = Screen::new(40, 20);
         let mut retained = Retained::new(Node::section("session").id("session"), &screen);
         retained.current(stream(), &screen);
-        retained.reindex();
+
         let wide = all(&retained);
 
         // A narrower terminal rewraps the unified rendering and re-applies the
@@ -1759,7 +1124,7 @@ mod tests {
         opened.prefs.opened = vec!["msg1.thinking".into()];
         let mut expanded = Retained::new(Node::section("session").id("session"), &opened);
         expanded.current(stream(), &opened);
-        expanded.reindex();
+
         let full = all(&expanded);
         assert_eq!(narrow, full[full.len() - THINKING_TAIL_LINES..].to_vec());
     }
@@ -1776,7 +1141,7 @@ mod tests {
             },
             &screen,
         );
-        retained.reindex();
+
         let rows: Vec<String> = all(&retained).iter().map(Line::text).collect();
         assert_eq!(rows, vec!["┃ three", "┃ four", "┃ five"]);
     }
@@ -1793,7 +1158,7 @@ mod tests {
             },
             &screen,
         );
-        retained.reindex();
+
         assert_eq!(
             all(&retained).iter().map(Line::text).collect::<Vec<_>>(),
             vec!["┃ alpha alpha", "┃ alpha beta", "┃ alpha gamma"]
@@ -1820,7 +1185,7 @@ mod tests {
             },
             &screen,
         );
-        retained.reindex();
+
         assert_eq!(
             all(&retained).iter().map(Line::text).collect::<Vec<_>>(),
             vec!["┃ alpha", "┃ gamma"]
@@ -1840,7 +1205,7 @@ mod tests {
             },
             &screen,
         );
-        retained.reindex();
+
         let rows: Vec<String> = all(&retained).iter().map(Line::text).collect();
         assert_eq!(rows, vec!["┃ one", "┃ two", "┃ three", "┃ four", "┃ five"]);
     }
@@ -2003,7 +1368,7 @@ mod tests {
                     },
                     &screen,
                 );
-                retained.reindex();
+
                 retained.work = Work::default();
                 let mut offset = "current ".len();
                 let mut baseline_visits = 0;
@@ -2036,7 +1401,7 @@ mod tests {
                     baseline_visits += crate::RESOLVE_VISITS.with(|visits| visits.get());
                 }
                 assert_eq!(
-                    retained.live["msg9999.body"].stream.text,
+                    retained.document.stream_text("msg9999.body"),
                     "current one two 界🙂\nfinal"
                 );
                 assert_eq!(retained.work.formatted_nodes, 0);
@@ -2072,6 +1437,7 @@ mod tests {
 mod review_tests {
     use super::*;
     use crate::{Key, KeyOut};
+    use misa_proto::view::Kind;
     use misa_proto::view::Span;
     #[test]
     fn live_selection_copies_the_displayed_wrapped_row() {
@@ -2085,11 +1451,12 @@ mod review_tests {
             },
             &screen,
         );
-        retained.reindex();
+
         // A live row wraps at the word, exactly as the settled block will.
         assert_eq!(
-            retained.live["msg1.body"]
-                .lines
+            retained
+                .document
+                .stream_lines("msg1.body")
                 .iter()
                 .map(Line::text)
                 .collect::<Vec<_>>(),
@@ -2156,11 +1523,11 @@ mod review_tests {
                 &screen,
             )
             .unwrap();
-        retained.reindex();
+
         screen.prefs.open_all();
         retained.local(&screen);
         let expected = misa_lines::render(
-            &screen.resolve(&retained.tree.snapshot()),
+            &screen.resolve(&retained.document.snapshot()),
             &screen.theme,
             40,
         );
