@@ -2,10 +2,6 @@
 //! Run with: cargo run -p misa-tui-testbed
 //! n/Right/Tab and p/Left cycle scenes; j/k scroll; t changes theme; Ctrl-Q quits.
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use misa_lines::{
-    Line,
-    components::{Component, Placement},
-};
 use misa_proto::view::{Action, ActionOn, Field, FieldKind, Kind, Node, Span, State};
 use misa_tui_ui::{
     KeyOut, Screen,
@@ -15,16 +11,14 @@ use std::io::{self, IsTerminal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scene {
-    Native,
     Semantic,
     Structured,
     Form,
 }
 impl Scene {
-    const ALL: [Self; 4] = [Self::Native, Self::Semantic, Self::Structured, Self::Form];
+    const ALL: [Self; 3] = [Self::Semantic, Self::Structured, Self::Form];
     fn label(self) -> &'static str {
         match self {
-            Self::Native => "native component / lines",
             Self::Semantic => "semantic transcript",
             Self::Structured => "semantic structures",
             Self::Form => "local document form",
@@ -32,48 +26,12 @@ impl Scene {
     }
 }
 
-/// The native scene's lines are made directly by a component, without reading
-/// semantic fields. A minimal role node mounts it in the same retained viewport
-/// as the proto-backed scenes and the stock queue component.
 fn screen(width: u16, height: u16) -> Screen {
-    let mut screen = Screen::new(width, height);
-    screen
-        .components
-        .register(
-            "testbed.native.lines",
-            Component {
-                render: std::sync::Arc::new(|_, context| {
-                    Ok(vec![Line {
-                        node: Some("native.lines".into()),
-                        spans: vec![(
-                            context.theme.role("header.title"),
-                            misa_render::clip("Direct Line fixture", context.columns),
-                        )],
-                        ..Line::default()
-                    }])
-                }),
-                placement: Placement::Document,
-            },
-        )
-        .expect("testbed component has a unique name");
-    screen
-        .components
-        .select_default("fixture.native.lines", "testbed.native.lines")
-        .expect("testbed component is installed");
-    screen
+    Screen::new(width, height)
 }
 
 fn fixture(scene: Scene) -> Node {
     match scene {
-        Scene::Native => Node::section("session")
-            .id("fixture.native")
-            .child(Node::section("fixture.native.lines").id("native.lines"))
-            .child(
-                Node::section("queue").id("native.queue").child(
-                    Node::text("queue.item", [Span::plain("An item in the queue")])
-                        .id("native.queue.item"),
-                ),
-            ),
         Scene::Semantic => semantic_transcript(),
         Scene::Structured => semantic_structures(),
         Scene::Form => form_fixture(),
@@ -308,7 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut screen = screen(width, height);
     let mut testbed = Testbed::default();
     testbed.label(&mut screen);
-    offline::run(&mut screen, fixture(Scene::Native), &mut testbed).await?;
+    offline::run(&mut screen, fixture(Scene::Semantic), &mut testbed).await?;
     Ok(())
 }
 
@@ -318,20 +276,12 @@ mod tests {
     use crossterm::event::{Event, KeyEvent};
     use tokio::sync::mpsc;
     #[tokio::test]
-    async fn local_updates_keys_and_resize_pass_through_retained_screen_loop() {
+    async fn semantic_scene_cycle_and_resize_use_retained_screen_loop() {
         let mut screen = screen(60, 12);
         let mut controller = Testbed::default();
         controller.label(&mut screen);
         let (sender, events) = mpsc::channel(8);
-        let (updates, incoming) = mpsc::channel(8);
-        updates
-            .send(Update::Ops(vec![misa_proto::sync::ViewOp::Insert {
-                parent: "native.queue".into(),
-                before: None,
-                node: Node::text("queue.item", [Span::plain("Second item")]).id("native.second"),
-            }]))
-            .await
-            .unwrap();
+        let (_updates, incoming) = mpsc::channel(1);
         sender
             .send(Ok(Event::Key(KeyEvent::new(
                 KeyCode::Char('n'),
@@ -350,7 +300,7 @@ mod tests {
         let mut bytes = Vec::new();
         offline::drive(
             &mut screen,
-            fixture(Scene::Native),
+            fixture(Scene::Semantic),
             &mut controller,
             events,
             incoming,
@@ -359,9 +309,8 @@ mod tests {
         .await
         .unwrap();
         let paint = String::from_utf8(bytes).unwrap();
-        assert!(paint.contains("Direct Line fixture"), "{paint}");
-        assert!(paint.contains("Queued (2)"), "{paint}");
-        assert!(paint.contains("Fixture conversation"));
+        assert!(paint.contains("Fixture conversation"), "{paint}");
+        assert!(paint.contains("Semantic structures"), "{paint}");
         assert_eq!((screen.width, screen.height), (40, 10));
         assert_eq!(controller.scene, 1);
     }
@@ -382,7 +331,7 @@ mod tests {
                 .unwrap();
         }
         let mut bytes = Vec::new();
-        let mut controller = Testbed { scene: 3, theme: 0 };
+        let mut controller = Testbed { scene: 2, theme: 0 };
         offline::drive(
             &mut screen,
             fixture(Scene::Form),

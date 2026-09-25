@@ -1,0 +1,11 @@
+[package]
+name = "misa-terminal-testbed"
+description = "Standalone protocol-free terminal row fixture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+misa-terminal-ui.workspace = true
+misa-style.workspace = true

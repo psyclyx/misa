@@ -75,7 +75,8 @@ plus the Zig system's, so `cargo` is this repository's rustc wherever you are st
 cargo test --workspace                 # the gate
 cargo run -p misa-daemon               # advertises locally and prints a ticket
 cargo run -p misa-tui --bin misa        # discover and pair with local daemons
-cargo run -p misa-tui-testbed            # offline terminal fixtures, no client dependencies
+cargo run -p misa-terminal-testbed       # headless protocol-free physical terminal rows (no terminal needed)
+cargo run -p misa-tui-testbed            # interactive offline semantic document fixtures (requires a terminal)
 cargo run -p misa-tui --bin misa -- --start-local  # opt in to start one if none is live (Unix)
 cargo run -p misa-daemon -- login openai-codex   # a subscription, by device code
 cargo run -p misa-daemon -- --plugin /tmp/policy.component.wasm   # a policy plugin, in wasm
@@ -148,8 +149,14 @@ measurement and button primitives live in `misa-pixel-ui`. Skia canvas
 painting and font resolution live in `misa-skia-paint`; `misa-skia-vulkan`
 uses that same painter for both offscreen readback and native swapchain presentation.
 The connected hosts (`misa-tui`, `misa-skia`) and standalone fixture apps
-(`misa-tui-testbed`, `misa-skia-testbed`, `misa-pixel-testbed`) depend on these crates independently.
-Neither UI crate nor fixture app depends on `misa-client` or `misa-transport`.
+(`misa-terminal-testbed`, `misa-tui-testbed`, `misa-skia-testbed`, `misa-pixel-testbed`) exercise these boundaries.
+`misa-terminal-testbed` depends only on `misa-terminal-ui` and `misa-style`: its locally
+keyed, width-wrapped rows drive the production `Viewport` and retained `Output` into
+memory, asserting ANSI diffs, anchoring, selection, follow and tiny resize without
+proto, kit, semantic rendering, a terminal or a daemon. `misa-tui-testbed` is a
+separate interactive _semantic_ document fixture (Semantic/Structured/Form) using
+`misa-tui-ui`; it is not the protocol-free testbed. No fixture app depends on
+`misa-client` or `misa-transport`.
 `misa-pixel-testbed` is native-only: its Dashboard, normalized input driver and
 Vulkan readback have no protocol/tree/kit/render dependency. `misa-skia-testbed`
 uses that Dashboard for Ctrl+1 and keeps its separate semantic `misa-proto` fixture. All semantic
@@ -169,6 +176,7 @@ nix-build next -A packages.misa-daemon
 nix-build next -A packages.misa
 nix-build next -A packages.misa-web
 nix-build next -A packages.misa-skia
+nix-build next -A packages.misa-terminal-testbed
 nix-build next -A packages.misa-tui-testbed
 nix-build next -A packages.misa-skia-testbed
 nix-build next -A packages.misa-pixel-testbed

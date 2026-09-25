@@ -3025,6 +3025,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "misa-terminal-testbed"
+version = "0.1.0"
+dependencies = [
+ "misa-style",
+ "misa-terminal-ui",
+]
+
+[[package]]
 name = "misa-terminal-ui"
 version = "0.1.0"
 dependencies = [
@@ -3089,7 +3097,6 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "misa-kit",
- "misa-lines",
  "misa-proto",
  "misa-render",
  "misa-tui-ui",
