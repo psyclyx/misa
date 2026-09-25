@@ -517,6 +517,7 @@ pub mod app;
 pub mod appearance;
 pub mod connection;
 mod preferences;
+pub mod testbed;
 pub mod window;
 pub mod workspace;
 

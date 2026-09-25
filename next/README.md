@@ -73,6 +73,8 @@ plus the Zig system's, so `cargo` is this repository's rustc wherever you are st
 cargo test --workspace                 # the gate
 cargo run -p misa-daemon               # advertises locally and prints a ticket
 cargo run -p misa-tui --bin misa        # discover and pair with local daemons
+cargo run -p misa-tui --no-default-features --bin misa-tui-testbed  # offline terminal fixtures
+cargo run -p misa-tui --bin misa -- --start-local  # opt in to start one if none is live (Unix)
 cargo run -p misa-daemon -- login openai-codex   # a subscription, by device code
 cargo run -p misa-daemon -- --plugin /tmp/policy.component.wasm   # a policy plugin, in wasm
                                                    # (a client can start the same flow: `/login openai-codex`)
@@ -114,9 +116,19 @@ Open a native window, or request a headless PNG explicitly:
 
 ```sh
 cargo run -p misa-skia -- --ticket misa:<endpoint id>:demo
+cargo run -p misa-skia -- --testbed     # offline native and semantic window fixtures (Ctrl+1/2)
+cargo run -p misa-skia -- --start-local  # live window; start only if no local daemon is live (Unix)
 cargo run -p misa-skia -- --view view.json --out frame.png
 cargo run -p misa-skia -- --view view.json --window --out frame.png
 ```
+
+`--start-local` is only for native TUI without an explicit daemon target, or a Skia live
+window without `--ticket`/`--view`. It never starts in offline PNG or UI testbed modes.
+It first discovers local daemons, then serializes cold starts with a private local lock,
+waits for a live advertisement, and leaves the daemon running after the client exits.
+`MISA_DAEMON_BIN` overrides the daemon executable (otherwise a sibling binary, then PATH);
+Nix frontend wrappers default it to the packaged daemon. No daemon flags are assumed for
+external binaries. Without `--start-local`, neither frontend launches a daemon.
 
 The window supports typed fields, disclosure toggles, tables, meters, images, text selection and
 clipboard copy. Alt-/ opens the declared command picker: type to filter, use arrows to select,

@@ -5,6 +5,8 @@
 //! misa-skia --ticket misa:<endpoint id>:<session> --out frame.png
 //! # a view that was saved, with no session at all
 //! misa-skia --view frame.json --out frame.png
+//! # isolated interactive local fixture (no session or export)
+//! misa-skia --testbed
 //! # keep rendering as it changes
 //! misa-skia --ticket misa:<endpoint id>:<session> --out frame.png --every-ms 500
 //! ```
@@ -21,25 +23,39 @@ use misa_proto::view::Node;
 use misa_protocol::observation::{MemberState, Status};
 
 fn usage() -> String {
-    "usage: misa-skia (--ticket misa:<endpoint id>:<session> | --view view.json) [--window] [--out frame.png] [--every-ms N] [--columns N]"
+    "usage: misa-skia --testbed | misa-skia [--start-local] [--ticket misa:<endpoint id>:<session> | --view view.json] [--window] [--out frame.png] [--every-ms N] [--columns N]"
         .into()
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut window = false;
+    let mut start_local = false;
     let mut ticket = None;
     let mut view_file = None;
     let mut out = None;
     let mut every_ms: Option<u64> = None;
     let mut columns = 100u32;
     let mut rows = 40u32;
-    let mut arguments = std::env::args().skip(1);
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--testbed") {
+        if args.as_slice() != ["--testbed"] {
+            return Err(format!(
+                "--testbed cannot be combined with other arguments; {}",
+                usage()
+            )
+            .into());
+        }
+        misa_skia::testbed::run()?;
+        return Ok(());
+    }
+    let mut arguments = args.into_iter();
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--window" => window = true,
-            "--ticket" | "-t" => ticket = arguments.next(),
-            "--view" | "-v" => view_file = arguments.next(),
+            "--start-local" => start_local = true,
+            "--ticket" | "-t" => ticket = Some(arguments.next().ok_or("--ticket needs a value")?),
+            "--view" | "-v" => view_file = Some(arguments.next().ok_or("--view needs a value")?),
             "--out" | "-o" => out = arguments.next(),
             "--every-ms" => every_ms = arguments.next().and_then(|value| value.parse().ok()),
             "--columns" => {
@@ -59,6 +75,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if ticket.is_none() && view_file.is_none() && out.is_some() && !window {
         return Err(usage().into());
+    }
+    if start_local {
+        if !cold_start_eligible(
+            window || out.is_none(),
+            ticket.is_some(),
+            view_file.is_some(),
+        ) {
+            return Err("--start-local requires a live window without --ticket or --view".into());
+        }
+        #[cfg(unix)]
+        misa_local_start::discover_or_start().await?;
+        #[cfg(not(unix))]
+        return Err("--start-local requires Unix".into());
     }
 
     let mut first: Option<Node> = match &view_file {
@@ -185,6 +214,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::time::sleep(Duration::from_millis(every_ms.unwrap().max(16))).await;
         }
         observation.changed().await.map_err(|fault| fault.message)?;
+    }
+}
+
+fn cold_start_eligible(live_window: bool, ticket: bool, view: bool) -> bool {
+    live_window && !ticket && !view
+}
+
+#[cfg(test)]
+mod cold_start_tests {
+    use super::cold_start_eligible;
+    #[test]
+    fn excludes_explicit_and_offline_modes() {
+        assert!(cold_start_eligible(true, false, false));
+        for (window, ticket, view) in [
+            (false, false, false),
+            (true, true, false),
+            (true, false, true),
+        ] {
+            assert!(!cold_start_eligible(window, ticket, view));
+        }
     }
 }
 

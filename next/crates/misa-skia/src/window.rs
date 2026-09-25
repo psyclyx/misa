@@ -53,6 +53,26 @@ pub fn run(
         .map_err(|error| error.to_string())?;
     host.error.map_or(Ok(()), Err)
 }
+/// Present the existing Skia raster through the window's softbuffer surface.
+/// Shared by the connected window and the isolated interactive testbed.
+pub(crate) fn present_pixels(
+    surface: &mut softbuffer::Surface<Arc<Window>, Arc<Window>>,
+    image: &image::RgbaImage,
+) -> Result<(), String> {
+    let (width, height) = image.dimensions();
+    surface
+        .resize(
+            NonZeroU32::new(width).ok_or("Empty image width")?,
+            NonZeroU32::new(height).ok_or("Empty image height")?,
+        )
+        .map_err(|error| error.to_string())?;
+    let mut buffer = surface.buffer_mut().map_err(|error| error.to_string())?;
+    for (target, pixel) in buffer.iter_mut().zip(image.pixels()) {
+        *target = ((pixel[0] as u32) << 16) | ((pixel[1] as u32) << 8) | (pixel[2] as u32);
+    }
+    buffer.present().map_err(|error| error.to_string())
+}
+
 struct Host {
     appearance: crate::appearance::Choice,
     appearance_writer: std::sync::mpsc::SyncSender<crate::appearance::Choice>,
@@ -227,18 +247,7 @@ impl Host {
         if let Some(path) = &self.snapshot {
             image.save(path).map_err(|error| error.to_string())?;
         }
-        let surface = self.surface.as_mut().ok_or("No window surface")?;
-        surface
-            .resize(
-                NonZeroU32::new(size.width).unwrap(),
-                NonZeroU32::new(size.height).unwrap(),
-            )
-            .map_err(|error| error.to_string())?;
-        let mut buffer = surface.buffer_mut().map_err(|error| error.to_string())?;
-        for (target, pixel) in buffer.iter_mut().zip(image.pixels()) {
-            *target = ((pixel[0] as u32) << 16) | ((pixel[1] as u32) << 8) | (pixel[2] as u32);
-        }
-        buffer.present().map_err(|error| error.to_string())
+        present_pixels(self.surface.as_mut().ok_or("No window surface")?, &image)
     }
 }
 impl ApplicationHandler<Update> for Host {

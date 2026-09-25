@@ -23,3 +23,6 @@ winit = "0.30.13"
 softbuffer = "0.4.8"
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 misa-kit = { path = "../misa-kit" }
+
+[target.'cfg(unix)'.dependencies]
+misa-local-start = { path = "../misa-local-start" }
