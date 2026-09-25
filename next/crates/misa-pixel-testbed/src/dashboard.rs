@@ -1,7 +1,8 @@
 //! Toolkit-owned scene: no semantic tree or protocol types involved.
-use misa_pixel_ui::{Button, Rect, TextFlow, TextMetrics};
+use misa_pixel_ui::{Button, Rect, TextFlow, TextMetrics, Viewport};
 use misa_pixel_ui::{Op, Scene};
 use misa_style::Style;
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 enum NativeAction {
@@ -10,9 +11,43 @@ enum NativeAction {
 
 pub struct Dashboard {
     pub selected: bool,
+    viewport: Viewport,
+    rows: usize,
 }
 
+impl Default for Dashboard {
+    fn default() -> Self {
+        let mut viewport = Viewport::new(0.0, 0.0);
+        viewport.pin_to_top();
+        Self {
+            selected: false,
+            viewport,
+            rows: 20,
+        }
+    }
+}
+
+const LIST_TOP: f32 = 205.0;
+const ROW_HEIGHT: f32 = 26.0;
+
 impl Dashboard {
+    pub fn scroll(&mut self, delta: f32) {
+        self.viewport.scroll(delta);
+    }
+
+    /// Resume following new rows, rather than changing the scroll offset directly.
+    pub fn follow_tail(&mut self) {
+        self.viewport.follow_tail();
+    }
+
+    pub fn append_row(&mut self) {
+        self.rows += 1;
+    }
+
+    pub fn offset(&self) -> f32 {
+        self.viewport.offset()
+    }
+
     pub fn toggle(&mut self) {
         self.selected = !self.selected;
     }
@@ -59,7 +94,7 @@ impl Dashboard {
         }
     }
 
-    pub fn frame(&self, width: u32, height: u32, metrics: &dyn TextMetrics) -> Scene {
+    pub fn frame(&mut self, width: u32, height: u32, metrics: &dyn TextMetrics) -> Scene {
         let button = self.button(width, metrics);
         let card_width = (width as f32 - 40.0).max(1.0);
         let card_height = (height as f32 - 160.0).clamp(1.0, 310.0);
@@ -113,6 +148,45 @@ impl Dashboard {
                 &mut scene.ops,
             );
         }
+        // The list lives in its own clipped card. Width and height are measured
+        // anew each frame, while the viewport retains the wheel/follow policy.
+        let list_height = (height as f32 - LIST_TOP - 60.0).max(1.0);
+        let list_width = (width as f32 - 72.0).max(1.0);
+        self.viewport
+            .reconcile(self.rows as f32 * ROW_HEIGHT, list_height, 0.0);
+        let mut rows = Vec::new();
+        for index in 0..self.rows {
+            let top = index as f32 * ROW_HEIGHT;
+            if !self.viewport.visible(top, top + ROW_HEIGHT) {
+                continue;
+            }
+            let y = LIST_TOP + self.viewport.position(top);
+            rows.push(Op::Rect {
+                x: 36.0,
+                y,
+                width: list_width,
+                height: ROW_HEIGHT,
+                style: if index % 2 == 0 {
+                    Style::rgb(45, 105, 150)
+                } else {
+                    Style::rgb(65, 74, 86)
+                },
+            });
+            rows.push(Op::Text {
+                x: 40.0,
+                y: y + 3.0,
+                size: 14.0,
+                style: Style::rgb(230, 232, 236),
+                text: format!("Local item {}", index + 1),
+            });
+        }
+        scene.ops.push(Op::ClipRect {
+            x: 36.0,
+            y: LIST_TOP,
+            width: list_width,
+            height: list_height,
+            ops: Arc::new(rows),
+        });
         scene
     }
 }
@@ -139,7 +213,7 @@ mod tests {
     }
     #[test]
     fn description_wraps_and_paints_inside_narrow_card() {
-        let dashboard = Dashboard { selected: false };
+        let mut dashboard = Dashboard::default();
         let narrow = dashboard.frame(130, 300, &Metrics);
         let wide = dashboard.frame(500, 300, &Metrics);
         let rows = |scene: &Scene| {
@@ -175,7 +249,7 @@ mod tests {
 
     #[test]
     fn button_is_local_and_resizes_with_viewport() {
-        let mut dashboard = Dashboard { selected: false };
+        let mut dashboard = Dashboard::default();
         assert!(!dashboard.click(0.0, 0.0, 500, &Metrics));
         assert!(dashboard.click(40.0, 155.0, 500, &Metrics));
         assert!(dashboard.selected);

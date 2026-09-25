@@ -2,7 +2,7 @@
 //! this module until the person activates an action the session advertised.
 use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
-use misa_pixel_ui::{Op, Scene, TextMetrics};
+use misa_pixel_ui::{Op, Scene, TextMetrics, Viewport};
 use misa_proto::sync::{StreamUpdate, ViewOp};
 #[cfg(test)]
 use misa_proto::view::FieldKind;
@@ -88,10 +88,7 @@ pub struct App {
     report: Option<Report>,
     prefixes: Vec<(Style, String)>,
     replace_selection: bool,
-    scroll: f32,
-    follow: bool,
-    content_height: f32,
-    viewport_height: f32,
+    viewport: Viewport,
     offline_elapsed: Duration,
 }
 struct Report {
@@ -154,10 +151,7 @@ impl App {
             report: None,
             prefixes: vec![],
             replace_selection: false,
-            scroll: 0.0,
-            follow: true,
-            content_height: 0.0,
-            viewport_height: 600.0,
+            viewport: Viewport::new(0.0, 600.0),
             offline_elapsed: Duration::ZERO,
         };
         app.set_view(view);
@@ -193,8 +187,8 @@ impl App {
                     output.frame = Some(self.frame_at(width, height, elapsed));
                     output.deadline = self.retained.next_deadline(
                         self.document.root(),
-                        self.scroll,
-                        self.viewport_height,
+                        self.viewport.offset(),
+                        self.viewport.viewport_height(),
                         elapsed,
                     );
                 }
@@ -215,8 +209,11 @@ impl App {
 
     /// Only painted moving groups intersecting the viewport need a pulse.
     pub fn animating(&self) -> bool {
-        self.retained
-            .animating(self.document.root(), self.scroll, self.viewport_height)
+        self.retained.animating(
+            self.document.root(),
+            self.viewport.offset(),
+            self.viewport.viewport_height(),
+        )
     }
     pub fn report(&mut self, title: String, value: Value) {
         let mut entries = Vec::new();
@@ -348,8 +345,7 @@ impl App {
     /// Pin an offline snapshot to the beginning of the view, rather than following
     /// live updates to the bottom. May be called before the first frame.
     pub fn pin_to_top(&mut self) {
-        self.follow = false;
-        self.scroll = 0.0;
+        self.viewport.pin_to_top();
     }
     pub fn scroll(&mut self, delta: f32) {
         if let Some(report) = &mut self.report {
@@ -358,9 +354,7 @@ impl App {
                 .saturating_add_signed((delta / 24.0).round() as isize);
             return;
         }
-        self.scroll =
-            (self.scroll + delta).clamp(0.0, (self.content_height - self.viewport_height).max(0.0));
-        self.follow = false;
+        self.viewport.scroll(delta);
     }
     pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
         if self.picker.is_some() || self.report.is_some() {
@@ -375,7 +369,7 @@ impl App {
         match self.interaction.pointer(x, y, dragging) {
             PointerResult::None | PointerResult::SelectionChanged => vec![],
             PointerResult::Activate(control) => {
-                self.follow = false;
+                self.viewport.stop_following();
                 self.activate(control)
             }
         }

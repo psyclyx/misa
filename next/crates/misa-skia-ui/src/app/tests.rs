@@ -64,6 +64,41 @@ fn walk_ops(ops: &[Op], visit: &mut impl FnMut(&Op)) {
 }
 
 #[test]
+fn viewport_follows_new_output_but_report_wheel_and_offline_pin_do_not() {
+    let view = |count| {
+        Node::section("session")
+            .id("session")
+            .children((0..count).map(|i| {
+                Node::text("message.user", [Span::plain(format!("row {i}"))]).id(format!("row.{i}"))
+            }))
+    };
+    let mut app = App::new(view(20), test_metrics());
+    assert_eq!(app.viewport.content_height(), 0.0);
+    assert_eq!(app.viewport.viewport_height(), 600.0);
+    app.frame(400, 100);
+    let first = app.viewport.offset();
+    assert!(first > 0.0);
+    app.set_view(view(30));
+    app.frame(400, 100);
+    assert!(app.viewport.offset() > first);
+    app.scroll(-50.0);
+    let manual = app.viewport.offset();
+    app.set_view(view(40));
+    app.frame(400, 100);
+    assert_eq!(app.viewport.offset(), manual);
+    app.report("Local report".into(), Value::str("A report"));
+    app.scroll(200.0);
+    assert_eq!(app.viewport.offset(), manual);
+    app.key(Key::Escape);
+    app.pin_to_top();
+    app.frame(400, 100);
+    assert_eq!(app.viewport.offset(), 0.0);
+    app.set_view(view(50));
+    app.frame(400, 100);
+    assert_eq!(app.viewport.offset(), 0.0);
+}
+
+#[test]
 fn frame_positions_nonempty_runs_and_uses_syntax_colours() {
     let mut app = App::new(scene_view(), test_metrics());
     let scene = app.frame_at(800, 600, Duration::ZERO);
@@ -430,7 +465,7 @@ fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
     let bounds = app.retained.indicators("session")[0].clone();
     assert_eq!(bounds.id, "status");
     assert!(bounds.top > size.height as f32);
-    assert!(bounds.bottom < app.content_height - size.height as f32);
+    assert!(bounds.bottom < app.viewport.content_height() - size.height as f32);
     assert!(
         !app.animating(),
         "follow scroll leaves the status above the viewport"
@@ -445,19 +480,19 @@ fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
 
     // Intersection uses the group's actual top and height, including nested groups.
     let below = 20.0 + bounds.top - size.height as f32;
-    app.scroll(below - app.scroll);
+    app.scroll(below - app.viewport.offset());
     assert!(!app.animating());
     app.scroll(1.0);
     assert!(app.animating());
     let above = 20.0 + bounds.bottom;
-    app.scroll(above - app.scroll);
+    app.scroll(above - app.viewport.offset());
     assert!(!app.animating());
     app.scroll(-1.0);
     assert!(app.animating());
 
     // Center on the actual cached group placement, rather than a tree index.
     let scroll_to_status = 20.0 + bounds.top - 80.0;
-    app.scroll(scroll_to_status - app.scroll);
+    app.scroll(scroll_to_status - app.viewport.offset());
     assert!(
         app.animating(),
         "wheel scrolling updates visibility immediately"
@@ -481,7 +516,7 @@ fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
     );
     assert_eq!(app.retained.rendered_nodes(), 0);
     assert!(Arc::ptr_eq(&visible, &app.retained.cached("status").ops));
-    app.scroll(scroll_to_status - app.scroll);
+    app.scroll(scroll_to_status - app.viewport.offset());
     assert!(
         app.drive(Event::Redraw(size), Duration::from_millis(640))
             .deadline
@@ -1484,7 +1519,7 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
     let geometry = Arc::clone(&app.retained.cached("child").geometry.rows()[0].geometry);
     assert!(Arc::ptr_eq(&geometry, &app.interaction.rows()[0].geometry));
     let y = app.interaction.rows()[0].y;
-    let scroll = app.scroll;
+    let scroll = app.viewport.offset();
     let measured = calls.load(Ordering::Relaxed);
     app.frame(400, 100);
     assert_eq!(calls.load(Ordering::Relaxed), measured);
@@ -1498,8 +1533,11 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
     ));
     assert!(Arc::ptr_eq(&geometry, &app.interaction.rows()[0].geometry));
     assert_eq!(app.interaction.rows()[0].x, 20.0);
-    assert!(app.scroll < scroll);
-    assert_eq!(app.interaction.rows()[0].y, y + scroll - app.scroll);
+    assert!(app.viewport.offset() < scroll);
+    assert_eq!(
+        app.interaction.rows()[0].y,
+        y + scroll - app.viewport.offset()
+    );
 
     app.observed(&DocumentUpdate::Changed {
         tree: &[ViewOp::Replace {

@@ -31,7 +31,7 @@ impl Headless {
             return Err("headless size must be nonzero".into());
         }
         Ok(Self {
-            dashboard: Dashboard { selected: false },
+            dashboard: Dashboard::default(),
             metrics: misa_skia_paint::text_metrics()?,
             renderer: Renderer::new()
                 .map_err(|error| format!("Vulkan renderer unavailable: {error}"))?,
@@ -57,6 +57,7 @@ impl Headless {
                 self.dashboard
                     .click(x, y, self.size.width, self.metrics.as_ref());
             }
+            Event::Wheel { delta } => self.dashboard.scroll(delta),
             Event::Resize(size) => self.size = size,
             _ => {}
         }
@@ -128,6 +129,43 @@ mod tests {
     fn pixel(snapshot: &Snapshot, x: usize, y: usize) -> &[u8] {
         let offset = (y * snapshot.size.width as usize + x) * 4;
         &snapshot.pixels[offset..offset + 4]
+    }
+
+    #[test]
+    fn wheel_resize_and_follow_change_real_gpu_pixels() {
+        let mut host = Headless::new(Size {
+            width: 130,
+            height: 300,
+        })
+        .expect("Vulkan ICD and GPU readback required; configure VK_ICD_FILENAMES");
+        let top = host.frame().unwrap();
+        assert_eq!(host.dashboard.offset(), 0.0);
+        host.input(Event::Wheel { delta: 26.0 });
+        let scrolled = host.frame().unwrap();
+        assert_eq!(host.dashboard.offset(), 26.0);
+        assert_ne!(pixel(&top, 38, 208), pixel(&scrolled, 38, 208));
+        host.input(Event::Wheel { delta: 100_000.0 });
+        let end = host.frame().unwrap();
+        assert_eq!(host.dashboard.offset(), 20.0 * 26.0 - 35.0);
+        assert_ne!(scrolled.pixels, end.pixels);
+        host.input(Event::Resize(Size {
+            width: 130,
+            height: 800,
+        }));
+        let taller = host.frame().unwrap();
+        assert_eq!(host.dashboard.offset(), 0.0);
+        assert_eq!(pixel(&taller, 38, 208), pixel(&top, 38, 208));
+        host.dashboard.follow_tail();
+        host.input(Event::Resize(Size {
+            width: 130,
+            height: 300,
+        }));
+        host.frame().unwrap();
+        assert_eq!(host.dashboard.offset(), 20.0 * 26.0 - 35.0);
+        host.dashboard.append_row();
+        let appended = host.frame().unwrap();
+        assert_eq!(host.dashboard.offset(), 21.0 * 26.0 - 35.0);
+        assert_ne!(end.pixels, appended.pixels);
     }
 
     #[test]

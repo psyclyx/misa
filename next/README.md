@@ -158,8 +158,10 @@ separate interactive _semantic_ document fixture (Semantic/Structured/Form) usin
 `misa-tui-ui`; it is not the protocol-free testbed. No fixture app depends on
 `misa-client` or `misa-transport`.
 `misa-pixel-testbed` is native-only: its Dashboard, normalized input driver and
-Vulkan readback have no protocol/tree/kit/render dependency. `misa-skia-testbed`
-uses that Dashboard for Ctrl+1 and keeps its separate semantic `misa-proto` fixture. All semantic
+Vulkan readback have no protocol/tree/kit/render dependency. Its clipped list uses the
+shared pixel viewport for wheel scrolling, resize clamping and following appended rows.
+`misa-skia-testbed` uses that Dashboard for Ctrl+1 and keeps its separate semantic
+`misa-proto` fixture. All semantic
 pixel views, including PNG exports, use the same `App` layout; its text positions,
 wrapping, caret and selection use measurements from the font used for painting.
 

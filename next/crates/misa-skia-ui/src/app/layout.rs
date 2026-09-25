@@ -61,25 +61,19 @@ impl App {
     /// same display lists; only the animated indicator's owner and ancestors change.
     pub fn frame_at(&mut self, width: u32, height: u32, elapsed: Duration) -> Scene {
         self.retained.begin_frame(width, elapsed);
-        self.viewport_height = height as f32;
-        let mut scene = self.layout(width, height);
-        let max = (self.content_height - height as f32 + 40.0).max(0.0);
-        let wanted = if self.follow {
-            max
-        } else {
-            self.scroll.min(max)
-        };
-        if (wanted - self.scroll).abs() > 0.5 {
-            self.scroll = wanted;
-            scene = self.layout(width, height);
+        let (mut scene, content_height) = self.layout(width, height);
+        // The transcript owns its 40px tail breathing room; the viewport does not.
+        if self.viewport.reconcile(content_height, height as f32, 40.0) {
+            scene = self.layout(width, height).0;
         }
         // Lay out first: the final scroll and collapsed groups determine visibility.
         // An idle frame reuses its display lists and checks only moving owner bounds.
-        if self
-            .retained
-            .invalidate_stale_visible(&self.document, self.scroll, self.viewport_height)
-        {
-            scene = self.layout(width, height);
+        if self.retained.invalidate_stale_visible(
+            &self.document,
+            self.viewport.offset(),
+            self.viewport.viewport_height(),
+        ) {
+            scene = self.layout(width, height).0;
         }
         let colors = self.colors();
         if let Some(mut report) = self.report.take() {
@@ -135,7 +129,7 @@ impl App {
         }
         scene
     }
-    fn layout(&mut self, width: u32, height: u32) -> Scene {
+    fn layout(&mut self, width: u32, height: u32) -> (Scene, f32) {
         self.interaction.begin_frame();
         let mut scene = Scene {
             width: width as f32,
@@ -148,7 +142,7 @@ impl App {
         } else {
             Theme::dark()
         };
-        let mut y = 20.0 - self.scroll;
+        let mut y = 20.0 + self.viewport.position(0.0);
         self.present(
             &root,
             20.0,
@@ -157,7 +151,7 @@ impl App {
             &theme,
             &mut scene,
         );
-        self.content_height = y + self.scroll + 20.0;
+        let content_height = y + self.viewport.offset() + 20.0;
         self.interaction.finish_frame();
         self.interaction
             .paint_selection(&mut scene, self.line_height(), self.colors().selection);
@@ -277,7 +271,7 @@ impl App {
                 self.colors().muted,
             ));
         }
-        scene
+        (scene, content_height)
     }
     fn box_control(
         &mut self,

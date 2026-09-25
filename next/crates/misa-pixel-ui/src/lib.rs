@@ -3,6 +3,8 @@ use misa_style::Style;
 
 mod text;
 pub use text::{LaidOutRow, TextFlow};
+pub mod viewport;
+pub use viewport::Viewport;
 
 /// Skia-independent font measurements for pixel text layout.
 ///

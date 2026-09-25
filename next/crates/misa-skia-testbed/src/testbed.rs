@@ -38,7 +38,7 @@ impl Fixtures {
             .map_err(|error| format!("Cannot load Skia text metrics: {error}"))?;
         Ok(Self {
             mode: Mode::Native,
-            native: Dashboard { selected: false },
+            native: Dashboard::default(),
             semantic: App::new(semantic_fixture(), metrics.clone()),
             metrics,
             deadline: None,
@@ -136,6 +136,7 @@ impl Fixtures {
                     );
                 }
             }
+            Event::Wheel { delta } if self.mode == Mode::Native => self.native.scroll(delta),
             Event::Pointer { .. }
             | Event::Wheel { .. }
             | Event::Resize(_)
