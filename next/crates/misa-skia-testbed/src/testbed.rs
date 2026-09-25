@@ -290,10 +290,12 @@ mod tests {
         let semantic = fixtures.frame(340, 280);
         assert_eq!((semantic.width, semantic.height), (340.0, 280.0));
         assert!(has_text(&semantic.ops, "Semantic fixture"));
-        fixtures.semantic.focus = Some(crate::app::Control::Field {
-            node: "panel.input".into(),
-            field: "note".into(),
-        });
+        fixtures
+            .semantic
+            .focus_control(Some(crate::app::Control::Field {
+                node: "panel.input".into(),
+                field: "note".into(),
+            }));
         fixtures.input(Event::Text("!".into()), Duration::ZERO, 340);
         assert_eq!(
             fixtures.semantic.field_text("panel.input", "note"),

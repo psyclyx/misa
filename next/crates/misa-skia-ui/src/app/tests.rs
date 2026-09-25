@@ -100,25 +100,28 @@ fn narrow_code_clips_before_highlighting_but_keeps_fence_and_visible_colours() {
     );
     let mut app = App::new(view, test_metrics());
     let scene = app.frame(144, 180);
-    assert_eq!(app.rows.len(), 3);
-    assert_eq!(app.rows[0].geometry.text, "rust");
+    assert_eq!(app.interaction.rows().len(), 3);
+    assert_eq!(app.interaction.rows()[0].geometry.text, "rust");
     let visible = app.clip(&raw, 104.0); // 144px frame minus the 40px document inset
-    assert_eq!(app.rows[1].geometry.text, visible);
-    assert_eq!(app.rows[2].geometry.text, app.clip("let y = 2;", 104.0));
+    assert_eq!(app.interaction.rows()[1].geometry.text, visible);
+    assert_eq!(
+        app.interaction.rows()[2].geometry.text,
+        app.clip("let y = 2;", 104.0)
+    );
     let theme = Theme::dark();
     assert_eq!(
-        app.rows[0].geometry.runs[0].0,
+        app.interaction.rows()[0].geometry.runs[0].0,
         theme.role("markdown.code.label")
     );
     assert!(
-        app.rows[1]
+        app.interaction.rows()[1]
             .geometry
             .runs
             .iter()
             .any(|(style, text, _)| *style == theme.token("keyword") && text == "let")
     );
     assert!(
-        app.rows[1]
+        app.interaction.rows()[1]
             .geometry
             .runs
             .iter()
@@ -132,7 +135,7 @@ fn narrow_code_clips_before_highlighting_but_keeps_fence_and_visible_colours() {
     // The second line still uses its original byte offset, not the clipped
     // prefix length of the first line.
     assert!(
-        app.rows[2]
+        app.interaction.rows()[2]
             .geometry
             .runs
             .iter()
@@ -141,7 +144,10 @@ fn narrow_code_clips_before_highlighting_but_keeps_fence_and_visible_colours() {
     app.key(Key::SelectAll);
     assert_eq!(
         app.selected_text(),
-        format!("rust\n{visible}\n{}", app.rows[2].geometry.text)
+        format!(
+            "rust\n{visible}\n{}",
+            app.interaction.rows()[2].geometry.text
+        )
     );
 }
 
@@ -679,7 +685,8 @@ fn semantic_action_uses_measured_button_paint_and_hit_bounds() {
     let mut app = App::new(view, test_metrics());
     let scene = app.frame_at(400, 200, Duration::ZERO);
     let hit = app
-        .hits
+        .interaction
+        .hits()
         .iter()
         .find(|hit| matches!(&hit.control, Control::Action { action, .. } if action == "go"))
         .unwrap();
@@ -873,10 +880,10 @@ fn reports_and_rejected_prompts_preserve_local_typing() {
     };
     fields[0].id = "prompt".into();
     let mut app = App::new(view.clone(), test_metrics());
-    app.focus = Some(Control::Field {
+    app.focus_control(Some(Control::Field {
         node: "composer".into(),
         field: "prompt".into(),
-    });
+    }));
     app.drive(Event::Text("new draft".into()), Duration::ZERO)
         .commands;
     app.report(
@@ -926,10 +933,10 @@ fn drafts_survive_updates_and_submit_only_the_target_panel() {
         .child(form("one", FieldKind::Inline))
         .child(form("two", FieldKind::Inline));
     let mut app = App::new(view.clone(), test_metrics());
-    app.focus = Some(Control::Field {
+    app.focus_control(Some(Control::Field {
         node: "one".into(),
         field: "value".into(),
-    });
+    }));
     app.drive(Event::Text("private draft".into()), Duration::ZERO)
         .commands;
     app.set_view(view);
@@ -944,7 +951,7 @@ fn drafts_survive_updates_and_submit_only_the_target_panel() {
 fn committed_text_types_once_and_special_keys_do_not_insert_text() {
     let mut app = App::new(form("one", FieldKind::Inline), test_metrics());
     assert_eq!(
-        app.focus,
+        app.interaction.focus().cloned(),
         Some(Control::Field {
             node: "one".into(),
             field: "value".into()
@@ -996,7 +1003,7 @@ fn disclosure_state_and_unicode_copy_are_local() {
     app.activate(Control::Disclosure("tool".into()));
     app.set_view(view);
     app.frame(500, 500);
-    app.focus = None;
+    app.focus_control(None);
     app.key(Key::SelectAll);
     assert_eq!(app.key(Key::Copy), vec![Command::Copy("héllo λ".into())]);
     assert!(app.expanded.contains("tool"));
@@ -1069,7 +1076,8 @@ fn rich_shapes_draw_wrapped_table_meter_and_bitmap() {
         |op| matches!(op,Op::Rect {width,height,..} if *width==80.0 && *height==10.0)
     ));
     assert!(
-        app.rows
+        app.interaction
+            .rows()
             .iter()
             .filter(|row| row.geometry.text.contains("cell")
                 || row.geometry.text.contains("wrap")
@@ -1124,7 +1132,8 @@ fn evicted_images_release_retained_scenes_and_can_be_reloaded() {
     assert!(app.decoded_image_bytes() <= 32 * 1024 * 1024);
     app.frame(800, 600);
     assert!(
-        app.hits
+        app.interaction
+            .hits()
             .iter()
             .any(|hit| hit.control == Control::LoadImage(reference("a")))
     );
@@ -1222,14 +1231,18 @@ fn blank_text_row_accepts_pointer_selection_across_its_width() {
     );
     app.frame(320, 200);
     let blank = app
-        .rows
+        .interaction
+        .rows()
         .iter()
         .enumerate()
         .find(|(_, row)| row.geometry.text.is_empty())
         .map(|(index, row)| (index, row.x, row.y))
         .expect("blank row");
     app.pointer(blank.1 + 5.0, blank.2 + 1.0, false);
-    assert_eq!(app.selection, Some(((blank.0, 0), (blank.0, 0))));
+    assert_eq!(
+        app.interaction.selection(),
+        Some(((blank.0, 0), (blank.0, 0)))
+    );
 }
 
 #[test]
@@ -1240,7 +1253,7 @@ fn styled_narrow_unicode_rows_share_paint_hit_and_selection_positions() {
     );
     let mut app = App::new(view, test_metrics());
     let scene = app.frame(400, 200);
-    let row = &app.rows[0];
+    let row = &app.interaction.rows()[0];
     assert_eq!(
         row.geometry.advances,
         vec![0.0, 18.0, 22.0, 26.0, 30.0, 34.0, 47.0]
@@ -1306,9 +1319,9 @@ fn giant_unwrapped_status_and_label_only_measure_and_paint_visible_prefixes() {
         }),
     );
     let scene = app.frame(100, 120);
-    assert_eq!(app.rows.len(), 2);
-    assert_eq!(app.rows[0].geometry.text, label);
-    assert_eq!(app.rows[1].geometry.text, value);
+    assert_eq!(app.interaction.rows().len(), 2);
+    assert_eq!(app.interaction.rows()[0].geometry.text, label);
+    assert_eq!(app.interaction.rows()[1].geometry.text, value);
     let assert_bounded = |scene: &Scene| {
         assert!(longest.load(Ordering::Relaxed) <= 32 * 4);
         assert!(total.load(Ordering::Relaxed) < 1024);
@@ -1319,7 +1332,7 @@ fn giant_unwrapped_status_and_label_only_measure_and_paint_visible_prefixes() {
         });
     };
     assert_bounded(&scene);
-    let row = &app.rows[1];
+    let row = &app.interaction.rows()[1];
     let (x, y) = (row.x, row.y + 1.0);
     app.pointer(x + 1.0, y, false);
     app.pointer(x + 14.0, y, true);
@@ -1347,19 +1360,19 @@ fn narrow_quote_table_rows_clip_without_losing_copy_or_hit_bounds() {
     let scene = app.frame(95, 500);
     let cell_width = 55.0 / 2.0;
     let viewport = cell_width - 10.0;
-    assert!(app.rows.len() >= 4);
+    assert!(app.interaction.rows().len() >= 4);
     let mut clips = Vec::new();
     walk_ops(&scene.ops, &mut |op| {
         if let Op::ClipRect { x, width, ops, .. } = op {
             clips.push((*x, *width, ops.clone()));
         }
     });
-    assert_eq!(clips.len(), app.rows.len());
+    assert_eq!(clips.len(), app.interaction.rows().len());
     assert!(clips.iter().all(|(_, width, _)| *width == viewport));
     assert!(clips.iter().any(|(left, width, ops)| ops.iter().any(|op| matches!(op, Op::Text { x, text, .. } if text.contains('界') && x + app.measure(text) > left + width))));
-    for hit in &app.hits {
+    for hit in app.interaction.hits() {
         if let Control::Text(index) = hit.control {
-            let row = &app.rows[index];
+            let row = &app.interaction.rows()[index];
             assert_eq!(row.width, viewport);
             assert!(hit.x + hit.width <= row.x + viewport);
             let cell_right = if row.x < 20.0 + cell_width {
@@ -1390,8 +1403,8 @@ fn measured_wrap_handles_long_tokens_styled_runs_and_quote_prefixes() {
     ));
     let mut app = App::new(view, test_metrics());
     app.frame(95, 250);
-    assert!(app.rows.len() > 2);
-    for row in &app.rows {
+    assert!(app.interaction.rows().len() > 2);
+    for row in app.interaction.rows() {
         assert!(
             row.edge(row.geometry.text.chars().count()) <= 55.0 + 0.01,
             "row exceeded available pixels: {:?}",
@@ -1400,7 +1413,8 @@ fn measured_wrap_handles_long_tokens_styled_runs_and_quote_prefixes() {
         assert!(row.geometry.text.starts_with("▏ "));
     }
     let copied = app
-        .rows
+        .interaction
+        .rows()
         .iter()
         .map(|row| row.geometry.text.trim_start_matches("▏ "))
         .collect::<String>();
@@ -1447,22 +1461,25 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
         }));
     let mut app = App::new(view, Arc::new(Counted(calls.clone())));
     app.frame(400, 100);
-    let geometry = Arc::clone(&app.cache["child"].rows[0].geometry);
-    assert!(Arc::ptr_eq(&geometry, &app.rows[0].geometry));
-    let y = app.rows[0].y;
+    let geometry = Arc::clone(&app.cache["child"].geometry.rows()[0].geometry);
+    assert!(Arc::ptr_eq(&geometry, &app.interaction.rows()[0].geometry));
+    let y = app.interaction.rows()[0].y;
     let scroll = app.scroll;
     let measured = calls.load(Ordering::Relaxed);
     app.frame(400, 100);
     assert_eq!(calls.load(Ordering::Relaxed), measured);
-    assert!(Arc::ptr_eq(&geometry, &app.rows[0].geometry));
+    assert!(Arc::ptr_eq(&geometry, &app.interaction.rows()[0].geometry));
     app.scroll(-10.0);
     app.frame(400, 100);
     assert_eq!(calls.load(Ordering::Relaxed), measured);
-    assert!(Arc::ptr_eq(&geometry, &app.cache["child"].rows[0].geometry));
-    assert!(Arc::ptr_eq(&geometry, &app.rows[0].geometry));
-    assert_eq!(app.rows[0].x, 20.0);
+    assert!(Arc::ptr_eq(
+        &geometry,
+        &app.cache["child"].geometry.rows()[0].geometry
+    ));
+    assert!(Arc::ptr_eq(&geometry, &app.interaction.rows()[0].geometry));
+    assert_eq!(app.interaction.rows()[0].x, 20.0);
     assert!(app.scroll < scroll);
-    assert_eq!(app.rows[0].y, y + scroll - app.scroll);
+    assert_eq!(app.interaction.rows()[0].y, y + scroll - app.scroll);
 
     app.observed(&DocumentUpdate::Changed {
         tree: &[ViewOp::Replace {
@@ -1476,13 +1493,13 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
     app.frame(400, 100);
     assert!(!Arc::ptr_eq(
         &geometry,
-        &app.cache["child"].rows[0].geometry
+        &app.cache["child"].geometry.rows()[0].geometry
     ));
     assert!(Arc::ptr_eq(
-        &app.cache["child"].rows[0].geometry,
-        &app.rows[0].geometry
+        &app.cache["child"].geometry.rows()[0].geometry,
+        &app.interaction.rows()[0].geometry
     ));
-    assert_eq!(app.rows[0].geometry.text, "界ill updated");
+    assert_eq!(app.interaction.rows()[0].geometry.text, "界ill updated");
     assert!(calls.load(Ordering::Relaxed) > measured);
 }
 
@@ -1820,10 +1837,10 @@ fn list_item_edits_survive_reset_and_replace_without_reallocating_the_owner() {
     let editor = app.drafts.identity("nested", "value").unwrap();
     app.frame(400, 400);
     assert!(app.cache.contains_key("list"));
-    app.focus = Some(Control::Field {
+    app.focus_control(Some(Control::Field {
         node: "nested".into(),
         field: "value".into(),
-    });
+    }));
     app.drive(Event::Text("my edit".into()), Duration::ZERO);
     assert!(
         !app.cache.contains_key("list"),
@@ -1866,10 +1883,10 @@ fn clearing_secret_erases_its_viewport_and_only_invalidates_its_owner() {
             .child(Node::text("text", [Span::plain("other")]).id("other")),
         test_metrics(),
     );
-    app.focus = Some(Control::Field {
+    app.focus_control(Some(Control::Field {
         node: "private".into(),
         field: "value".into(),
-    });
+    }));
     app.drive(Event::Text("secret".repeat(30)), Duration::ZERO);
     app.frame(180, 400);
     assert!(app.drafts.viewport("private", "value").x > 0.0);

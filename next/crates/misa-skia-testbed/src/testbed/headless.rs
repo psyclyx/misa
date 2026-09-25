@@ -61,10 +61,9 @@ impl Headless {
     /// Center of the visible fixture field, for pointer-based test scripts.
     /// Call after a semantic frame has populated the App hit map.
     pub fn field_hit(&self) -> Option<(f32, f32)> {
-        self.fixtures.semantic.hits.iter().find_map(|hit| {
-            matches!(&hit.control, Control::Field { node, field }
-                if node == "panel.input" && field == "note")
-            .then_some((hit.x + hit.width / 2.0, hit.y + hit.height / 2.0))
+        self.fixtures.semantic.control_center(&Control::Field {
+            node: "panel.input".into(),
+            field: "note".into(),
         })
     }
 

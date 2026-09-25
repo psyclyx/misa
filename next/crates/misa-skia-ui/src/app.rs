@@ -2,7 +2,7 @@
 //! this module until the person activates an action the session advertised.
 use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
-use misa_pixel_ui::{LaidOutRow, Op, Scene, TextMetrics};
+use misa_pixel_ui::{Op, Scene, TextMetrics};
 use misa_proto::sync::{StreamUpdate, ViewOp};
 #[cfg(test)]
 use misa_proto::view::FieldKind;
@@ -19,7 +19,12 @@ use std::time::Duration;
 
 mod document;
 mod drafts;
+mod interaction;
+#[cfg(test)]
+mod interaction_tests;
 mod layout;
+use interaction::Hit;
+use interaction::{GroupGeometry, InteractionMap, PointerResult};
 #[cfg(test)]
 mod tests;
 mod text;
@@ -66,39 +71,6 @@ pub enum Control {
     Text(usize),
     LoadImage(misa_proto::view::BlobRef),
 }
-#[derive(Clone, Debug)]
-pub struct Hit {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-    pub control: Control,
-}
-impl Hit {
-    fn contains(&self, x: f32, y: f32) -> bool {
-        x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height
-    }
-}
-#[derive(Clone, Debug)]
-struct TextRow {
-    x: f32,
-    y: f32,
-    /// The same local viewport used by the paint op and the hit rectangle.
-    width: f32,
-    geometry: Arc<LaidOutRow>,
-}
-impl TextRow {
-    fn column(&self, x: f32) -> usize {
-        self.geometry
-            .advances
-            .partition_point(|edge| *edge <= x - self.x)
-            .saturating_sub(1)
-    }
-    fn edge(&self, column: usize) -> f32 {
-        let advances = &self.geometry.advances;
-        advances[column.min(advances.len() - 1)].min(self.width)
-    }
-}
 #[derive(Clone, Copy, Default)]
 struct FieldViewport {
     x: f32,
@@ -115,8 +87,7 @@ struct Cached {
     width: f32,
     height: f32,
     ops: Arc<Vec<Op>>,
-    hits: Vec<Hit>,
-    rows: Vec<TextRow>,
+    geometry: GroupGeometry,
     /// Moving owner groups, relative to this cached group's origin.
     indicators: Vec<IndicatorBounds>,
     /// Pulse phase when this moving status owner's display list was built.
@@ -136,16 +107,13 @@ pub struct App {
     cache_width: u32,
     pub commands: Vec<misa_kit::intent::Command>,
     pub notice: String,
-    pub hits: Vec<Hit>,
-    pub focus: Option<Control>,
+    interaction: InteractionMap,
     pub expanded: BTreeSet<String>,
     drafts: drafts::Drafts,
     save_viewport: FieldViewport,
     save: Option<(String, Editor)>,
     picker: Option<misa_kit::picker::Picker>,
     report: Option<Report>,
-    selection: Option<((usize, usize), (usize, usize))>,
-    rows: Vec<TextRow>,
     prefixes: Vec<(Style, String)>,
     replace_selection: bool,
     scroll: f32,
@@ -212,16 +180,13 @@ impl App {
             metrics,
             commands: vec![],
             notice: String::new(),
-            hits: vec![],
-            focus: None,
+            interaction: InteractionMap::default(),
             expanded: BTreeSet::new(),
             drafts: drafts::Drafts::default(),
             save_viewport: FieldViewport::default(),
             save: None,
             picker: None,
             report: None,
-            selection: None,
-            rows: vec![],
             prefixes: vec![],
             replace_selection: false,
             scroll: 0.0,
@@ -341,11 +306,11 @@ impl App {
         if self.save.is_some() {
             // A live update cannot steal focus from a local destination dialog.
         } else if let Some((node, field)) = keys.iter().find(|(node, _)| node == "panel.input" && self.document.node(node).is_none()) {
-            if !matches!(&self.focus, Some(Control::Field { node: focused, .. }) if focused == node) {
-                self.focus = Some(Control::Field { node: node.clone(), field: field.clone() });
+            if !matches!(self.interaction.focus(), Some(Control::Field { node: focused, .. }) if focused == node) {
+                self.interaction.set_focus(Some(Control::Field { node: node.clone(), field: field.clone() }));
             }
-        } else if self.focus.as_ref().is_none_or(|control| matches!(control, Control::Field { node, field } if !self.drafts.contains(node, field))) {
-            self.focus = keys.last().map(|(node,field)| Control::Field { node: node.clone(), field: field.clone() });
+        } else if self.interaction.focus().is_none_or(|control| matches!(control, Control::Field { node, field } if !self.drafts.contains(node, field))) {
+            self.interaction.set_focus(keys.last().map(|(node,field)| Control::Field { node: node.clone(), field: field.clone() }));
         }
         let changes = self
             .document
@@ -355,7 +320,7 @@ impl App {
             })
             .expect("reset view is valid");
         self.invalidate_document(changes);
-        self.selection = None;
+        self.interaction.clear_selection();
     }
 
     fn invalidate(&mut self, id: &str) {
@@ -367,7 +332,7 @@ impl App {
         }
     }
     fn invalidate_focus(&mut self) {
-        let id = match &self.focus {
+        let id = match self.interaction.focus() {
             Some(Control::Field { node, .. })
             | Some(Control::Action { node, .. })
             | Some(Control::Disclosure(node)) => Some(node.clone()),
@@ -380,17 +345,19 @@ impl App {
     fn refresh_tree_fields(&mut self, operations: &[ViewOp]) {
         let panel_input = self.drafts.changed(operations, &self.document);
         if let Some((node, field)) = panel_input.filter(|_| self.save.is_none()) {
-            self.focus = Some(Control::Field { node, field });
+            self.interaction
+                .set_focus(Some(Control::Field { node, field }));
         }
-        if matches!(&self.focus, Some(Control::Field { node, field }) if !self.drafts.contains(node, field))
+        if matches!(self.interaction.focus(), Some(Control::Field { node, field }) if !self.drafts.contains(node, field))
         {
-            self.focus = None;
+            self.interaction.set_focus(None);
         }
-        if self.focus.is_none() && self.save.is_none() {
-            self.focus = self
-                .drafts
-                .last()
-                .map(|(node, field)| Control::Field { node, field });
+        if self.interaction.focus().is_none() && self.save.is_none() {
+            self.interaction.set_focus(
+                self.drafts
+                    .last()
+                    .map(|(node, field)| Control::Field { node, field }),
+            );
         }
     }
     fn invalidate_document(&mut self, changes: document::Changes) {
@@ -469,34 +436,13 @@ impl App {
         commands
     }
     fn pointer_inner(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
-        let hit = self
-            .hits
-            .iter()
-            .rev()
-            .find(|hit| hit.contains(x, y))
-            .cloned();
-        let Some(hit) = hit else {
-            return vec![];
-        };
-        if let Control::Text(row) = hit.control {
-            let column = self.rows.get(row).map(|row| row.column(x)).unwrap_or(0);
-            if dragging {
-                if let Some((_, head)) = &mut self.selection {
-                    *head = (row, column);
-                }
-            } else {
-                self.selection = Some(((row, column), (row, column)));
-                self.focus = None;
+        match self.interaction.pointer(x, y, dragging) {
+            PointerResult::None | PointerResult::SelectionChanged => vec![],
+            PointerResult::Activate(control) => {
+                self.follow = false;
+                self.activate(control)
             }
-            return vec![];
         }
-        if dragging {
-            return vec![];
-        }
-        self.selection = None;
-        self.follow = false;
-        self.focus = Some(hit.control.clone());
-        self.activate(hit.control)
     }
     fn activate(&mut self, control: Control) -> Vec<Command> {
         if let Control::LoadImage(reference) = control {
@@ -520,7 +466,7 @@ impl App {
             Control::Action { node, action } if action == "attachment.save" => {
                 self.save = Some((node, Editor::new()));
                 self.save_viewport = FieldViewport::default();
-                self.focus = Some(Control::SavePath);
+                self.interaction.set_focus(Some(Control::SavePath));
             }
             Control::Action { node, action } => return self.submit(&node, &action),
             Control::SaveConfirm => {
@@ -533,14 +479,14 @@ impl App {
                             destination: path.text().to_string(),
                         };
                         self.save = None;
-                        self.focus = None;
+                        self.interaction.set_focus(None);
                         return vec![command];
                     }
                 }
             }
             Control::SaveCancel => {
                 self.save = None;
-                self.focus = None;
+                self.interaction.set_focus(None);
             }
             _ => {}
         }
@@ -588,7 +534,7 @@ impl App {
         vec![Command::Intent(intent)]
     }
     fn editor(&mut self) -> Option<&mut Editor> {
-        match &self.focus {
+        match self.interaction.focus() {
             Some(Control::SavePath) => self.save.as_mut().map(|(_, edit)| edit),
             Some(Control::Field { node, field }) => self.drafts.editor_mut(node, field),
             _ => None,
@@ -617,7 +563,7 @@ impl App {
             }
             return vec![];
         }
-        if let Some(control @ Control::Field { .. }) = self.focus.clone() {
+        if let Some(control @ Control::Field { .. }) = self.interaction.focus().cloned() {
             let discrete = match &control {
                 Control::Field { node, field } => self.drafts.discrete(node, field, &self.document),
                 _ => false,
@@ -682,7 +628,8 @@ impl App {
                     if let Some(candidate) = picker.selected().cloned() {
                         if let Some((node, field)) = self.drafts.insert_command(&candidate.value) {
                             self.invalidate(&node);
-                            self.focus = Some(Control::Field { node, field });
+                            self.interaction
+                                .set_focus(Some(Control::Field { node, field }));
                             self.picker = None;
                             self.notice =
                                 "Command inserted · add arguments, then Enter to send".into();
@@ -710,45 +657,28 @@ impl App {
         if matches!(key, Key::SelectAll) {
             if self.editor().is_some() {
                 self.replace_selection = true;
-            } else if !self.rows.is_empty() {
-                self.selection = Some(((0, 0), (self.rows.len() - 1, usize::MAX)));
+            } else {
+                self.interaction.select_all();
             }
             return vec![];
         }
         if let Key::Tab { backward } = key {
-            let controls: Vec<_> = self
-                .hits
-                .iter()
-                .filter(|hit| !matches!(hit.control, Control::Text(_)))
-                .map(|hit| hit.control.clone())
-                .collect();
-            if !controls.is_empty() {
-                let current = controls
-                    .iter()
-                    .position(|control| Some(control) == self.focus.as_ref());
-                let next = match (current, backward) {
-                    (Some(index), true) => (index + controls.len() - 1) % controls.len(),
-                    (Some(index), false) => (index + 1) % controls.len(),
-                    (None, true) => controls.len() - 1,
-                    (None, false) => 0,
-                };
-                self.focus = Some(controls[next].clone());
-            }
+            self.interaction.next_focus(backward);
             return vec![];
         }
         if matches!(key, Key::Escape) {
             if self.save.take().is_some() {
-                self.focus = None;
+                self.interaction.set_focus(None);
             } else {
-                self.selection = None;
+                self.interaction.clear_selection();
             }
             return vec![];
         }
         if let Key::Enter { newline } = key {
-            if self.focus == Some(Control::SavePath) {
+            if self.interaction.focused(&Control::SavePath) {
                 return self.activate(Control::SaveConfirm);
             }
-            if let Some(Control::Field { node, field }) = self.focus.clone() {
+            if let Some(Control::Field { node, field }) = self.interaction.focus().cloned() {
                 if newline {
                     if let Some(edit) = self.editor() {
                         edit.insert("\n");
@@ -769,11 +699,11 @@ impl App {
                 }
                 return self.activate(Control::Field { node, field });
             }
-            if let Some(control) = self.focus.clone() {
+            if let Some(control) = self.interaction.focus().cloned() {
                 return self.activate(control);
             }
         }
-        if let Some(control @ Control::Field { .. }) = self.focus.clone() {
+        if let Some(control @ Control::Field { .. }) = self.interaction.focus().cloned() {
             let discrete = match &control {
                 Control::Field { node, field } => self.drafts.discrete(node, field, &self.document),
                 _ => false,
@@ -817,25 +747,15 @@ impl App {
         vec![]
     }
     pub fn selected_text(&self) -> String {
-        let Some((a, b)) = self.selection else {
-            return String::new();
-        };
-        let (start, end) = if a <= b { (a, b) } else { (b, a) };
-        (start.0..=end.0.min(self.rows.len().saturating_sub(1)))
-            .filter_map(|row| {
-                self.rows.get(row).map(|text| {
-                    let from = if row == start.0 { start.1 } else { 0 };
-                    let to = if row == end.0 { end.1 } else { usize::MAX };
-                    text.geometry
-                        .text
-                        .chars()
-                        .skip(from)
-                        .take(to.saturating_sub(from))
-                        .collect::<String>()
-                })
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        self.interaction.selected_text()
+    }
+    /// Locate a control in the most recently painted frame.
+    pub fn control_center(&self, control: &Control) -> Option<(f32, f32)> {
+        self.interaction.control_center(control)
+    }
+    /// Restore local control focus (for example when a host restores a form).
+    pub fn focus_control(&mut self, control: Option<Control>) {
+        self.interaction.set_focus(control);
     }
 }
 

@@ -136,10 +136,10 @@ mod tests {
         assert!(local.app().is_none());
         local.open_requests();
         let app = local.app().unwrap();
-        app.focus = Some(Control::Field {
+        app.focus_control(Some(Control::Field {
             node: "request.form".into(),
             field: "value".into(),
-        });
+        }));
         app.drive(
             misa_window_core::Event::Text("not-for-the-wire-yet".into()),
             std::time::Duration::ZERO,
@@ -200,10 +200,10 @@ mod tests {
         local.request("credential".into(), 2, Some(model));
         local.open_requests();
         for (id, value) in [("count", "3"), ("name", "example")] {
-            local.app().unwrap().focus = Some(Control::Field {
+            local.app().unwrap().focus_control(Some(Control::Field {
                 node: "request.form".into(),
                 field: id.into(),
-            });
+            }));
             local.input(misa_window_core::Event::Text(value.into()));
         }
         local.input(misa_window_core::Event::Key(Key::Escape));
@@ -303,10 +303,10 @@ mod tests {
         };
         let mut local = Local::default();
         local.form(misa_client::form::Form::action(&interface, "pet.feed").unwrap());
-        local.app().unwrap().focus = Some(Control::Field {
+        local.app().unwrap().focus_control(Some(Control::Field {
             node: "local.form".into(),
             field: "quantity".into(),
-        });
+        }));
         assert!(
             local
                 .input(misa_window_core::Event::Text("3".into()))
@@ -1539,10 +1539,13 @@ mod lifecycle_tests {
                 .field_text("daemon.form", "conversation"),
             Some("archived")
         );
-        local.app().unwrap().focus = Some(crate::app::Control::Field {
-            node: "daemon.form".into(),
-            field: "id".into(),
-        });
+        local
+            .app()
+            .unwrap()
+            .focus_control(Some(crate::app::Control::Field {
+                node: "daemon.form".into(),
+                field: "id".into(),
+            }));
         local.input(misa_window_core::Event::Text("resumed".into()));
         local.directory(vec![]);
         assert_eq!(

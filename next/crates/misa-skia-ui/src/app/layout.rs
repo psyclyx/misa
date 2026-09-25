@@ -1,5 +1,5 @@
 use super::{
-    App, Cached, Control, FONT_SIZE, FieldViewport, Hit, IndicatorBounds, PULSE_PERIOD, TextRow,
+    App, Cached, Control, FONT_SIZE, FieldViewport, Hit, IndicatorBounds, PULSE_PERIOD,
     pulse_phase, text,
 };
 use misa_pixel_ui::{Button, Op, Rect, Scene};
@@ -30,8 +30,7 @@ impl App {
             } else {
                 return;
             };
-            let outer_hits = std::mem::take(&mut self.hits);
-            let outer_rows = std::mem::take(&mut self.rows);
+            let outer = self.interaction.take_group();
             let mut local = Scene::default();
             let mut height = 0.0;
             self.indicator_stack.push(Vec::new());
@@ -48,8 +47,7 @@ impl App {
                 width,
                 height,
                 ops: Arc::new(local.ops),
-                hits: std::mem::replace(&mut self.hits, outer_hits),
-                rows: std::mem::replace(&mut self.rows, outer_rows),
+                geometry: self.interaction.restore_group(outer),
                 indicators,
                 phase: (node.role == "status.indicators" && self.moving_indicators.contains(id))
                     .then_some(self.tick),
@@ -69,22 +67,7 @@ impl App {
             y: *y,
             ops: cached.ops.clone(),
         });
-        let base = self.rows.len();
-        self.rows.extend(cached.rows.iter().map(|row| TextRow {
-            x: row.x + x,
-            y: row.y + *y,
-            width: row.width,
-            geometry: Arc::clone(&row.geometry),
-        }));
-        self.hits.extend(cached.hits.iter().map(|hit| {
-            let mut hit = hit.clone();
-            hit.x += x;
-            hit.y += *y;
-            if let Control::Text(row) = &mut hit.control {
-                *row += base;
-            }
-            hit
-        }));
+        self.interaction.place_group(&cached.geometry, x, *y);
         *y += cached.height;
     }
     /// Offline snapshots advance a synthetic clock one pulse per call, without wall time.
@@ -133,7 +116,7 @@ impl App {
         }
         let colors = self.colors();
         if let Some(mut report) = self.report.take() {
-            self.hits.clear();
+            self.interaction.clear_hits();
             let budget = (width as f32 - 96.0).max(1.0);
             if report.width != budget {
                 report.lines.clear();
@@ -186,8 +169,7 @@ impl App {
         scene
     }
     fn layout(&mut self, width: u32, height: u32) -> Scene {
-        self.hits.clear();
-        self.rows.clear();
+        self.interaction.begin_frame();
         let mut scene = Scene {
             width: width as f32,
             height: height as f32,
@@ -209,48 +191,9 @@ impl App {
             &mut scene,
         );
         self.content_height = y + self.scroll + 20.0;
-        if let Some((a, b)) = self.selection {
-            let (start, end) = if a <= b { (a, b) } else { (b, a) };
-            for (index, row) in self
-                .rows
-                .iter()
-                .enumerate()
-                .skip(start.0)
-                .take(end.0.saturating_sub(start.0) + 1)
-            {
-                let from = if index == start.0 { start.1 } else { 0 };
-                let to = if index == end.0 { end.1 } else { usize::MAX };
-                let from = from.min(row.geometry.text.chars().count());
-                let to = to.min(row.geometry.text.chars().count());
-                if to <= from {
-                    continue;
-                }
-                let mut selected = vec![Op::Rect {
-                    x: row.x + row.edge(from),
-                    y: row.y,
-                    width: row.edge(to) - row.edge(from),
-                    height: self.line_height(),
-                    style: self.colors().selection,
-                }];
-                for (style, run, start) in &row.geometry.runs {
-                    let end = start + run.chars().count();
-                    let left = from.max(*start);
-                    let right = to.min(end);
-                    if left < right {
-                        let value: String =
-                            run.chars().skip(left - start).take(right - left).collect();
-                        selected.push(text(row.x + row.edge(left), row.y, &value, *style));
-                    }
-                }
-                scene.ops.push(Op::ClipRect {
-                    x: row.x,
-                    y: row.y,
-                    width: row.width,
-                    height: self.line_height(),
-                    ops: Arc::new(selected),
-                });
-            }
-        }
+        self.interaction.finish_frame();
+        self.interaction
+            .paint_selection(&mut scene, self.line_height(), self.colors().selection);
         if !self.notice.is_empty() {
             scene.ops.push(Op::Rect {
                 x: 0.0,
@@ -271,7 +214,7 @@ impl App {
             let x = 30.0;
             let y = (height as f32 / 2.0 - 70.0).max(20.0);
             let w = (width as f32 - 60.0).max(80.0);
-            self.hits.clear();
+            self.interaction.clear_hits();
             scene.ops.push(Op::Rect {
                 x,
                 y,
@@ -314,7 +257,7 @@ impl App {
             );
         }
         if let Some(picker) = &self.picker {
-            self.hits.clear();
+            self.interaction.clear_hits();
             let y = 35.0;
             scene.ops.push(Op::Rect {
                 x: 30.0,
@@ -379,7 +322,7 @@ impl App {
         label: &str,
         control: Control,
     ) {
-        let focused = self.focus.as_ref() == Some(&control);
+        let focused = self.interaction.focused(&control);
         scene.ops.push(Op::Rect {
             x: x - 1.0,
             y: y - 1.0,
@@ -498,7 +441,7 @@ impl App {
             height: paint_height,
             ops: Arc::new(painted),
         });
-        self.hits.push(Hit {
+        self.interaction.add_hit(Hit {
             x,
             y,
             width,
@@ -1071,7 +1014,7 @@ impl App {
                 y: *y - 1.0,
                 width: bounds.width + 2.0,
                 height: 34.0,
-                style: if self.focus.as_ref() == Some(&control) {
+                style: if self.interaction.focused(&control) {
                     self.colors().accent
                 } else {
                     self.colors().border
@@ -1087,7 +1030,7 @@ impl App {
             }
             .place(self.metrics.as_ref());
             scene.ops.extend(button.ops);
-            self.hits.push(Hit {
+            self.interaction.add_hit(Hit {
                 x: button.bounds.x,
                 y: button.bounds.y,
                 width: button.bounds.width,

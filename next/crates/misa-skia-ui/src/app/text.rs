@@ -1,9 +1,8 @@
-use super::{App, Control, FONT_SIZE, Hit, TextRow};
+use super::{App, FONT_SIZE};
 use misa_pixel_ui::{Rect, Scene, TextFlow};
 use misa_proto::view::{Node, Span};
 use misa_render::Theme;
 use misa_style::Style;
-use std::sync::Arc;
 
 impl App {
     pub(super) fn line_height(&self) -> f32 {
@@ -38,7 +37,6 @@ impl App {
         spans: Vec<(Style, String)>,
     ) {
         let spans = self.prefixes.iter().cloned().chain(spans).collect();
-        let index = self.rows.len();
         let flow = TextFlow::new(self.metrics.as_ref(), FONT_SIZE);
         let bounds = Rect {
             x,
@@ -47,21 +45,10 @@ impl App {
             height: flow.line_height(),
         };
         let geometry = flow.place(bounds, spans, &mut scene.ops);
-        self.hits.push(Hit {
-            x,
-            y,
-            // The entire bounded row is selectable, including blank lines and
-            // the space after the last glyph (which maps to the final caret).
-            width: bounds.width,
-            height: bounds.height,
-            control: Control::Text(index),
-        });
-        self.rows.push(TextRow {
-            x,
-            y,
-            width: bounds.width,
-            geometry: Arc::new(geometry),
-        });
+        // The entire bounded row is selectable, including blank lines and
+        // the space after the last glyph (which maps to the final caret).
+        self.interaction
+            .add_row(x, y, bounds.width, bounds.height, geometry);
     }
 
     pub(super) fn wrap_runs(
