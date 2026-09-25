@@ -24,7 +24,10 @@ pub async fn run(
     loop {
         if ready && pending.is_none() {
             if let Some(line) = staged.take() {
-                if let Some(request) = crate::save::parse(&line) {
+                let commands = session.catalog().commands;
+                if !commands.iter().any(|command| command.id == "save")
+                    && let Some(request) = crate::save::parse(&line)
+                {
                     let result =
                         match request {
                             Ok(request) => match latest
@@ -50,7 +53,6 @@ pub async fn run(
                     continue;
                 }
 
-                let commands = session.catalog().commands;
                 let intent = match parse(&line, &commands) {
                     Parsed::Prompt(text) => Intent::Prompt {
                         text,

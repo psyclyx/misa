@@ -1,0 +1,16 @@
+[package]
+name = "misa-skia-paint"
+description = "Shared Skia canvas painter and CPU raster exports for pixel scenes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+image.workspace = true
+misa-render.workspace = true
+misa-skia-ui = { path = "../misa-skia-ui" }
+skia-safe.workspace = true
+
+[dev-dependencies]
+misa-proto.workspace = true

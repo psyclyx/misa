@@ -1,6 +1,7 @@
 //! Native relationship owner. Replica delivery, requests and blob work have
 //! independent bounded lifetimes; the window never performs network IO.
 use crate::app::Command;
+use crate::workspace::{Action, PresentationChoice};
 use misa_client::{
     daemons::{Daemon, Daemons},
     document,
@@ -25,7 +26,6 @@ use std::{
     time::Duration,
 };
 use winit::event_loop::EventLoopProxy;
-#[path = "native_manager.rs"]
 mod manager;
 
 pub enum Update {
@@ -161,7 +161,7 @@ impl Delivery {
 pub fn start(
     ticket: Option<String>,
     proxy: EventLoopProxy<Update>,
-) -> tokio::sync::mpsc::Sender<Command> {
+) -> tokio::sync::mpsc::Sender<Action> {
     let (send, receive) = tokio::sync::mpsc::channel(32);
     tokio::spawn(async move {
         let proxy = Sink {
@@ -178,7 +178,7 @@ async fn session(
     daemon: Arc<Daemon>,
     entry: misa_proto::directory::Entry,
     proxy: &Sink,
-    mut outgoing: tokio::sync::mpsc::Receiver<Command>,
+    mut outgoing: tokio::sync::mpsc::Receiver<Action>,
 ) -> Result<(), String> {
     let interface = Interface::load(&daemon.client, entry.scope())
         .await
@@ -398,7 +398,12 @@ async fn session(
             },
             command = outgoing.recv() => {
                 let Some(command) = command else { return Ok(()); };
-                if let Command::Presentation { id, choice } = command {
+                if let Action::Presentation { id, choice } = command {
+                    let choice = match choice {
+                        PresentationChoice::Hidden => misa_client::composition::Choice::Hidden,
+                        PresentationChoice::Auto => misa_client::composition::Choice::Auto,
+                        PresentationChoice::Variant(id) => misa_client::composition::Choice::Variant(id),
+                    };
                     let mut next = preferences.clone();
                     let result = next.set(&interaction.interface.presentations, &[], &id, choice.clone()).map_err(|fault| fault.message);
                     match result {
@@ -419,13 +424,13 @@ async fn session(
                     }
                     continue;
                 }
-                if let Command::LoadImage(reference) = command {
+                if let Action::Ui(Command::LoadImage(reference)) = command {
                     // Explicit retry works after decode failure or renderer eviction.
                     if images.len() < 64 { images.insert(reference.hash.clone(), reference); }
                     continue;
                 }
-                if matches!(command, Command::Copy(_)) { continue; }
-                if let Command::Intent(Intent::Action { action, fields, .. }) = &command {
+                if matches!(command, Action::Ui(Command::Copy(_))) { continue; }
+                if let Action::Ui(Command::Intent(Intent::Action { action, fields, .. })) = &command {
                     if fields.is_empty() {
                         if let Ok(form) = misa_client::form::Form::action(&interaction.interface, action) {
                             if !form.fields.is_empty() { proxy.send_event(Update::Form(form))?; continue; }
@@ -434,14 +439,14 @@ async fn session(
                 }
                 if commands.len() >= 16 { proxy.send_event(rejected(command, "Too many pending requests; try again shortly".into())).map_err(|_| "Window closed".to_string())?; continue; }
                 let daemon = daemon.clone(); let interaction = interaction.clone();
-                let request_model=match &command{Command::Request{id,generation,..}=>request_models.get(id).filter(|model|model.generation==*generation).cloned(),_=>None};
+                let request_model=match &command{Action::Request{id,generation,..}=>request_models.get(id).filter(|model|model.generation==*generation).cloned(),_=>None};
                 commands.spawn(async move {
                     let result = match &command {
-                        Command::InvokeInstalled {command,input} => match interaction.invoke(command,input.clone()) {Ok(prepared)=>execute(&daemon,&interaction,prepared).await,Err(fault)=>Err(fault.message)},
-                        Command::Form{action,drafts} => match misa_client::form::Form::action(&interaction.interface,action).and_then(|form|form.prepare(drafts)) { Ok((command,input))=>execute(&daemon,&interaction,Prepared::Invoke{command:interaction.interface.commands[&command].clone(),input}).await,Err(fault)=>Err(fault.message) },
-                        Command::Intent(intent) => match prepare(&interaction, intent.clone()) { Ok(prepared) => execute(&daemon, &interaction, prepared).await, Err(error) => Err(error) },
-                        Command::Save { node, destination } => save(&daemon, &interaction, node, destination).await.map(Update::Notice),
-                        Command::Request{action,fields,..}=>match request_model {Some(model)=>match model.prepare_drafts(action,&fields.iter().map(|(id,value)|(id.clone(),value.as_str().unwrap_or_default().to_string())).collect(),&interaction.interface){Ok(prepared)=>execute(&daemon,&interaction,prepared).await,Err(fault)=>Err(fault.message)},None=>Err("Request generation is no longer current".into())},
+                        Action::InvokeInstalled {command,input} => match interaction.invoke(command,input.clone()) {Ok(prepared)=>execute(&daemon,&interaction,prepared).await,Err(fault)=>Err(fault.message)},
+                        Action::Form{action,drafts} => match misa_client::form::Form::action(&interaction.interface,action).and_then(|form|form.prepare(drafts)) { Ok((command,input))=>execute(&daemon,&interaction,Prepared::Invoke{command:interaction.interface.commands[&command].clone(),input}).await,Err(fault)=>Err(fault.message) },
+                        Action::Ui(Command::Intent(intent)) => match prepare(&interaction, intent.clone()) { Ok(prepared) => execute(&daemon, &interaction, prepared).await, Err(error) => Err(error) },
+                        Action::Ui(Command::Save { node, destination }) => save(&daemon, &interaction, node, destination).await.map(Update::Notice),
+                        Action::Request{action,fields,..}=>match request_model {Some(model)=>match model.prepare_drafts(action,&fields.iter().map(|(id,value)|(id.clone(),value.as_str().unwrap_or_default().to_string())).collect(),&interaction.interface){Ok(prepared)=>execute(&daemon,&interaction,prepared).await,Err(fault)=>Err(fault.message)},None=>Err("Request generation is no longer current".into())},
                         _=>Err("This action belongs to the daemon chooser".into()),
                     };
                     result.unwrap_or_else(|reason| rejected(command, reason))
@@ -528,11 +533,11 @@ async fn compose(
     Ok((observation, deliveries))
 }
 
-fn rejected(command: Command, reason: String) -> Update {
+fn rejected(command: Action, reason: String) -> Update {
     match command {
-        Command::Intent(Intent::Prompt { text, .. } | Intent::Interrupt { text, .. }) => {
-            Update::RejectedDraft { text, reason }
-        }
+        Action::Ui(Command::Intent(
+            Intent::Prompt { text, .. } | Intent::Interrupt { text, .. },
+        )) => Update::RejectedDraft { text, reason },
         _ => Update::Notice(reason),
     }
 }
@@ -710,6 +715,22 @@ pub fn write_new(path: &str, bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{Action, Command, Intent, Update, rejected};
+
+    #[test]
+    fn rejected_app_prompt_retains_its_draft_but_host_actions_only_show_a_notice() {
+        let prompt = Action::Ui(Command::Intent(Intent::Prompt {
+            text: "draft".into(),
+            attachments: vec![],
+        }));
+        assert!(
+            matches!(rejected(prompt, "busy".into()), Update::RejectedDraft { text, reason } if text == "draft" && reason == "busy")
+        );
+        assert!(
+            matches!(rejected(Action::Discover, "busy".into()), Update::Notice(reason) if reason == "busy")
+        );
+    }
+
     #[test]
     fn a_received_file_is_findable_and_never_overwrites_an_existing_file() {
         let path = std::env::temp_dir().join(format!("misa-pixel-save-{}", std::process::id()));

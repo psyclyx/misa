@@ -16,9 +16,10 @@ base64.workspace = true
 crossterm.workspace = true
 misa-kit = { path = "../misa-kit" }
 misa-linear.workspace = true
-misa-client = { workspace = true, optional = true }
+misa-client.workspace = true
 misa-protocol.workspace = true
-misa-transport = { workspace = true, optional = true }
+misa-transport.workspace = true
+misa-tui-ui = { path = "../misa-tui-ui" }
 misa-proto.workspace = true
 misa-render.workspace = true
 misa-lines.workspace = true
@@ -27,25 +28,15 @@ tokio.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-misa-local-start = { path = "../misa-local-start", optional = true }
-
-[features]
-default = ["production"]
-production = ["dep:misa-client", "dep:misa-transport", "dep:misa-local-start"]
+misa-local-start = { path = "../misa-local-start" }
 
 [[bin]]
 name = "misa"
 path = "src/main.rs"
-required-features = ["production"]
 
 [[bin]]
 name = "misa-tui"
 path = "src/alias.rs"
-required-features = ["production"]
-
-[[bin]]
-name = "misa-tui-testbed"
-path = "src/bin/testbed.rs"
 
 [dev-dependencies]
 iroh.workspace = true

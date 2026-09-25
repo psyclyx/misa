@@ -1,0 +1,24 @@
+[package]
+name = "misa-skia-vulkan"
+description = "Ganesh Vulkan renderer for misa-skia-ui scenes and native windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+window = ["dep:ash-window", "dep:raw-window-handle"]
+
+[dependencies]
+ash = { version = "0.38", default-features = false, features = ["loaded", "std"] }
+ash-window = { version = "0.13", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+image.workspace = true
+misa-skia-ui = { path = "../misa-skia-ui" }
+misa-skia-paint = { path = "../misa-skia-paint" }
+misa-render.workspace = true
+skia-safe.workspace = true
+
+[dev-dependencies]
+misa-proto.workspace = true

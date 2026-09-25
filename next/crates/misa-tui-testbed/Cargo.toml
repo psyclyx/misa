@@ -1,0 +1,17 @@
+[package]
+name = "misa-tui-testbed"
+description = "Local-only terminal document fixtures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+crossterm.workspace = true
+misa-tui-ui = { path = "../misa-tui-ui" }
+misa-kit = { path = "../misa-kit" }
+misa-lines.workspace = true
+misa-proto.workspace = true
+misa-render.workspace = true
+misa-value.workspace = true
+tokio.workspace = true

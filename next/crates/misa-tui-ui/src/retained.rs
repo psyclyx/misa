@@ -4,7 +4,8 @@ use crate::Screen;
 use misa_linear::{Live, Paint, THINKING_TAIL_LINES, stream_order, thinking_stream};
 use misa_lines::Line;
 use misa_proto::Node;
-use misa_proto::sync::{IndexedTree, Stream, StreamUpdate, ViewOp};
+use misa_proto::sync::StreamUpdate;
+use misa_proto::sync::{IndexedTree, Stream, ViewOp};
 use misa_proto::view::{ActionOn, Kind};
 use std::collections::HashMap;
 
@@ -730,90 +731,84 @@ impl Retained {
         live.append(&stream.text, &paint);
         self.live.insert(id, live);
     }
-    /// Apply a complete shared-client document transaction to derived render
-    /// caches. Protocol cursors and recovery remain owned by the shared replica.
-    pub fn observed(
+    /// Apply protocol view operations from a local document owner. The remote
+    /// replica still owns sequencing/recovery for network transactions.
+    pub fn apply_ops(&mut self, ops: &[ViewOp], screen: &Screen) -> Result<(), String> {
+        for op in ops {
+            self.op(op, screen)?;
+        }
+        self.reindex();
+        Ok(())
+    }
+
+    /// Apply a transaction translated by the connected host, without losing
+    /// incremental stream append accounting or the canonical tree index.
+    pub fn changed(
         &mut self,
-        update: &misa_client::document::Update,
+        tree: &[ViewOp],
+        live: &[StreamUpdate],
+        reset_live: bool,
         screen: &Screen,
     ) -> Result<(), String> {
-        use misa_client::document::Update;
-        use misa_protocol::observation::{Applied, MemberChange};
-        match update {
-            Update::Reset(document) => {
-                *self = Self::new(document.tree.clone(), screen);
-                for stream in &document.streams {
+        let mut structural = !tree.is_empty() || reset_live;
+        for op in tree {
+            self.op(op, screen)?;
+        }
+        if reset_live {
+            self.live.clear();
+        }
+        for update in live {
+            match update {
+                StreamUpdate::Current { stream } => {
                     self.current(stream.clone(), screen);
+                    structural = true;
                 }
-                self.reindex();
-            }
-            Update::Changed { member, applied } => {
-                let Applied::Changed(members) = applied.as_ref() else {
-                    return Err("Expected document transaction".into());
-                };
-                let Some(MemberChange::Document {
-                    tree,
-                    live,
-                    reset_live,
-                }) = members.get(member)
-                else {
-                    return Err("Expected document member changes".into());
-                };
-                let mut structural = !tree.is_empty() || *reset_live;
-                for op in tree {
-                    self.op(op, screen)?;
+                StreamUpdate::End { id } => {
+                    self.live.remove(id);
+                    structural = true;
                 }
-                if *reset_live {
-                    self.live.clear();
-                }
-                for update in live {
-                    match update {
-                        StreamUpdate::Current { stream } => {
-                            self.current(stream.clone(), screen);
-                            structural = true;
-                        }
-                        StreamUpdate::End { id } => {
-                            self.live.remove(id);
-                            structural = true;
-                        }
-                        StreamUpdate::Append { id, offset, text } => {
-                            let role = self
-                                .live
-                                .get(id)
-                                .ok_or("Missing rendered stream")?
-                                .stream
-                                .role
-                                .clone();
-                            let paint = Paint::of(&screen.theme, screen.width, &role);
-                            let live = self.live.get_mut(id).ok_or("Missing rendered stream")?;
-                            if live.stream.text.len() != *offset {
-                                return Err("Rendered stream offset gap".into());
-                            }
-                            live.append(text, &paint);
-                            self.work.appended_bytes += text.len();
-                            if !structural {
-                                if let Some(&index) = self.live_positions.get(id) {
-                                    let new = if self.rows.total() == self.rows.prefix(index + 1) {
-                                        live.last_nonblank
-                                    } else {
-                                        live.lines.len()
-                                    };
-                                    self.work.index_steps +=
-                                        self.rows.change(index, self.lengths[index], new);
-                                    self.lengths[index] = new;
-                                    self.layout_epoch = self.layout_epoch.wrapping_add(1);
-                                }
-                            }
+                StreamUpdate::Append { id, offset, text } => {
+                    let role = self
+                        .live
+                        .get(id)
+                        .ok_or("Missing rendered stream")?
+                        .stream
+                        .role
+                        .clone();
+                    let paint = Paint::of(&screen.theme, screen.width, &role);
+                    let live = self.live.get_mut(id).ok_or("Missing rendered stream")?;
+                    if live.stream.text.len() != *offset {
+                        return Err("Rendered stream offset gap".into());
+                    }
+                    live.append(text, &paint);
+                    self.work.appended_bytes += text.len();
+                    if !structural {
+                        if let Some(&index) = self.live_positions.get(id) {
+                            let new = if self.rows.total() == self.rows.prefix(index + 1) {
+                                live.last_nonblank
+                            } else {
+                                live.lines.len()
+                            };
+                            self.work.index_steps +=
+                                self.rows.change(index, self.lengths[index], new);
+                            self.lengths[index] = new;
+                            self.layout_epoch = self.layout_epoch.wrapping_add(1);
                         }
                     }
                 }
-                if structural {
-                    self.reindex();
-                }
             }
-            Update::Unavailable(_) | Update::Status(_) => {}
+        }
+        if structural {
+            self.reindex();
         }
         Ok(())
+    }
+    pub fn reset(&mut self, tree: Node, streams: &[Stream], screen: &Screen) {
+        *self = Self::new(tree, screen);
+        for stream in streams {
+            self.current(stream.clone(), screen);
+        }
+        self.reindex();
     }
     pub fn local(&mut self, screen: &Screen) {
         if self.width != screen.width
@@ -1519,19 +1514,6 @@ mod tests {
 
     #[test]
     fn shared_document_updates_keep_token_work_incremental_and_settle_atomically() {
-        use misa_client::document::Update;
-        use misa_protocol::observation::{Applied, MemberChange};
-        let update = |tree, live| Update::Changed {
-            member: "body".into(),
-            applied: std::sync::Arc::new(Applied::Changed(std::collections::BTreeMap::from([(
-                "body".into(),
-                MemberChange::Document {
-                    tree,
-                    live,
-                    reset_live: false,
-                },
-            )]))),
-        };
         for history in [100, 1000] {
             let screen = Screen::new(40, 16);
             let mut retained = Retained::new(document(history), &screen);
@@ -1546,15 +1528,14 @@ mod tests {
             retained.reindex();
             retained.work = Work::default();
             retained
-                .observed(
-                    &update(
-                        vec![],
-                        vec![StreamUpdate::Append {
-                            id: "new.body".into(),
-                            offset: 0,
-                            text: "é🙂".into(),
-                        }],
-                    ),
+                .changed(
+                    &[],
+                    &[StreamUpdate::Append {
+                        id: "new.body".into(),
+                        offset: 0,
+                        text: "é🙂".into(),
+                    }],
+                    false,
                     &screen,
                 )
                 .unwrap();
@@ -1562,17 +1543,16 @@ mod tests {
             assert_eq!(retained.work.appended_bytes, 6);
             assert!(retained.work.index_steps <= 24);
             retained
-                .observed(
-                    &update(
-                        vec![ViewOp::Insert {
-                            parent: "transcript".into(),
-                            before: None,
-                            node: text("new", "é🙂"),
-                        }],
-                        vec![StreamUpdate::End {
-                            id: "new.body".into(),
-                        }],
-                    ),
+                .changed(
+                    &[ViewOp::Insert {
+                        parent: "transcript".into(),
+                        before: None,
+                        node: text("new", "é🙂"),
+                    }],
+                    &[StreamUpdate::End {
+                        id: "new.body".into(),
+                    }],
+                    false,
                     &screen,
                 )
                 .unwrap();
@@ -2076,26 +2056,14 @@ mod tests {
                 let mut baseline_output = String::new();
                 for text in ["one ", "two ", "界🙂", "\n", "final"] {
                     retained
-                        .observed(
-                            &misa_client::document::Update::Changed {
-                                member: "conversation".into(),
-                                applied: std::sync::Arc::new(
-                                    misa_protocol::observation::Applied::Changed(
-                                        std::collections::BTreeMap::from([(
-                                            "conversation".into(),
-                                            misa_protocol::observation::MemberChange::Document {
-                                                tree: vec![],
-                                                live: vec![StreamUpdate::Append {
-                                                    id: "msg9999.body".into(),
-                                                    offset,
-                                                    text: text.into(),
-                                                }],
-                                                reset_live: false,
-                                            },
-                                        )]),
-                                    ),
-                                ),
-                            },
+                        .changed(
+                            &[],
+                            &[StreamUpdate::Append {
+                                id: "msg9999.body".into(),
+                                offset,
+                                text: text.into(),
+                            }],
+                            false,
                             &screen,
                         )
                         .unwrap();

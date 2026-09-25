@@ -73,7 +73,7 @@ plus the Zig system's, so `cargo` is this repository's rustc wherever you are st
 cargo test --workspace                 # the gate
 cargo run -p misa-daemon               # advertises locally and prints a ticket
 cargo run -p misa-tui --bin misa        # discover and pair with local daemons
-cargo run -p misa-tui --no-default-features --bin misa-tui-testbed  # offline terminal fixtures
+cargo run -p misa-tui-testbed            # offline terminal fixtures, no client dependencies
 cargo run -p misa-tui --bin misa -- --start-local  # opt in to start one if none is live (Unix)
 cargo run -p misa-daemon -- login openai-codex   # a subscription, by device code
 cargo run -p misa-daemon -- --plugin /tmp/policy.component.wasm   # a policy plugin, in wasm
@@ -111,12 +111,16 @@ transport.
 
 The `misa` binary selects the interactive terminal when stdin and stdout are terminals,
 and plain output for pipes. `--print` (or `-p`) forces plain output. `misa-tui` remains an alias.
-Skia painting is unconditional; the shell supplies its pinned archive, libraries, and fonts.
-Open a native window, or request a headless PNG explicitly:
+Skia's pinned Vulkan-enabled archive and the system Vulkan loader are supplied by the shell;
+native windows require a working Vulkan driver. The UI does not require a display server for
+headless tests. Open a native window, or request a headless GPU-rendered PNG explicitly:
 
 ```sh
 cargo run -p misa-skia -- --ticket misa:<endpoint id>:demo
-cargo run -p misa-skia -- --testbed     # offline native and semantic window fixtures (Ctrl+1/2)
+cargo run -p misa-skia-testbed               # default: synthetic input + clock, offscreen Vulkan readback
+cargo run -p misa-skia-testbed --features native -- --window  # optional native window (Ctrl+1/2)
+cargo run -p misa-skia-testbed --release -- --bench-gpu  # offscreen Vulkan baseline with readback
+cargo run -p misa-skia-testbed -- --bench-ab  # historical CPU font-cache comparison
 cargo run -p misa-skia -- --start-local  # live window; start only if no local daemon is live (Unix)
 cargo run -p misa-skia -- --view view.json --out frame.png
 cargo run -p misa-skia -- --view view.json --window --out frame.png
@@ -130,10 +134,21 @@ waits for a live advertisement, and leaves the daemon running after the client e
 Nix frontend wrappers default it to the packaged daemon. No daemon flags are assumed for
 external binaries. Without `--start-local`, neither frontend launches a daemon.
 
+The terminal screen lives in `misa-tui-ui`. Pixel input/clock types live in the
+zero-dependency `misa-window-core`; semantic layout and scenes live in `misa-skia-ui`;
+Skia canvas painting and font resolution live in `misa-skia-paint`; `misa-skia-vulkan`
+uses that same painter for both offscreen readback and native swapchain presentation.
+The connected hosts (`misa-tui`, `misa-skia`) and standalone fixture apps
+(`misa-tui-testbed`, `misa-skia-testbed`) depend on these crates independently.
+Neither UI crate nor fixture app depends on `misa-client` or `misa-transport`.
+The pixel fixture drives the same input and GPU painter as production without a window;
+both fixtures include native component and semantic `misa-proto` views.
+
 The window supports typed fields, disclosure toggles, tables, meters, images, text selection and
 clipboard copy. Alt-/ opens the declared command picker: type to filter, use arrows to select,
 and press Enter to insert the command into the prompt for editing. Escape closes it. Stable owner
-scenes are retained across updates. The last command saves a snapshot after each window redraw for UI tests.
+scenes are retained across updates. The last command explicitly reads back GPU pixels
+after each window redraw for optional platform-adapter tests.
 
 Build artifacts from the repository root:
 
@@ -142,6 +157,8 @@ nix-build next -A packages.misa-daemon
 nix-build next -A packages.misa
 nix-build next -A packages.misa-web
 nix-build next -A packages.misa-skia
+nix-build next -A packages.misa-tui-testbed
+nix-build next -A packages.misa-skia-testbed
 nix-build next -A packages.misa-guest
 nix-build next -A packages.misa-android
 nix-build next -A packages.checks

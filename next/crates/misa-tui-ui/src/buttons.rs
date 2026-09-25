@@ -46,7 +46,7 @@ pub(crate) fn key_reference<'a>(
     spans
 }
 
-pub(crate) fn footer<'a>(
+pub fn footer<'a>(
     theme: &Theme,
     settings: &DialogSettings,
     actions: impl IntoIterator<Item = (&'a str, &'a str)>,

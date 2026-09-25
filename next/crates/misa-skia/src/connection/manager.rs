@@ -19,7 +19,7 @@ enum Job {
 }
 struct Instance {
     generation: u64,
-    commands: tokio::sync::mpsc::Sender<Command>,
+    commands: tokio::sync::mpsc::Sender<Action>,
     task: tokio::task::AbortHandle,
     entry: misa_proto::directory::Entry,
 }
@@ -72,7 +72,7 @@ async fn discover(registry: Arc<Daemons>) -> Result<Option<Choice>, String> {
 pub(super) async fn run(
     ticket: Option<String>,
     proxy: &Sink,
-    mut outgoing: tokio::sync::mpsc::Receiver<Command>,
+    mut outgoing: tokio::sync::mpsc::Receiver<Action>,
 ) -> Result<(), String> {
     let key = misa_transport::identity::load(&misa_transport::identity::client_path("misa-skia")?)?;
     let endpoint = misa_transport::iroh::bind(Some(key), true).await?;
@@ -98,7 +98,7 @@ pub(super) async fn run(
         queued: AtomicBool::new(false),
     });
     let mut selected = tokio::task::JoinSet::new();
-    let mut commands: Option<tokio::sync::mpsc::Sender<Command>> = None;
+    let mut commands: Option<tokio::sync::mpsc::Sender<Action>> = None;
     let mut instances: BTreeMap<(String, misa_proto::observation::Scope), Instance> =
         BTreeMap::new();
     let mut generation = 0u64;
@@ -210,7 +210,7 @@ pub(super) async fn run(
             command=outgoing.recv()=>{
                 let Some(command)=command else{for daemon in registry.connected().await{registry.disconnect(daemon.identity()).await;}return Ok(());};
                 match command{
-                    Command::PrepareWork{daemon:identity,scope,id,command}=>{
+                    Action::PrepareWork{daemon:identity,scope,id,command}=>{
                         if jobs.len()>=8{proxy.send_event(Update::Notice("Daemon requests are busy".into()))?;continue;}
                         let Some(daemon)=registry.connected().await.into_iter().find(|daemon|daemon.identity()==identity) else{continue;};
                         jobs.spawn(async move{
@@ -220,27 +220,27 @@ pub(super) async fn run(
                             Ok(Job::Form(identity,form,BTreeMap::from([("operation".into(),id),("generation".into(),detail.generation.to_string())])))
                         });
                     },
-                    Command::Archive{daemon:identity,prefix}=>{
+                    Action::Archive{daemon:identity,prefix}=>{
                         if jobs.len()>=8{proxy.send_event(Update::Notice("Daemon requests are busy".into()))?;continue;}
                         let Some(daemon)=registry.connected().await.into_iter().find(|daemon|daemon.identity()==identity) else{proxy.send_event(Update::Notice("Daemon disconnected".into()))?;continue;};
                         let version=archive_versions.entry(identity.clone()).or_default();*version=version.wrapping_add(1);let version=*version;
                         jobs.spawn(async move{Ok(Job::Archive(identity,version,misa_client::lifecycle::conversations(&daemon,&prefix,100).await.map_err(|fault|fault.message)?))});
                     },
-                    Command::DaemonInvoke{daemon:identity,scope,command,input}=>{
+                    Action::DaemonInvoke{daemon:identity,scope,command,input}=>{
                         if jobs.len()>=8{proxy.send_event(Update::Notice("Daemon requests are busy".into()))?;continue;}
                         let Some(daemon)=registry.connected().await.into_iter().find(|daemon|daemon.identity()==identity) else{proxy.send_event(Update::Notice("Daemon disconnected".into()))?;continue;};
                         if matches!(command.as_str(),"daemon.session.create"|"daemon.session.resume") && instances.len()>=8 {proxy.send_event(Update::Notice("Close a local instance before opening another; its server work is separate".into()))?;continue;}
                         navigation=navigation.wrapping_add(1);let version=navigation;
                         jobs.spawn(async move{invoke_daemon(daemon,scope.ok_or("Daemon owner is not current")?,command,input,version).await});
                     },
-                    Command::Connect(target)=>{if connections.len()<4{connections.spawn(connect(registry.clone(),target,false));}else{proxy.send_event(Update::Notice("Connection attempts are busy".into()))?;}},
-                    Command::Discover=>{if connections.len()<4{connections.spawn(discover(registry.clone()));}},
-                    Command::CloseInstance { daemon, scope } => {
+                    Action::Connect(target)=>{if connections.len()<4{connections.spawn(connect(registry.clone(),target,false));}else{proxy.send_event(Update::Notice("Connection attempts are busy".into()))?;}},
+                    Action::Discover=>{if connections.len()<4{connections.spawn(discover(registry.clone()));}},
+                    Action::CloseInstance { daemon, scope } => {
                         if let Some(instance) = instances.remove(&(daemon.clone(), scope.clone())) { instance.task.abort(); }
                         proxy.send_event(Update::ClosedInstance { daemon, scope })?;
                         dirty.notify_one();
                     },
-                    Command::Disconnect(identity)=>{
+                    Action::Disconnect(identity)=>{
                         registry.disconnect(&identity).await;
                         for ((daemon, _), instance) in &instances {
                             if daemon == &identity {
@@ -250,7 +250,7 @@ pub(super) async fn run(
                         }
                         dirty.notify_one();
                     },
-                    Command::Select{daemon:identity,scope}=>{
+                    Action::Select{daemon:identity,scope}=>{
                         navigation=navigation.wrapping_add(1);
                         for daemon in registry.connected().await{
                             if daemon.identity()!=identity{continue;}
@@ -263,9 +263,12 @@ pub(super) async fn run(
                             } else {proxy.send_event(Update::Notice("That session incarnation is no longer available".into()))?;}
                         }
                     },
-                    command=>{
+                    command @ (Action::Ui(_) | Action::Presentation { .. } | Action::InvokeInstalled { .. } | Action::Form { .. } | Action::Request { .. }) => {
                         let result=match &commands{Some(sender)=>sender.try_send(command).map_err(|error|error.into_inner()),None=>Err(command)};
                         if let Err(command)=result{proxy.send_event(rejected(command,"Select an available session before sending".into()))?;}
+                    },
+                    Action::Appearance(_) | Action::SelectRequest { .. } => {
+                        unreachable!("window-owned actions must be handled before the connection")
                     }
                 }
             }

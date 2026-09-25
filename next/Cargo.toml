@@ -38,7 +38,7 @@ wasmtime = { version = "48", features = ["component-model"] }
 wit-component = "0.259"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-skia-safe = { version = "0.93", features = ["textlayout"] }
+skia-safe = { version = "0.93", features = ["textlayout", "vulkan"] }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"

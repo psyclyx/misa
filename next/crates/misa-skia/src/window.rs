@@ -1,8 +1,11 @@
 //! A real desktop window consuming the same Skia scene used by PNG export.
 use crate::app::{App, Command, Key};
 use crate::connection::{self, Update};
-use std::num::NonZeroU32;
+use crate::workspace::Action;
+use misa_window_core::{Clock, Event, MonotonicClock, Size};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -47,32 +50,16 @@ pub fn run(
         outgoing,
         snapshot,
         error: None,
+        clock: MonotonicClock::new(),
+        deadline: None,
+        redraw_pending: false,
+        wsi_retry_pending: false,
     };
     events
         .run_app(&mut host)
         .map_err(|error| error.to_string())?;
-    host.error.map_or(Ok(()), Err)
+    host.error.take().map_or(Ok(()), Err)
 }
-/// Present the existing Skia raster through the window's softbuffer surface.
-/// Shared by the connected window and the isolated interactive testbed.
-pub(crate) fn present_pixels(
-    surface: &mut softbuffer::Surface<Arc<Window>, Arc<Window>>,
-    image: &image::RgbaImage,
-) -> Result<(), String> {
-    let (width, height) = image.dimensions();
-    surface
-        .resize(
-            NonZeroU32::new(width).ok_or("Empty image width")?,
-            NonZeroU32::new(height).ok_or("Empty image height")?,
-        )
-        .map_err(|error| error.to_string())?;
-    let mut buffer = surface.buffer_mut().map_err(|error| error.to_string())?;
-    for (target, pixel) in buffer.iter_mut().zip(image.pixels()) {
-        *target = ((pixel[0] as u32) << 16) | ((pixel[1] as u32) << 8) | (pixel[2] as u32);
-    }
-    buffer.present().map_err(|error| error.to_string())
-}
-
 struct Host {
     appearance: crate::appearance::Choice,
     appearance_writer: std::sync::mpsc::SyncSender<crate::appearance::Choice>,
@@ -96,38 +83,119 @@ struct Host {
     panel_focus: bool,
     panel_top: f32,
     window: Option<Arc<Window>>,
-    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    surface: Option<misa_skia_vulkan::WindowRenderer>,
     modifiers: ModifiersState,
     cursor: (f32, f32),
     dragging: bool,
     clipboard: Option<arboard::Clipboard>,
-    outgoing: Option<tokio::sync::mpsc::Sender<Command>>,
+    outgoing: Option<tokio::sync::mpsc::Sender<Action>>,
     snapshot: Option<String>,
     error: Option<String>,
+    clock: MonotonicClock,
+    deadline: Option<Duration>,
+    redraw_pending: bool,
+    wsi_retry_pending: bool,
+}
+impl Drop for Host {
+    fn drop(&mut self) {
+        self.surface.take(); // Vulkan surface and swapchain must die before their native window.
+    }
 }
 impl Host {
-    fn pointer(&mut self, dragging: bool) -> Vec<Command> {
-        if let Some(commands) = self.local.pointer(self.cursor.0, self.cursor.1, dragging) {
-            return commands;
-        }
-        self.panel_focus = self.cursor.1 >= self.panel_top;
-        if self.panel_focus {
+    fn input(&mut self, event: Event) {
+        let elapsed = self.clock.elapsed();
+        let commands = match event {
+            Event::Pointer { x, y, dragging } => {
+                if let Some(commands) = self.local.pointer(x, y, dragging) {
+                    commands
+                } else {
+                    self.panel_focus = y >= self.panel_top;
+                    if self.panel_focus {
+                        self.panels
+                            .get_mut(&self.panel)
+                            .map(|panel| {
+                                panel
+                                    .drive(
+                                        Event::Pointer {
+                                            x,
+                                            y: y - self.panel_top,
+                                            dragging,
+                                        },
+                                        elapsed,
+                                    )
+                                    .commands
+                                    .into_iter()
+                                    .map(Action::Ui)
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        self.app
+                            .drive(Event::Pointer { x, y, dragging }, elapsed)
+                            .commands
+                            .into_iter()
+                            .map(Action::Ui)
+                            .collect()
+                    }
+                }
+            }
+            Event::Wheel { delta } => {
+                if !self.local.scroll(delta) {
+                    if self.cursor.1 >= self.panel_top {
+                        if let Some(panel) = self.panels.get_mut(&self.panel) {
+                            panel.drive(Event::Wheel { delta }, elapsed);
+                        }
+                    } else {
+                        self.app.drive(Event::Wheel { delta }, elapsed);
+                    }
+                }
+                vec![]
+            }
+            event @ (Event::Key(_) | Event::Text(_)) => self.input_event(event, elapsed),
+            Event::Resize(_) | Event::Theme { .. } => vec![],
+            Event::Redraw(_) => unreachable!("paint handles redraw"),
+        };
+        self.commands(commands);
+    }
+    fn key(&mut self, key: Key) {
+        self.input(Event::Key(key));
+    }
+    fn text(&mut self, text: String) {
+        self.input(Event::Text(text));
+    }
+    fn input_event(&mut self, event: Event, elapsed: Duration) -> Vec<Action> {
+        if let Some(commands) = self.local.input(event.clone()) {
+            commands
+        } else if self.panel_focus {
             self.panels
                 .get_mut(&self.panel)
-                .map(|panel| panel.pointer(self.cursor.0, self.cursor.1 - self.panel_top, dragging))
+                .map(|app| {
+                    app.drive(event, elapsed)
+                        .commands
+                        .into_iter()
+                        .map(Action::Ui)
+                        .collect()
+                })
                 .unwrap_or_default()
         } else {
-            self.app.pointer(self.cursor.0, self.cursor.1, dragging)
+            self.app
+                .drive(event, elapsed)
+                .commands
+                .into_iter()
+                .map(Action::Ui)
+                .collect()
         }
     }
-    fn redraw(&self) {
+    fn redraw(&mut self) {
+        // An external event grants a fresh, bounded WSI retry opportunity.
+        self.wsi_retry_pending = false;
         if let Some(window) = &self.window {
             window.request_redraw();
         }
     }
-    fn commands(&mut self, commands: Vec<Command>) {
+    fn commands(&mut self, commands: Vec<Action>) {
         for command in commands {
-            let command = if let Command::SelectRequest {
+            let command = if let Action::SelectRequest {
                 daemon,
                 scope,
                 request,
@@ -139,18 +207,18 @@ impl Host {
                     continue;
                 }
                 self.attention = Some((daemon.clone(), scope.clone(), request, generation));
-                Command::Select { daemon, scope }
+                Action::Select { daemon, scope }
             } else {
                 command
             };
-            if let Command::Appearance(choice) = command {
+            if let Action::Appearance(choice) = command {
                 self.appearance = choice;
                 self.local.appearance(choice);
                 if self.appearance_writer.try_send(choice).is_err() {
                     self.local
                         .notice("Appearance storage is busy; choice was not saved");
                 }
-            } else if let Command::Copy(text) = command {
+            } else if let Action::Ui(Command::Copy(text)) = command {
                 self.app.notice = match self
                     .clipboard
                     .as_mut()
@@ -165,10 +233,10 @@ impl Host {
                 if let Err(error) = outgoing.try_send(command) {
                     let reason = "The session is busy or disconnected".to_string();
                     match error.into_inner() {
-                        Command::Intent(
+                        Action::Ui(Command::Intent(
                             misa_kit::intent::Intent::Prompt { text, .. }
                             | misa_kit::intent::Intent::Interrupt { text, .. },
-                        ) => self.app.reject_prompt(text, reason),
+                        )) => self.app.reject_prompt(text, reason),
                         _ => self.app.notice = reason,
                     }
                 }
@@ -178,53 +246,65 @@ impl Host {
         }
         self.redraw();
     }
-    fn key(&mut self, key: Key) {
-        let commands = if let Some(commands) = self.local.key(key.clone()) {
-            commands
-        } else if self.panel_focus {
-            self.panels
-                .get_mut(&self.panel)
-                .map(|app| app.key(key))
-                .unwrap_or_default()
-        } else {
-            self.app.key(key)
-        };
-        self.commands(commands);
-    }
     fn paint(&mut self) -> Result<(), String> {
         let Some(window) = &self.window else {
             return Ok(());
         };
         let size = window.inner_size();
+        self.deadline = None;
+        self.redraw_pending = false;
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
+        let elapsed = self.clock.elapsed();
         let light = self
             .appearance
             .light(window.theme() == Some(winit::window::Theme::Light));
         let colors = crate::appearance::Palette::new(light);
-        self.app.set_light(light);
+        self.app.drive(Event::Theme { light }, elapsed);
         self.local.appearance(self.appearance);
         self.local.set_light(light);
-        let scene = if let Some(scene) = self.local.frame(size.width, size.height) {
+        let scene = if let Some((scene, deadline)) =
+            self.local.frame_at(size.width, size.height, elapsed)
+        {
+            self.deadline = deadline;
             scene
         } else {
-            let panel_height = if self.panels.is_empty() {
+            let panel_height = if self.panels.is_empty() || size.height < 6 {
                 0
             } else {
                 (size.height / 3).min(220)
             };
             self.panel_top = (size.height - panel_height) as f32;
-            let mut scene = self.app.frame(size.width, size.height - panel_height);
+            let main = self.app.drive(
+                Event::Redraw(Size {
+                    width: size.width,
+                    height: size.height - panel_height,
+                }),
+                elapsed,
+            );
+            self.deadline = main.deadline;
+            let mut scene = main.frame.ok_or("Empty main scene")?;
             scene.height = size.height as f32;
             if !self.panels.contains_key(&self.panel) {
                 if let Some(id) = self.panels.keys().next() {
                     self.panel = id.clone();
                 }
             }
-            if let Some(panel) = self.panels.get_mut(&self.panel) {
-                panel.set_light(light);
-                let pane = panel.frame(size.width, panel_height);
+            if let Some(panel) = (panel_height > 0)
+                .then(|| self.panels.get_mut(&self.panel))
+                .flatten()
+            {
+                panel.drive(Event::Theme { light }, elapsed);
+                let pane_output = panel.drive(
+                    Event::Redraw(Size {
+                        width: size.width,
+                        height: panel_height,
+                    }),
+                    elapsed,
+                );
+                self.deadline = self.deadline.or(pane_output.deadline);
+                let pane = pane_output.frame.ok_or("Empty panel scene")?;
                 scene.ops.push(crate::Op::Rect {
                     x: 0.0,
                     y: self.panel_top,
@@ -243,14 +323,40 @@ impl Host {
             }
             scene
         };
-        let image = crate::paint::raster(&scene, colors.background)?;
+        let surface = self.surface.as_mut().ok_or("No window surface")?;
         if let Some(path) = &self.snapshot {
-            image.save(path).map_err(|error| error.to_string())?;
+            surface
+                .renderer()
+                .render(&scene, colors.background)?
+                .save(path)
+                .map_err(|error| error.to_string())?;
         }
-        present_pixels(self.surface.as_mut().ok_or("No window surface")?, &image)
+        let outcome = surface.present(&scene, colors.background, size.width, size.height)?;
+        if retry_once(outcome.needs_redraw(), &mut self.wsi_retry_pending) {
+            // Do not go through redraw(): it resets the external-event retry budget.
+            window.request_redraw();
+        }
+        Ok(())
     }
 }
+/// At most one self-requested redraw per external event, even for persistent OUT_OF_DATE.
+fn retry_once(needs_redraw: bool, pending: &mut bool) -> bool {
+    if !needs_redraw {
+        *pending = false;
+        return false;
+    }
+    if *pending {
+        return false;
+    }
+    *pending = true;
+    true
+}
+
 impl ApplicationHandler<Update> for Host {
+    fn suspended(&mut self, _: &ActiveEventLoop) {
+        self.surface.take();
+        self.window.take();
+    }
     fn resumed(&mut self, events: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -268,12 +374,10 @@ impl ApplicationHandler<Update> for Host {
                     .map_err(|error| error.to_string())?,
             );
             window.set_ime_allowed(true);
-            let context =
-                softbuffer::Context::new(window.clone()).map_err(|error| error.to_string())?;
-            self.surface = Some(
-                softbuffer::Surface::new(&context, window.clone())
-                    .map_err(|error| error.to_string())?,
-            );
+            self.surface = Some(misa_skia_vulkan::WindowRenderer::new(
+                window.display_handle().map_err(|e| e.to_string())?.as_raw(),
+                window.window_handle().map_err(|e| e.to_string())?.as_raw(),
+            )?);
             self.window = Some(window);
             self.redraw();
             Ok::<_, String>(())
@@ -372,13 +476,19 @@ impl ApplicationHandler<Update> for Host {
                     events.exit();
                 }
             }
-            WindowEvent::Resized(_) => self.redraw(),
+            WindowEvent::Resized(size) => self.input(Event::Resize(Size {
+                width: size.width,
+                height: size.height,
+            })),
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as f32, position.y as f32);
                 if self.dragging {
-                    let commands = self.pointer(true);
-                    self.commands(commands);
+                    self.input(Event::Pointer {
+                        x: self.cursor.0,
+                        y: self.cursor.1,
+                        dragging: true,
+                    });
                 }
             }
             WindowEvent::MouseInput {
@@ -388,8 +498,11 @@ impl ApplicationHandler<Update> for Host {
             } => {
                 self.dragging = state == ElementState::Pressed;
                 if self.dragging {
-                    let commands = self.pointer(false);
-                    self.commands(commands);
+                    self.input(Event::Pointer {
+                        x: self.cursor.0,
+                        y: self.cursor.1,
+                        dragging: false,
+                    });
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -397,18 +510,9 @@ impl ApplicationHandler<Update> for Host {
                     MouseScrollDelta::LineDelta(_, y) => -y * 60.0,
                     MouseScrollDelta::PixelDelta(position) => -position.y as f32,
                 };
-                if !self.local.scroll(delta) {
-                    if self.cursor.1 >= self.panel_top {
-                        if let Some(panel) = self.panels.get_mut(&self.panel) {
-                            panel.scroll(delta);
-                        }
-                    } else {
-                        self.app.scroll(delta);
-                    }
-                }
-                self.redraw();
+                self.input(Event::Wheel { delta });
             }
-            WindowEvent::Ime(Ime::Commit(text)) => self.key(Key::Text(text)),
+            WindowEvent::Ime(Ime::Commit(text)) => self.text(text),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 let command = self.modifiers.control_key() || self.modifiers.super_key();
                 match event.logical_key {
@@ -453,7 +557,7 @@ impl ApplicationHandler<Update> for Host {
                     WinitKey::Character(ref text) if command && text.eq_ignore_ascii_case("v") => {
                         if let Some(clipboard) = &mut self.clipboard {
                             if let Ok(text) = clipboard.get_text() {
-                                self.key(Key::Text(text));
+                                self.text(text);
                             }
                         }
                     }
@@ -470,27 +574,196 @@ impl ApplicationHandler<Update> for Host {
                     WinitKey::Named(NamedKey::ArrowRight) => self.key(Key::Right),
                     WinitKey::Named(NamedKey::Home) => self.key(Key::Home),
                     WinitKey::Named(NamedKey::End) => self.key(Key::End),
-                    WinitKey::Character(text) if !command => self.key(Key::Text(text.to_string())),
-                    WinitKey::Named(NamedKey::Space) if !command => self.key(Key::Text(" ".into())),
+                    WinitKey::Character(text) if !command => self.text(text.to_string()),
+                    WinitKey::Named(NamedKey::Space) if !command => self.text(" ".into()),
                     _ => {}
                 }
             }
-            WindowEvent::ThemeChanged(_) => self.redraw(),
+            WindowEvent::ThemeChanged(theme) => self.input(Event::Theme {
+                light: self.appearance.light(theme == winit::window::Theme::Light),
+            }),
             _ => {}
         }
     }
 
-    /// Keep a running activity indicator moving. When nothing is animating, wait
-    /// for an event rather than polling; when something is, wake on a frame clock.
+    /// Wake at the next phase boundary only while a visible app is animating.
     fn about_to_wait(&mut self, events: &ActiveEventLoop) {
-        if self.app.animating() {
-            events.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
-                std::time::Instant::now() + std::time::Duration::from_millis(160),
-            ));
-            self.redraw();
+        if let Some(elapsed) = self.deadline {
+            let deadline = self.clock.instant(elapsed);
+            if !self.redraw_pending && Instant::now() >= deadline {
+                self.redraw_pending = true;
+                self.redraw();
+            }
+            events.set_control_flow(if self.redraw_pending {
+                winit::event_loop::ControlFlow::Wait
+            } else {
+                winit::event_loop::ControlFlow::WaitUntil(deadline)
+            });
         } else {
             events.set_control_flow(winit::event_loop::ControlFlow::Wait);
         }
+    }
+}
+
+/// Translate the production replica's validated transaction at the window boundary.
+/// Do not materialize the document on each append: App retains unaffected owners.
+fn document_update(
+    update: &misa_client::document::Update,
+) -> Option<crate::app::DocumentUpdate<'_>> {
+    use crate::app::DocumentUpdate;
+    use misa_client::document::Update;
+    use misa_protocol::observation::{Applied, MemberChange, Status};
+    match update {
+        Update::Reset(document) => Some(DocumentUpdate::Reset {
+            tree: &document.tree,
+            streams: &document.streams,
+        }),
+        Update::Changed { member, applied } => match applied.as_ref() {
+            Applied::Changed(members) => match members.get(member) {
+                Some(MemberChange::Document {
+                    tree,
+                    live,
+                    reset_live,
+                }) => Some(DocumentUpdate::Changed {
+                    tree,
+                    live,
+                    reset_live: *reset_live,
+                }),
+                _ => None,
+            },
+            _ => None,
+        },
+        Update::Unavailable(fault) => Some(DocumentUpdate::Notice(&fault.message)),
+        Update::Status(status) => Some(DocumentUpdate::Notice(match status {
+            Status::Awaiting => "Loading session…",
+            Status::Current => "",
+            Status::Recovering(_) => "Refreshing session…",
+            Status::Stale(fault) | Status::Closed(fault) => &fault.message,
+        })),
+    }
+}
+
+#[cfg(test)]
+mod pulse_tests {
+    use super::*;
+
+    #[test]
+    fn wsi_retry_is_bounded_until_external_redraw() {
+        let mut pending = false;
+        assert!(retry_once(true, &mut pending));
+        assert!(!retry_once(true, &mut pending));
+        pending = false; // input/resize calls Host::redraw
+        assert!(retry_once(true, &mut pending));
+        assert!(!retry_once(false, &mut pending));
+        assert!(!pending);
+    }
+
+    #[test]
+    fn deadline_is_anchored_and_strictly_after_painted_phase() {
+        let start = Instant::now();
+        for (elapsed, next) in [(0, 160), (159, 160), (160, 320), (479, 480), (960, 1120)] {
+            assert_eq!(
+                start
+                    + misa_window_core::next_deadline(
+                        Duration::from_millis(elapsed),
+                        crate::app::PULSE_PERIOD
+                    ),
+                start + Duration::from_millis(next)
+            );
+        }
+        assert_eq!(
+            start
+                + misa_window_core::next_deadline(
+                    Duration::from_micros(160_001),
+                    crate::app::PULSE_PERIOD
+                ),
+            start + Duration::from_millis(320)
+        );
+    }
+}
+
+#[cfg(test)]
+mod document_adapter_tests {
+    use super::*;
+    use crate::app::DocumentUpdate;
+    use misa_client::document::Update as DocumentDelivery;
+    use misa_proto::sync::{Stream, StreamUpdate, Version, ViewOp};
+    use misa_protocol::observation::{Applied, MemberChange, Status};
+
+    #[test]
+    fn borrows_reset_and_changed_payloads() {
+        let reset = DocumentDelivery::Reset(misa_proto::observation::Document {
+            version: Version {
+                epoch: "test".into(),
+                rev: 0,
+            },
+            tree: misa_proto::Node::section("session"),
+            streams: vec![Stream {
+                id: "live".into(),
+                role: "message".into(),
+                text: "hi".into(),
+            }],
+        });
+        let DocumentDelivery::Reset(document) = &reset else {
+            unreachable!()
+        };
+        let Some(DocumentUpdate::Reset { tree, streams }) = document_update(&reset) else {
+            panic!("reset must reach App")
+        };
+        assert!(std::ptr::eq(tree, &document.tree));
+        assert!(std::ptr::eq(streams, document.streams.as_slice()));
+
+        let changed = DocumentDelivery::Changed {
+            member: "body".into(),
+            applied: Arc::new(Applied::Changed(std::collections::BTreeMap::from([(
+                "body".into(),
+                MemberChange::Document {
+                    tree: vec![ViewOp::Remove { id: "old".into() }],
+                    live: vec![StreamUpdate::End { id: "live".into() }],
+                    reset_live: true,
+                },
+            )]))),
+        };
+        let DocumentDelivery::Changed { applied, .. } = &changed else {
+            unreachable!()
+        };
+        let Applied::Changed(members) = applied.as_ref() else {
+            unreachable!()
+        };
+        let MemberChange::Document { tree, live, .. } = &members["body"] else {
+            unreachable!()
+        };
+        let Some(DocumentUpdate::Changed {
+            tree: borrowed_tree,
+            live: borrowed_live,
+            reset_live,
+        }) = document_update(&changed)
+        else {
+            panic!("changed member must reach App")
+        };
+        assert!(std::ptr::eq(borrowed_tree, tree.as_slice()));
+        assert!(std::ptr::eq(borrowed_live, live.as_slice()));
+        assert!(reset_live);
+    }
+
+    #[test]
+    fn status_and_fault_notices_survive_translation() {
+        for (status, expected) in [
+            (Status::Awaiting, "Loading session…"),
+            (Status::Current, ""),
+            (Status::Recovering("retry".into()), "Refreshing session…"),
+            (Status::Stale(misa_proto::Fault::query("stale")), "stale"),
+            (Status::Closed(misa_proto::Fault::query("closed")), "closed"),
+        ] {
+            assert!(
+                matches!(document_update(&DocumentDelivery::Status(status)), Some(DocumentUpdate::Notice(message)) if message == expected)
+            );
+        }
+        let unavailable = DocumentDelivery::Unavailable(misa_proto::Fault::query("unavailable"));
+        assert!(matches!(
+            document_update(&unavailable),
+            Some(DocumentUpdate::Notice("unavailable"))
+        ));
     }
 }
 
@@ -545,7 +818,9 @@ fn apply_update(
                         app
                     })
                 };
-                if let Err(error) = app.observed(&update) {
+                if let Some(update) = document_update(&update)
+                    && let Err(error) = app.observed(&update)
+                {
                     app.notice = error;
                 }
             }

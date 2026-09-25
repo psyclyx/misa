@@ -1,0 +1,19 @@
+[package]
+name = "misa-skia-ui"
+description = "Backend-neutral pixel scene and App interaction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+image = { workspace = true, features = ["jpeg", "gif", "webp"] }
+misa-kit = { path = "../misa-kit" }
+misa-proto.workspace = true
+misa-render.workspace = true
+misa-syntax.workspace = true
+misa-value.workspace = true
+misa-window-core = { path = "../misa-window-core" }
+
+[dev-dependencies]
+serde_json.workspace = true

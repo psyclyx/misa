@@ -5,8 +5,6 @@
 //! misa-skia --ticket misa:<endpoint id>:<session> --out frame.png
 //! # a view that was saved, with no session at all
 //! misa-skia --view frame.json --out frame.png
-//! # isolated interactive local fixture (no session or export)
-//! misa-skia --testbed
 //! # keep rendering as it changes
 //! misa-skia --ticket misa:<endpoint id>:<session> --out frame.png --every-ms 500
 //! ```
@@ -23,7 +21,7 @@ use misa_proto::view::Node;
 use misa_protocol::observation::{MemberState, Status};
 
 fn usage() -> String {
-    "usage: misa-skia --testbed | misa-skia [--start-local] [--ticket misa:<endpoint id>:<session> | --view view.json] [--window] [--out frame.png] [--every-ms N] [--columns N]"
+    "usage: misa-skia [--start-local] [--ticket misa:<endpoint id>:<session> | --view view.json] [--window] [--out frame.png] [--every-ms N] [--columns N]"
         .into()
 }
 
@@ -37,19 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut every_ms: Option<u64> = None;
     let mut columns = 100u32;
     let mut rows = 40u32;
-    let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.iter().any(|arg| arg == "--testbed") {
-        if args.as_slice() != ["--testbed"] {
-            return Err(format!(
-                "--testbed cannot be combined with other arguments; {}",
-                usage()
-            )
-            .into());
-        }
-        misa_skia::testbed::run()?;
-        return Ok(());
-    }
-    let mut arguments = args.into_iter();
+    let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--window" => window = true,
@@ -105,9 +91,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let out = out.expect("PNG output selected");
+    let mut renderer = misa_skia_vulkan::Renderer::new()?;
 
     if let Some(text) = first.take() {
-        write_frame(&text, columns, rows, &out)?;
+        write_frame(&mut renderer, &text, columns, rows, &out)?;
         println!("wrote {out}");
         if every_ms.is_none() {
             return Ok(());
@@ -205,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .ok_or("Presentation observation closed")??;
         if let Some((sequence, view)) = frame {
-            write_frame(&view, columns, rows, &out)?;
+            write_frame(&mut renderer, &view, columns, rows, &out)?;
             painted = Some(sequence);
             println!("wrote {out}");
             if every_ms.is_none() {
@@ -239,6 +226,7 @@ mod cold_start_tests {
 
 /// Paint a scene to a file.
 fn write_frame(
+    renderer: &mut misa_skia_vulkan::Renderer,
     view: &Node,
     columns: u32,
     rows: u32,
@@ -252,7 +240,9 @@ fn write_frame(
         rows as usize,
         misa_skia::Layout::default(),
     );
-    let png = misa_skia::paint::png(&scene, misa_render::Color::Rgb(20, 22, 26))?;
-    std::fs::write(out, png)?;
+    let pixels = renderer.render(&scene, misa_render::Color::Rgb(20, 22, 26))?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    pixels.write_to(&mut png, image::ImageFormat::Png)?;
+    std::fs::write(out, png.into_inner())?;
     Ok(())
 }

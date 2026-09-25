@@ -5,74 +5,44 @@ use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
 use misa_proto::sync::{IndexedTree, StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, FieldKind, Kind, Node, Span};
-#[cfg(test)]
-use misa_render::Color;
 use misa_render::{Style, Theme};
 use misa_value::Value;
+pub use misa_window_core::Key;
+use misa_window_core::{Event, Output, Size};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Pulse cadence shared by the fake clock and the window scheduler.
+pub const PULSE_PERIOD: Duration = Duration::from_millis(160);
+
+fn pulse_phase(elapsed: Duration) -> u64 {
+    // The stock pulse has four frames; reduce before converting an arbitrary Duration.
+    ((elapsed.as_nanos() / PULSE_PERIOD.as_nanos()) % 4) as u64
+}
+
+/// A validated document transaction, independent of its delivery mechanism.
+/// Tree edits and live-stream retirement are applied together before painting.
+#[derive(Clone, Copy, Debug)]
+pub enum DocumentUpdate<'a> {
+    Reset {
+        tree: &'a Node,
+        streams: &'a [misa_proto::sync::Stream],
+    },
+    Changed {
+        tree: &'a [ViewOp],
+        live: &'a [StreamUpdate],
+        reset_live: bool,
+    },
+    Notice(&'a str),
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    Appearance(crate::appearance::Choice),
-    InvokeInstalled {
-        command: String,
-        input: Value,
-    },
     Intent(Intent),
-    Save {
-        node: String,
-        destination: String,
-    },
+    Save { node: String, destination: String },
     LoadImage(misa_proto::view::BlobRef),
-    Connect(String),
-    PrepareWork {
-        daemon: String,
-        scope: misa_proto::observation::Scope,
-        id: String,
-        command: String,
-    },
-    DaemonInvoke {
-        daemon: String,
-        scope: Option<misa_proto::observation::Scope>,
-        command: String,
-        input: Value,
-    },
-    Archive {
-        daemon: String,
-        prefix: String,
-    },
-    Discover,
-    Presentation {
-        id: String,
-        choice: misa_client::composition::Choice,
-    },
-    Disconnect(String),
-    CloseInstance {
-        daemon: String,
-        scope: misa_proto::observation::Scope,
-    },
-    SelectRequest {
-        daemon: String,
-        scope: misa_proto::observation::Scope,
-        request: String,
-        generation: i64,
-    },
-    Select {
-        daemon: String,
-        scope: misa_proto::observation::Scope,
-    },
-    Request {
-        id: String,
-        generation: i64,
-        action: String,
-        fields: BTreeMap<String, Value>,
-    },
     Copy(String),
-    Form {
-        action: String,
-        drafts: BTreeMap<String, String>,
-    },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Control {
@@ -105,32 +75,23 @@ struct TextRow {
     text: String,
 }
 #[derive(Clone)]
+struct IndicatorBounds {
+    id: String,
+    top: f32,
+    bottom: f32,
+}
+#[derive(Clone)]
 struct Cached {
     width: f32,
     height: f32,
     ops: Arc<Vec<Op>>,
     hits: Vec<Hit>,
     rows: Vec<TextRow>,
+    /// Moving owner groups, relative to this cached group's origin.
+    indicators: Vec<IndicatorBounds>,
+    /// Pulse phase when this moving status owner's display list was built.
+    phase: Option<u64>,
 }
-#[derive(Clone, Debug)]
-pub enum Key {
-    Text(String),
-    Commands,
-    Up,
-    Down,
-    Backspace,
-    Delete,
-    Left,
-    Right,
-    Home,
-    End,
-    Enter { newline: bool },
-    Tab { backward: bool },
-    Escape,
-    Copy,
-    SelectAll,
-}
-
 pub struct App {
     light: bool,
     #[cfg(test)]
@@ -139,6 +100,10 @@ pub struct App {
     root: String,
     streams: BTreeMap<String, Node>,
     cache: BTreeMap<String, Arc<Cached>>,
+    /// Painted status owners with a moving activity indicator (not document-wide turns).
+    moving_indicators: BTreeSet<String>,
+    /// Captures group positions only while building a dirty display list.
+    indicator_stack: Vec<Vec<IndicatorBounds>>,
     cache_width: u32,
     pub commands: Vec<misa_kit::intent::Command>,
     pub notice: String,
@@ -158,8 +123,9 @@ pub struct App {
     follow: bool,
     content_height: f32,
     viewport_height: f32,
-    /// Advances once per painted frame, so a client-side animation has a clock.
+    /// Current elapsed-time pulse phase, not a repaint count.
     pub tick: u64,
+    offline_elapsed: Duration,
 }
 struct Report {
     title: String,
@@ -212,6 +178,8 @@ impl App {
             root: "session".into(),
             streams: BTreeMap::new(),
             cache: BTreeMap::new(),
+            moving_indicators: BTreeSet::new(),
+            indicator_stack: vec![],
             cache_width: 0,
             light: false,
             commands: vec![],
@@ -233,24 +201,79 @@ impl App {
             content_height: 0.0,
             viewport_height: 600.0,
             tick: 0,
+            offline_elapsed: Duration::ZERO,
         };
         app.set_view(view);
         app
     }
+    /// Single backend-neutral input/paint driver. Hosts own effects and presentation.
+    pub fn drive(&mut self, event: Event, elapsed: Duration) -> Output<Command, Scene> {
+        let mut output = Output::default();
+        match event {
+            Event::Key(key) => {
+                output.commands = self.key(key);
+                output.redraw = true;
+            }
+            Event::Text(text) => {
+                output.commands = self.text(&text);
+                output.redraw = true;
+            }
+            Event::Pointer { x, y, dragging } => {
+                output.commands = self.pointer(x, y, dragging);
+                output.redraw = true;
+            }
+            Event::Wheel { delta } => {
+                self.scroll(delta);
+                output.redraw = true;
+            }
+            Event::Resize(_) => output.redraw = true,
+            Event::Theme { light } => {
+                self.set_light(light);
+                output.redraw = true;
+            }
+            Event::Redraw(Size { width, height }) => {
+                if width != 0 && height != 0 {
+                    output.frame = Some(self.frame_at(width, height, elapsed));
+                    if self.animating() {
+                        output.deadline =
+                            Some(misa_window_core::next_deadline(elapsed, PULSE_PERIOD));
+                    }
+                }
+            }
+        }
+        output
+    }
+
     pub fn set_light(&mut self, light: bool) {
         if self.light != light {
             self.light = light;
             self.cache.clear();
+            self.moving_indicators.clear();
         }
     }
     fn colors(&self) -> crate::appearance::Palette {
         crate::appearance::Palette::new(self.light)
     }
 
-    /// Whether the active document is doing something that should keep animating:
-    /// a running turn, which is what the activity indicator speaks for.
+    /// Only groups actually placed in the viewport by the last layout need a pulse.
+    /// The root's bounds come from nested scene groups, so collapsed owners are absent.
     pub fn animating(&self) -> bool {
-        self.tree.contains("turn")
+        self.visible_indicators().next().is_some()
+    }
+
+    fn visible_indicators(&self) -> impl Iterator<Item = &str> {
+        let top = 20.0 - self.scroll;
+        self.cache
+            .get(&self.root)
+            .into_iter()
+            .flat_map(|cached| cached.indicators.iter())
+            .filter(move |bounds| {
+                top + bounds.top < self.viewport_height
+                    && top + bounds.bottom > 0.0
+                    && self.moving_indicators.contains(&bounds.id)
+                    && self.cache.contains_key(&bounds.id)
+            })
+            .map(|bounds| bounds.id.as_str())
     }
     pub fn report(&mut self, title: String, value: Value) {
         let mut entries = Vec::new();
@@ -269,6 +292,7 @@ impl App {
             if self.tree.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields {fields} if fields.iter().any(|value| &value.id == field && value.secret))) { edit.set_text(""); }
         }
         self.cache.clear();
+        self.moving_indicators.clear();
     }
     pub fn reject_prompt(&mut self, text: String, reason: String) {
         let target = self
@@ -289,6 +313,7 @@ impl App {
     pub fn set_view(&mut self, mut view: Node) {
         misa_proto::sync::address(&mut view);
         self.cache.clear();
+        self.moving_indicators.clear();
         self.streams.clear();
         let mut references = BTreeSet::new();
         image_hashes(&view, &mut references);
@@ -362,6 +387,7 @@ impl App {
         let mut cursor = Some(id.to_string());
         while let Some(id) = cursor {
             self.cache.remove(&id);
+            self.moving_indicators.remove(&id);
             cursor = self.tree.parent(&id).map(str::to_owned);
         }
     }
@@ -391,12 +417,14 @@ impl App {
             }
             if removed {
                 self.cache.clear();
+                self.moving_indicators.clear();
             }
         }
         for child in self.tree.children(id) {
             self.forget_subtree(&child);
         }
         self.cache.remove(id);
+        self.moving_indicators.remove(id);
     }
     fn refresh_fields(&mut self, node: &Node) {
         if let Kind::Fields { fields } = &node.kind {
@@ -514,43 +542,28 @@ impl App {
     }
     /// One already-validated replica transaction. The window paints only after
     /// canonical changes and live retirement have both reached its derived cache.
-    pub fn observed(&mut self, update: &misa_client::document::Update) -> Result<(), String> {
-        use misa_client::document::Update;
-        use misa_protocol::observation::{Applied, MemberChange, Status};
+    pub fn observed(&mut self, update: &DocumentUpdate<'_>) -> Result<(), String> {
         match update {
-            Update::Reset(document) => {
-                self.set_view(document.tree.clone());
-                self.reset_streams(&document.streams);
+            DocumentUpdate::Reset { tree, streams } => {
+                self.set_view((*tree).clone());
+                self.reset_streams(streams);
             }
-            Update::Changed { member, applied } => {
-                if let Applied::Changed(members) = applied.as_ref() {
-                    if let Some(MemberChange::Document {
-                        tree,
-                        live,
-                        reset_live,
-                    }) = members.get(member)
-                    {
-                        if !tree.is_empty() {
-                            self.apply_tree(tree)?;
-                        }
-                        if *reset_live {
-                            self.reset_streams(&[]);
-                        }
-                        for update in live {
-                            self.apply_stream(update);
-                        }
-                    }
+            DocumentUpdate::Changed {
+                tree,
+                live,
+                reset_live,
+            } => {
+                if !tree.is_empty() {
+                    self.apply_tree(*tree)?;
+                }
+                if *reset_live {
+                    self.reset_streams(&[]);
+                }
+                for update in *live {
+                    self.apply_stream(update);
                 }
             }
-            Update::Unavailable(fault) => self.notice = fault.message.clone(),
-            Update::Status(status) => {
-                self.notice = match status {
-                    Status::Awaiting => "Loading session…".into(),
-                    Status::Current => String::new(),
-                    Status::Recovering(_) => "Refreshing session…".into(),
-                    Status::Stale(fault) | Status::Closed(fault) => fault.message.clone(),
-                }
-            }
+            DocumentUpdate::Notice(message) => self.notice = message.to_string(),
         }
         Ok(())
     }
@@ -586,6 +599,7 @@ impl App {
         // copies and expose the local Load image affordance on remaining owners.
         if evicted {
             self.cache.clear();
+            self.moving_indicators.clear();
         }
         // Image decode is infrequent; only owners containing this reference are invalidated.
         let ids: Vec<_> = self
@@ -629,17 +643,36 @@ impl App {
             let outer_rows = std::mem::take(&mut self.rows);
             let mut local = Scene::default();
             let mut height = 0.0;
+            self.indicator_stack.push(Vec::new());
             self.node_uncached(&node, 0.0, &mut height, width, theme, &mut local);
+            let mut indicators = self.indicator_stack.pop().unwrap();
+            if node.role == "status.indicators" && self.moving_indicators.contains(id) {
+                indicators.push(IndicatorBounds {
+                    id: id.to_string(),
+                    top: 0.0,
+                    bottom: height,
+                });
+            }
             let cached = Arc::new(Cached {
                 width,
                 height,
                 ops: Arc::new(local.ops),
                 hits: std::mem::replace(&mut self.hits, outer_hits),
                 rows: std::mem::replace(&mut self.rows, outer_rows),
+                indicators,
+                phase: (node.role == "status.indicators" && self.moving_indicators.contains(id))
+                    .then_some(self.tick),
             });
             self.cache.insert(id.to_string(), cached.clone());
             cached
         };
+        if let Some(parent) = self.indicator_stack.last_mut() {
+            parent.extend(cached.indicators.iter().map(|bounds| IndicatorBounds {
+                id: bounds.id.clone(),
+                top: bounds.top + *y,
+                bottom: bounds.bottom + *y,
+            }));
+        }
         scene.ops.push(Op::Group {
             x,
             y: *y,
@@ -866,6 +899,44 @@ impl App {
         self.invalidate_focus();
         commands
     }
+    /// Committed text is handled separately from physical and special keys.
+    fn text(&mut self, text: &str) -> Vec<Command> {
+        self.invalidate_focus();
+        let commands = self.text_inner(text);
+        self.invalidate_focus();
+        commands
+    }
+    fn text_inner(&mut self, text: &str) -> Vec<Command> {
+        if self.report.is_some() {
+            return vec![];
+        }
+        if let Some(picker) = &mut self.picker {
+            for character in text.chars() {
+                picker.type_char(character);
+            }
+            return vec![];
+        }
+        if let Some(control @ Control::Field { .. }) = self.focus.clone() {
+            let discrete = match &control {
+                Control::Field { node, field } => self.tree.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields { fields } if fields.iter().any(|value| &value.id == field && matches!(value.kind, FieldKind::Bool | FieldKind::Choice { .. })))),
+                _ => false,
+            };
+            if discrete {
+                if text == " " {
+                    return self.activate(control);
+                }
+                return vec![];
+            }
+        }
+        let replace = std::mem::take(&mut self.replace_selection);
+        if let Some(edit) = self.editor() {
+            if replace {
+                edit.set_text("");
+            }
+            edit.insert(text);
+        }
+        vec![]
+    }
     fn key_inner(&mut self, key: Key) -> Vec<Command> {
         if let Some(report) = &mut self.report {
             match key {
@@ -903,11 +974,6 @@ impl App {
                 }
                 Key::Up | Key::Tab { backward: true } => picker.move_selection(-1),
                 Key::Down | Key::Tab { backward: false } => picker.move_selection(1),
-                Key::Text(value) => {
-                    for character in value.chars() {
-                        picker.type_char(character);
-                    }
-                }
                 Key::Backspace => {
                     picker.backspace();
                 }
@@ -1020,9 +1086,7 @@ impl App {
                 _ => false,
             };
             if discrete {
-                if matches!(&key,Key::Text(value) if value == " ")
-                    || matches!(key, Key::Left | Key::Right)
-                {
+                if matches!(key, Key::Left | Key::Right) {
                     return self.activate(control);
                 }
                 return vec![];
@@ -1032,12 +1096,6 @@ impl App {
         self.replace_selection = false;
         if let Some(edit) = self.editor() {
             match key {
-                Key::Text(text) => {
-                    if replace {
-                        edit.set_text("");
-                    }
-                    edit.insert(&text);
-                }
                 Key::Backspace => {
                     if replace {
                         edit.set_text("");
@@ -1085,10 +1143,19 @@ impl App {
             .collect::<Vec<_>>()
             .join("\n")
     }
+    /// Offline snapshots advance a synthetic clock one pulse per call, without wall time.
     pub fn frame(&mut self, width: u32, height: u32) -> Scene {
-        self.tick = self.tick.wrapping_add(1);
+        self.offline_elapsed = self.offline_elapsed.saturating_add(PULSE_PERIOD);
+        self.frame_at(width, height, self.offline_elapsed)
+    }
+
+    /// Render at a caller-provided elapsed time. Repaints within a phase retain the
+    /// same display lists; only the animated indicator's owner and ancestors change.
+    pub fn frame_at(&mut self, width: u32, height: u32, elapsed: Duration) -> Scene {
+        self.tick = pulse_phase(elapsed);
         if self.cache_width != width {
             self.cache.clear();
+            self.moving_indicators.clear();
             self.cache_width = width;
         }
         #[cfg(test)]
@@ -1105,6 +1172,19 @@ impl App {
         };
         if (wanted - self.scroll).abs() > 0.5 {
             self.scroll = wanted;
+            scene = self.layout(width, height);
+        }
+        // Lay out first: the final scroll and collapsed groups determine visibility.
+        // An idle frame reuses its display lists and checks only moving owner bounds.
+        let stale: Vec<_> = self
+            .visible_indicators()
+            .filter(|id| self.cache[*id].phase != Some(self.tick))
+            .map(str::to_owned)
+            .collect();
+        if !stale.is_empty() {
+            for id in stale {
+                self.invalidate(&id);
+            }
             scene = self.layout(width, height);
         }
         let colors = self.colors();
@@ -1634,6 +1714,15 @@ impl App {
             // Indexed nodes contain no children. A registered composite owns its
             // subtree, so materialize that subtree only when its cache is dirty.
             let model = self.tree.subtree(&node.id).unwrap_or_else(|| node.clone());
+            if node.role == "status.indicators" {
+                if model.children.iter().any(|child| {
+                    child.role == "indicator.activity" && indicator_value(child) != "ready"
+                }) {
+                    self.moving_indicators.insert(node.id.clone());
+                } else {
+                    self.moving_indicators.remove(&node.id);
+                }
+            }
             match node.role.as_str() {
                 "status.indicators" => self.indicators(&model, x, y, width, theme, scene),
                 "message.group.footer" => self.group_footer(&model, x, y, width, theme, scene),
@@ -2078,18 +2167,285 @@ fn text(x: f32, y: f32, value: &str, style: Style) -> Op {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_running_turn_keeps_the_window_animating() {
-        let mut app = App::new(Node::section("session"));
-        assert!(!app.animating(), "an idle view animates nothing");
-        app.set_view(Node::section("session").child(Node::section("turn").id("turn")));
-        assert!(app.animating(), "a running turn stops animating");
+    fn only_a_painted_moving_indicator_animates() {
+        let mut app = App::new(
+            Node::section("session")
+                .id("session")
+                .child(Node::section("turn").id("turn")),
+        );
+        app.frame_at(640, 480, Duration::ZERO);
+        assert!(
+            !app.animating(),
+            "a turn without a painted indicator is idle"
+        );
+        app.set_view(
+            Node::section("session").id("session").child(
+                Node::section("status.indicators").id("status").child(
+                    Node::new(
+                        "indicator.activity",
+                        Kind::Status {
+                            text: "ready".into(),
+                        },
+                    )
+                    .id("activity"),
+                ),
+            ),
+        );
+        app.frame_at(640, 480, Duration::ZERO);
+        assert!(!app.animating(), "ready is not moving");
+        app.observed(&DocumentUpdate::Changed {
+            tree: &[ViewOp::Replace {
+                id: "activity".into(),
+                node: Node::new(
+                    "indicator.activity",
+                    Kind::Status {
+                        text: "working".into(),
+                    },
+                )
+                .id("activity"),
+            }],
+            live: &[],
+            reset_live: false,
+        })
+        .unwrap();
+        assert!(!app.animating(), "an invalidated owner is not yet painted");
+        app.frame_at(640, 480, Duration::ZERO);
+        assert!(app.animating());
+    }
+
+    #[test]
+    fn elapsed_pulse_skips_wraps_and_preserves_unrelated_owners() {
+        let mut app = App::new(
+            Node::section("session").id("session").children([
+                Node::section("status.indicators").id("status").child(
+                    Node::new(
+                        "indicator.activity",
+                        Kind::Status {
+                            text: "working".into(),
+                        },
+                    )
+                    .id("activity"),
+                ),
+                Node::text("message.user", [Span::plain("retained")]).id("message"),
+            ]),
+        );
+        let ms = Duration::from_millis;
+        app.frame_at(640, 480, ms(0));
+        let status = app.cache["status"].ops.clone();
+        let root = app.cache["session"].ops.clone();
+        let message = app.cache["message"].ops.clone();
+        let pulse = |ops: &[Op]| -> String {
+            fn collect(ops: &[Op], result: &mut String) {
+                for op in ops {
+                    match op {
+                        Op::Text { text, .. } => result.push_str(text),
+                        Op::Group { ops, .. } => collect(ops, result),
+                        _ => {}
+                    }
+                }
+            }
+            let mut result = String::new();
+            collect(ops, &mut result);
+            result
+        };
+        let first = pulse(&status);
+        let scene = app.frame_at(640, 480, ms(159));
+        assert_eq!(app.tick, 0);
+        assert!(Arc::ptr_eq(&status, &app.cache["status"].ops));
+        assert_eq!(app.rendered_nodes, 0);
+        assert!(scene.ops.iter().any(|op| matches!(op, Op::Group { .. })));
+
+        app.frame_at(640, 480, ms(320)); // Skip phase 1.
+        assert_eq!(app.tick, 2);
+        assert!(!Arc::ptr_eq(&status, &app.cache["status"].ops));
+        assert!(!Arc::ptr_eq(&root, &app.cache["session"].ops));
+        assert_ne!(first, pulse(&app.cache["status"].ops));
+        assert!(Arc::ptr_eq(&message, &app.cache["message"].ops));
+        let phase_two = app.cache["status"].ops.clone();
+        app.frame_at(640, 480, ms(960)); // Wrap to phase 2, no invalidation.
+        assert_eq!(app.tick, 2);
+        assert!(Arc::ptr_eq(&phase_two, &app.cache["status"].ops));
+        app.frame_at(640, 480, ms(1120));
+        assert_eq!(app.tick, 3);
+        assert!(!Arc::ptr_eq(&phase_two, &app.cache["status"].ops));
+        assert!(Arc::ptr_eq(&message, &app.cache["message"].ops));
+        app.frame_at(640, 480, ms(1280));
+        assert_eq!(app.tick, 0);
+        assert_eq!(first, pulse(&app.cache["status"].ops));
+    }
+
+    #[test]
+    fn hidden_cached_indicator_does_not_keep_the_window_awake() {
+        let mut app = App::new(
+            Node::section("session").id("session").child(
+                Node::new(
+                    "details",
+                    Kind::Collapsible {
+                        summary: vec![Span::plain("Details")],
+                    },
+                )
+                .id("details")
+                .child(
+                    Node::section("status.indicators").id("status").child(
+                        Node::new(
+                            "indicator.activity",
+                            Kind::Status {
+                                text: "working".into(),
+                            },
+                        )
+                        .id("activity"),
+                    ),
+                ),
+            ),
+        );
+        app.frame_at(640, 480, Duration::ZERO);
+        assert!(!app.animating());
+        app.expanded.insert("details".into());
+        app.invalidate("details");
+        app.frame_at(640, 480, Duration::ZERO);
+        assert!(app.animating());
+        let old = app.cache["status"].ops.clone();
+        app.expanded.remove("details");
+        app.invalidate("details");
+        app.frame_at(640, 480, Duration::from_millis(160));
+        assert!(!app.animating());
+        assert!(Arc::ptr_eq(&old, &app.cache["status"].ops));
+        app.expanded.insert("details".into());
+        app.invalidate("details");
+        app.frame_at(640, 480, Duration::from_millis(320));
+        assert!(app.animating());
+        assert!(!Arc::ptr_eq(&old, &app.cache["status"].ops));
+    }
+
+    #[test]
+    fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
+        let mut transcript: Vec<_> = (0..70)
+            .map(|i| {
+                Node::text(
+                    "message.user",
+                    [Span::plain(format!(
+                        "before {i}: {}",
+                        "long text ".repeat(i % 5 + 8)
+                    ))],
+                )
+                .id(format!("before.{i}"))
+            })
+            .collect();
+        transcript.push(
+            Node::section("status.indicators").id("status").child(
+                Node::new(
+                    "indicator.activity",
+                    Kind::Status {
+                        text: "working".into(),
+                    },
+                )
+                .id("activity"),
+            ),
+        );
+        transcript.extend((0..70).map(|i| {
+            Node::text("message.user", [Span::plain(format!("after {i}"))]).id(format!("after.{i}"))
+        }));
+        let mut app = App::new(
+            Node::section("session").id("session").child(
+                Node::section("transcript")
+                    .id("transcript")
+                    .children(transcript),
+            ),
+        );
+        let size = Size {
+            width: 640,
+            height: 240,
+        };
+        app.frame_at(size.width, size.height, Duration::ZERO);
+        let status = app.cache["status"].ops.clone();
+        let before = app.cache["before.0"].ops.clone();
+        let after = app.cache["after.0"].ops.clone();
+        let bounds = app.cache["session"].indicators[0].clone();
+        assert_eq!(bounds.id, "status");
+        assert!(bounds.top > size.height as f32);
+        assert!(bounds.bottom < app.content_height - size.height as f32);
+        assert!(
+            !app.animating(),
+            "follow scroll leaves the status above the viewport"
+        );
+        assert!(
+            app.drive(Event::Redraw(size), Duration::from_millis(160))
+                .deadline
+                .is_none()
+        );
+        assert_eq!(app.rendered_nodes, 0);
+        assert!(Arc::ptr_eq(&status, &app.cache["status"].ops));
+
+        // Intersection uses the group's actual top and height, including nested groups.
+        let below = 20.0 + bounds.top - size.height as f32;
+        app.scroll(below - app.scroll);
+        assert!(!app.animating());
+        app.scroll(1.0);
+        assert!(app.animating());
+        let above = 20.0 + bounds.bottom;
+        app.scroll(above - app.scroll);
+        assert!(!app.animating());
+        app.scroll(-1.0);
+        assert!(app.animating());
+
+        // Center on the actual cached group placement, rather than a tree index.
+        let scroll_to_status = 20.0 + bounds.top - 80.0;
+        app.scroll(scroll_to_status - app.scroll);
+        assert!(
+            app.animating(),
+            "wheel scrolling updates visibility immediately"
+        );
+        assert!(
+            app.drive(Event::Redraw(size), Duration::from_millis(320))
+                .deadline
+                .is_some()
+        );
+        assert!(!Arc::ptr_eq(&status, &app.cache["status"].ops));
+        let visible = app.cache["status"].ops.clone();
+        assert!(Arc::ptr_eq(&before, &app.cache["before.0"].ops));
+        assert!(Arc::ptr_eq(&after, &app.cache["after.0"].ops));
+
+        app.scroll(100_000.0);
+        assert!(!app.animating());
+        assert!(
+            app.drive(Event::Redraw(size), Duration::from_millis(480))
+                .deadline
+                .is_none()
+        );
+        assert_eq!(app.rendered_nodes, 0);
+        assert!(Arc::ptr_eq(&visible, &app.cache["status"].ops));
+        app.scroll(scroll_to_status - app.scroll);
+        assert!(
+            app.drive(Event::Redraw(size), Duration::from_millis(640))
+                .deadline
+                .is_some()
+        );
+        assert!(!Arc::ptr_eq(&visible, &app.cache["status"].ops));
+        assert!(Arc::ptr_eq(&before, &app.cache["before.0"].ops));
+        assert!(Arc::ptr_eq(&after, &app.cache["after.0"].ops));
+    }
+
+    #[test]
+    fn idle_repaints_never_invalidate_retained_owners() {
+        let mut app = App::new(
+            Node::section("session")
+                .id("session")
+                .child(Node::text("message.user", [Span::plain("idle")]).id("message")),
+        );
+        app.frame_at(640, 480, Duration::ZERO);
+        let owner = app.cache["message"].ops.clone();
+        app.frame_at(640, 480, Duration::from_secs(10));
+        assert!(!app.animating());
+        assert_eq!(app.rendered_nodes, 0);
+        assert!(Arc::ptr_eq(&owner, &app.cache["message"].ops));
     }
 
     #[test]
     fn changing_local_theme_preserves_drafts_and_rebuilds_cached_colors() {
         let mut app = App::new(form("panel.input", FieldKind::Inline));
         app.frame(640, 480);
-        app.key(Key::Text("private draft".into()));
+        app.drive(Event::Text("private draft".into()), Duration::ZERO)
+            .commands;
         let dark = app.frame(640, 480);
         app.set_light(true);
         let light = app.frame(640, 480);
@@ -2118,13 +2474,15 @@ mod tests {
             app.picker.as_ref().unwrap().selected().unwrap().value,
             "clear"
         );
-        app.key(Key::Text("mod".into()));
+        app.drive(Event::Text("mod".into()), Duration::ZERO)
+            .commands;
         assert_eq!(app.picker.as_ref().unwrap().matches().len(), 1);
         assert!(app.key(Key::Enter { newline: false }).is_empty());
         assert_eq!(app.field_text("compose", "prompt"), Some("/model "));
         assert!(app.picker.is_none());
         app.key(Key::Commands);
-        app.key(Key::Text("zzzz".into()));
+        app.drive(Event::Text("zzzz".into()), Duration::ZERO)
+            .commands;
         assert!(app.key(Key::Enter { newline: false }).is_empty());
         assert!(app.picker.is_some());
         app.key(Key::Escape);
@@ -2135,7 +2493,8 @@ mod tests {
         let mut app = App::new(form("form", FieldKind::Inline));
         app.frame(900, 720);
         app.key(Key::Commands);
-        app.key(Key::Text("query".into()));
+        app.drive(Event::Text("query".into()), Duration::ZERO)
+            .commands;
         assert!(app.pointer(80.0, 55.0, false).is_empty());
         assert!(app.key(Key::Enter { newline: false }).is_empty());
         let scene = app.frame(900, 720);
@@ -2273,14 +2632,19 @@ mod tests {
             node: "composer".into(),
             field: "prompt".into(),
         });
-        app.key(Key::Text("new draft".into()));
+        app.drive(Event::Text("new draft".into()), Duration::ZERO)
+            .commands;
         app.report(
             "Status".into(),
             Value::map([("needs_input", Value::Bool(true))]),
         );
         assert!(
-            app.key(Key::Text("must not reach composer".into()))
-                .is_empty()
+            app.drive(
+                Event::Text("must not reach composer".into()),
+                Duration::ZERO
+            )
+            .commands
+            .is_empty()
         );
         let scene = app.frame(800, 600);
         assert!(any_op(
@@ -2321,7 +2685,8 @@ mod tests {
             node: "one".into(),
             field: "value".into(),
         });
-        app.key(Key::Text("private draft".into()));
+        app.drive(Event::Text("private draft".into()), Duration::ZERO)
+            .commands;
         app.set_view(view);
         assert_eq!(app.field_text("one", "value"), Some("private draft"));
         let sent = app.submit("two", "answer");
@@ -2331,13 +2696,45 @@ mod tests {
         assert_eq!(app.field_text("one", "value"), Some("private draft"));
     }
     #[test]
+    fn committed_text_types_once_and_special_keys_do_not_insert_text() {
+        let mut app = App::new(form("one", FieldKind::Inline));
+        assert_eq!(
+            app.focus,
+            Some(Control::Field {
+                node: "one".into(),
+                field: "value".into()
+            })
+        );
+        assert!(
+            app.drive(Event::Text("hé λ".into()), Duration::ZERO)
+                .commands
+                .is_empty()
+        );
+        assert_eq!(app.field_text("one", "value"), Some("hé λ"));
+        assert!(
+            app.drive(Event::Key(Key::Left), Duration::ZERO)
+                .commands
+                .is_empty()
+        );
+        assert!(
+            app.drive(Event::Text("!".into()), Duration::ZERO)
+                .commands
+                .is_empty()
+        );
+        assert_eq!(app.field_text("one", "value"), Some("hé !λ"));
+        app.drive(Event::Key(Key::SelectAll), Duration::ZERO);
+        app.drive(Event::Text("once".into()), Duration::ZERO);
+        assert_eq!(app.field_text("one", "value"), Some("once"));
+    }
+    #[test]
     fn boolean_keyboard_input_cannot_produce_invalid_values() {
         let mut app = App::new(form("one", FieldKind::Bool));
-        app.key(Key::Text("nonsense".into()));
+        app.drive(Event::Text("nonsense".into()), Duration::ZERO)
+            .commands;
         assert_eq!(app.field_text("one", "value"), Some(""));
-        app.key(Key::Text(" ".into()));
+        app.drive(Event::Text(" ".into()), Duration::ZERO).commands;
         assert_eq!(app.field_text("one", "value"), Some("true"));
-        app.key(Key::Text(" ".into()));
+        app.drive(Event::Text(" ".into()), Duration::ZERO).commands;
         assert_eq!(app.field_text("one", "value"), Some("false"));
     }
     #[test]
@@ -2366,7 +2763,8 @@ mod tests {
             node: "attachment".into(),
             action: "attachment.save".into(),
         });
-        app.key(Key::Text("/tmp/my photo.png".into()));
+        app.drive(Event::Text("/tmp/my photo.png".into()), Duration::ZERO)
+            .commands;
         assert_eq!(
             app.key(Key::Enter { newline: false }),
             vec![Command::Save {
@@ -2426,8 +2824,10 @@ mod tests {
             |op| matches!(op,Op::Rect {width,height,..} if *width==80.0 && *height==10.0)
         ));
         assert!(app.rows.len() > 6, "long table cell must wrap");
-        let raster = crate::paint::raster(&scene, Color::Rgb(20, 22, 26)).unwrap();
-        assert!(raster.pixels().any(|pixel| pixel.0 == [255, 0, 0, 255]));
+        assert!(any_op(
+            &scene.ops,
+            |op| matches!(op, Op::Image { image, .. } if image.get_pixel(0, 0).0 == [255, 0, 0, 255])
+        ));
     }
 
     #[test]
@@ -2501,9 +2901,11 @@ mod tests {
             node: "image".into(),
             action: "attachment.save".into(),
         });
-        app.key(Key::Text("/tmp/".into()));
+        app.drive(Event::Text("/tmp/".into()), Duration::ZERO)
+            .commands;
         app.set_view(view);
-        app.key(Key::Text("photo.png".into()));
+        app.drive(Event::Text("photo.png".into()), Duration::ZERO)
+            .commands;
         assert_eq!(
             app.key(Key::Enter { newline: false }),
             vec![Command::Save {
@@ -2521,7 +2923,7 @@ mod tests {
         assert_eq!(app.selected_text(), "h");
     }
     #[test]
-    fn deterministic_raster_oracle_and_unchanged_frames_do_no_layout() {
+    fn deterministic_scene_and_unchanged_frames_do_no_layout() {
         for owners in [10, 1000] {
             let view = Node::section("session").id("session").child(
                 Node::section("transcript")
@@ -2532,61 +2934,48 @@ mod tests {
                     })),
             );
             let mut app = App::new(view.clone());
-            let mut hashes = std::collections::BTreeSet::new();
+            let mut first = None;
             for _ in 0..6 {
                 app.set_view(view.clone());
                 let scene = app.frame(800, 600);
-                let bytes = crate::paint::png(&scene, Color::Rgb(20, 22, 26)).unwrap();
-                hashes.insert(bytes);
+                if let Some(expected) = &first {
+                    assert_eq!(&scene, expected, "scene oracle is not deterministic");
+                } else {
+                    first = Some(scene);
+                }
             }
-            assert_eq!(hashes.len(), 1, "render oracle is not deterministic");
             app.frame(800, 600);
             assert_eq!(app.rendered_nodes, 0);
         }
     }
     #[test]
     fn scoped_document_transaction_settles_live_text_without_rebuilding_history() {
-        use misa_client::document::Update;
-        use misa_proto::{
-            observation::Document,
-            sync::{Stream, Version},
-        };
-        use misa_protocol::observation::{Applied, MemberChange};
+        use misa_proto::sync::Stream;
         for owners in [10, 1000] {
             let view = protocol_view(owners);
             let mut app = App::new(Node::section("empty"));
-            app.observed(&Update::Reset(Document {
-                version: Version {
-                    epoch: "test".into(),
-                    rev: 0,
-                },
-                tree: view.clone(),
-                streams: vec![Stream {
+            app.observed(&DocumentUpdate::Reset {
+                tree: &view,
+                streams: &[Stream {
                     id: "answer.text".into(),
                     role: "message.assistant".into(),
                     text: "é".into(),
                 }],
-            }))
+            })
             .unwrap();
             app.frame(800, 600);
             let retained = app.cache["message.0"].ops.clone();
             let answer = Node::text("message.assistant", [Span::plain("é終")]).id("answer");
-            let update = Update::Changed {
-                member: "body".into(),
-                applied: Arc::new(Applied::Changed(std::collections::BTreeMap::from([(
-                    "body".into(),
-                    MemberChange::Document {
-                        tree: vec![ViewOp::Insert {
-                            parent: "transcript".into(),
-                            before: None,
-                            node: answer.clone(),
-                        }],
-                        live: vec![StreamUpdate::End {
-                            id: "answer.text".into(),
-                        }],
-                        reset_live: false,
-                    },
-                )]))),
+            let update = DocumentUpdate::Changed {
+                tree: &[ViewOp::Insert {
+                    parent: "transcript".into(),
+                    before: None,
+                    node: answer.clone(),
+                }],
+                live: &[StreamUpdate::End {
+                    id: "answer.text".into(),
+                }],
+                reset_live: false,
             };
             app.observed(&update).unwrap();
             assert!(app.streams.is_empty());
@@ -2600,10 +2989,7 @@ mod tests {
             let mut expected = view;
             expected.children[0].children.push(answer);
             let mut cold = App::new(expected);
-            assert_eq!(
-                crate::paint::raster(&scene, Color::Rgb(20, 22, 26)).unwrap(),
-                crate::paint::raster(&cold.frame(800, 600), Color::Rgb(20, 22, 26)).unwrap()
-            );
+            assert_eq!(scene, cold.frame(800, 600));
         }
     }
     fn protocol_view(owners: usize) -> Node {
@@ -2617,7 +3003,7 @@ mod tests {
         )
     }
     // Independent cold tree/materialization oracle; no protocol cursor or wire adapter.
-    fn cold_pixels(
+    fn cold_scene(
         app: &mut App,
         tree: &misa_proto::sync::IndexedTree,
         streams: &[misa_proto::sync::Stream],
@@ -2642,10 +3028,7 @@ mod tests {
         }
         let scene = app.frame(800, 600);
         let expected = App::new(view).frame(800, 600);
-        assert_eq!(
-            crate::paint::raster(&scene, Color::Rgb(20, 22, 26)).unwrap(),
-            crate::paint::raster(&expected, Color::Rgb(20, 22, 26)).unwrap()
-        );
+        assert_eq!(scene, expected);
     }
     fn observed_changes(
         app: &mut App,
@@ -2653,18 +3036,10 @@ mod tests {
         live: Vec<misa_proto::sync::StreamUpdate>,
         reset_live: bool,
     ) {
-        app.observed(&misa_client::document::Update::Changed {
-            member: "conversation".into(),
-            applied: Arc::new(misa_protocol::observation::Applied::Changed(
-                BTreeMap::from([(
-                    "conversation".into(),
-                    misa_protocol::observation::MemberChange::Document {
-                        tree,
-                        live,
-                        reset_live,
-                    },
-                )]),
-            )),
+        app.observed(&DocumentUpdate::Changed {
+            tree: &tree,
+            live: &live,
+            reset_live,
         })
         .unwrap();
     }
@@ -2712,7 +3087,7 @@ mod tests {
                     &app.cache[&format!("message.{index}")].ops
                 ));
             }
-            cold_pixels(&mut app, &tree, &[stream.clone()]);
+            cold_scene(&mut app, &tree, &[stream.clone()]);
             let op = ViewOp::Replace {
                 id: "message.0".into(),
                 node: Node::text("message", [Span::plain("changed")]).id("message.0"),
@@ -2727,7 +3102,7 @@ mod tests {
                     &app.cache[&format!("message.{index}")].ops
                 ));
             }
-            cold_pixels(&mut app, &tree, &[stream]);
+            cold_scene(&mut app, &tree, &[stream]);
         }
     }
     #[test]
@@ -2749,7 +3124,7 @@ mod tests {
             }],
             true,
         );
-        cold_pixels(&mut app, &tree, &[stream.clone()]);
+        cold_scene(&mut app, &tree, &[stream.clone()]);
         let ops = vec![
             ViewOp::Insert {
                 parent: "transcript".into(),
@@ -2764,7 +3139,7 @@ mod tests {
             tree.apply(op).unwrap();
         }
         observed_changes(&mut app, ops, vec![], false);
-        cold_pixels(&mut app, &tree, &[stream]);
+        cold_scene(&mut app, &tree, &[stream]);
         observed_changes(
             &mut app,
             vec![],
@@ -2773,8 +3148,68 @@ mod tests {
             }],
             false,
         );
-        cold_pixels(&mut app, &tree, &[]);
+        cold_scene(&mut app, &tree, &[]);
     }
+    #[test]
+    fn headless_driver_uses_fake_clock_and_never_presents() {
+        use misa_window_core::Clock;
+        struct FakeClock(Duration);
+        impl Clock for FakeClock {
+            fn elapsed(&self) -> Duration {
+                self.0
+            }
+        }
+        let mut clock = FakeClock(Duration::ZERO);
+        let mut app = App::new(
+            Node::section("status.indicators").id("status").child(
+                Node::new(
+                    "indicator.activity",
+                    Kind::Status {
+                        text: "working".into(),
+                    },
+                )
+                .id("activity"),
+            ),
+        );
+        let size = Size {
+            width: 320,
+            height: 200,
+        };
+        let resize = app.drive(Event::Resize(size), clock.elapsed());
+        assert!(resize.redraw && resize.frame.is_none());
+        let first = app.drive(Event::Redraw(size), clock.elapsed());
+        assert_eq!(first.deadline, Some(PULSE_PERIOD));
+        assert_eq!(first.frame.unwrap().width, 320.0);
+        clock.0 = Duration::from_millis(160);
+        assert_eq!(
+            app.drive(Event::Redraw(size), clock.elapsed()).deadline,
+            Some(Duration::from_millis(320))
+        );
+        assert!(
+            app.drive(Event::Text("hello".into()), clock.elapsed())
+                .redraw
+        );
+        assert!(
+            app.drive(Event::Theme { light: true }, clock.elapsed())
+                .redraw
+        );
+        assert!(
+            app.drive(
+                Event::Pointer {
+                    x: 0.0,
+                    y: 0.0,
+                    dragging: false
+                },
+                clock.elapsed()
+            )
+            .redraw
+        );
+        assert!(
+            app.drive(Event::Wheel { delta: 12.0 }, clock.elapsed())
+                .redraw
+        );
+    }
+
     #[test]
     fn editing_a_field_does_not_relayout_the_transcript() {
         let view = Node::section("session")
@@ -2788,7 +3223,8 @@ mod tests {
         let mut app = App::new(view);
         app.frame(800, 600);
         let owner = app.cache["transcript"].ops.clone();
-        app.key(Key::Text("draft".into()));
+        app.drive(Event::Text("draft".into()), Duration::ZERO)
+            .commands;
         app.frame(800, 600);
         assert_eq!(app.rendered_nodes, 2);
         assert!(Arc::ptr_eq(&owner, &app.cache["transcript"].ops));

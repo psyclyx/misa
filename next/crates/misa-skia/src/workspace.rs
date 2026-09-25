@@ -7,10 +7,76 @@ use crate::{
 use misa_client::request::Model;
 use misa_proto::{
     directory::Entry,
-    view::{Action, ActionOn, Field, FieldKind, Kind, Node, Span},
+    view::{Action as ViewAction, ActionOn, Field, FieldKind, Kind, Node, Span},
 };
 use misa_value::Value;
 use std::collections::BTreeMap;
+
+/// Actions produced by host-owned workspace controls. UI App effects are kept
+/// distinct so relationship and request workflow never leaks into the UI crate.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Action {
+    Ui(Command),
+    Appearance(crate::appearance::Choice),
+    InvokeInstalled {
+        command: String,
+        input: Value,
+    },
+    Form {
+        action: String,
+        drafts: BTreeMap<String, String>,
+    },
+    Request {
+        id: String,
+        generation: i64,
+        action: String,
+        fields: BTreeMap<String, Value>,
+    },
+    Presentation {
+        id: String,
+        choice: PresentationChoice,
+    },
+    Connect(String),
+    Discover,
+    Disconnect(String),
+    Select {
+        daemon: String,
+        scope: misa_proto::observation::Scope,
+    },
+    SelectRequest {
+        daemon: String,
+        scope: misa_proto::observation::Scope,
+        request: String,
+        generation: i64,
+    },
+    CloseInstance {
+        daemon: String,
+        scope: misa_proto::observation::Scope,
+    },
+    PrepareWork {
+        daemon: String,
+        scope: misa_proto::observation::Scope,
+        id: String,
+        command: String,
+    },
+    DaemonInvoke {
+        daemon: String,
+        scope: Option<misa_proto::observation::Scope>,
+        command: String,
+        input: Value,
+    },
+    Archive {
+        daemon: String,
+        prefix: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PresentationChoice {
+    Hidden,
+    Auto,
+    Variant(String),
+}
 
 #[derive(Clone)]
 pub struct DaemonChoice {
@@ -76,12 +142,20 @@ mod tests {
             node: "request.form".into(),
             field: "value".into(),
         });
-        app.key(Key::Text("not-for-the-wire-yet".into()));
+        app.drive(
+            misa_window_core::Event::Text("not-for-the-wire-yet".into()),
+            std::time::Duration::ZERO,
+        );
         assert_eq!(
             app.field_text("request.form", "value"),
             Some("not-for-the-wire-yet")
         );
-        assert!(local.key(Key::Escape).unwrap().is_empty());
+        assert!(
+            local
+                .input(misa_window_core::Event::Key(Key::Escape))
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(local.pending_requests(), 1);
         local.open_requests();
         assert_eq!(
@@ -132,9 +206,9 @@ mod tests {
                 node: "request.form".into(),
                 field: id.into(),
             });
-            local.key(Key::Text(value.into()));
+            local.input(misa_window_core::Event::Text(value.into()));
         }
-        local.key(Key::Escape);
+        local.input(misa_window_core::Event::Key(Key::Escape));
         local.open_requests();
         assert_eq!(
             local.app().unwrap().field_text("request.form", "count"),
@@ -144,6 +218,23 @@ mod tests {
             local.app().unwrap().field_text("request.form", "name"),
             Some("example")
         );
+    }
+
+    #[test]
+    fn workspace_converts_its_own_actions_without_retyping_app_effects() {
+        let mut local = Local::default();
+        local.open_chooser();
+        assert_eq!(
+            local.convert(vec![Command::Copy("text".into())]),
+            vec![Action::Ui(Command::Copy("text".into()))]
+        );
+        let discover = Command::Intent(misa_kit::intent::Intent::Action {
+            node: "discover".into(),
+            action: "discover".into(),
+            fields: vec![],
+            args: Value::Null,
+        });
+        assert_eq!(local.convert(vec![discover]), vec![Action::Discover]);
     }
 
     #[test]
@@ -162,7 +253,7 @@ mod tests {
                 ]),
             })]);
             assert!(
-                matches!(&commands[..], [Command::Select { daemon: actual, scope }] if actual == daemon && scope.incarnation == "incarnation")
+                matches!(&commands[..], [Action::Select { daemon: actual, scope }] if actual == daemon && scope.incarnation == "incarnation")
             );
             local.open_chooser();
         }
@@ -218,7 +309,12 @@ mod tests {
             node: "local.form".into(),
             field: "quantity".into(),
         });
-        assert!(local.key(Key::Text("3".into())).unwrap().is_empty());
+        assert!(
+            local
+                .input(misa_window_core::Event::Text("3".into()))
+                .unwrap()
+                .is_empty()
+        );
         let commands = local.convert(vec![Command::Intent(misa_kit::intent::Intent::Action {
             node: "local.form".into(),
             action: "submit".into(),
@@ -234,9 +330,14 @@ mod tests {
             args: Value::Null,
         })]);
         assert!(
-            matches!(&commands[..],[Command::Form{action,drafts}] if action=="pet.feed" && drafts["quantity"]=="3")
+            matches!(&commands[..],[Action::Form{action,drafts}] if action=="pet.feed" && drafts["quantity"]=="3")
         );
-        assert!(local.key(Key::Escape).unwrap().is_empty());
+        assert!(
+            local
+                .input(misa_window_core::Event::Key(Key::Escape))
+                .unwrap()
+                .is_empty()
+        );
         assert!(local.app().is_none());
         local.form(misa_client::form::Form::action(&interface, "pet.feed").unwrap());
         assert_eq!(
@@ -266,8 +367,8 @@ pub struct Local {
     pub observation: Option<misa_client::ObservationId>,
     choosing_presentations: bool,
 }
-fn action(id: &str, label: &str, args: Value, on: ActionOn) -> Action {
-    Action {
+fn action(id: &str, label: &str, args: Value, on: ActionOn) -> ViewAction {
+    ViewAction {
         id: id.into(),
         label: Some(label.into()),
         args,
@@ -739,8 +840,19 @@ impl Local {
                 .and_then(|id| self.requests.get_mut(id).map(|(_, app)| app))
         }
     }
-    pub fn frame(&mut self, width: u32, height: u32) -> Option<Scene> {
-        self.app().map(|app| app.frame(width, height))
+    pub fn frame_at(
+        &mut self,
+        width: u32,
+        height: u32,
+        elapsed: std::time::Duration,
+    ) -> Option<(Scene, Option<std::time::Duration>)> {
+        self.app().and_then(|app| {
+            let output = app.drive(
+                misa_window_core::Event::Redraw(misa_window_core::Size { width, height }),
+                elapsed,
+            );
+            output.frame.map(|scene| (scene, output.deadline))
+        })
     }
     pub fn scroll(&mut self, delta: f32) -> bool {
         if let Some(app) = self.app() {
@@ -750,22 +862,26 @@ impl Local {
             false
         }
     }
-    pub fn key(&mut self, key: Key) -> Option<Vec<Command>> {
+    pub fn input(&mut self, event: misa_window_core::Event) -> Option<Vec<Action>> {
         if self.app().is_none() {
             return None;
         }
-        if matches!(key, Key::Escape) {
+        if matches!(event, misa_window_core::Event::Key(Key::Escape)) {
             self.deactivate();
             return Some(vec![]);
         }
-        let commands = self.app().unwrap().key(key);
+        let commands = self
+            .app()
+            .unwrap()
+            .drive(event, std::time::Duration::ZERO)
+            .commands;
         Some(self.convert(commands))
     }
-    pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Option<Vec<Command>> {
+    pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Option<Vec<Action>> {
         let commands = self.app()?.pointer(x, y, dragging);
         Some(self.convert(commands))
     }
-    fn convert(&mut self, commands: Vec<Command>) -> Vec<Command> {
+    fn convert(&mut self, commands: Vec<Command>) -> Vec<Action> {
         commands
             .into_iter()
             .filter_map(|command| match command {
@@ -778,7 +894,7 @@ impl Local {
                         .map(|field| (field.id, field.value))
                         .collect();
                     match form.prepare(&drafts) {
-                        Ok((command, input)) => Some(Command::DaemonInvoke {
+                        Ok((command, input)) => Some(Action::DaemonInvoke {
                             scope: Some(form.scope.clone()),
                             daemon: daemon.clone(),
                             command,
@@ -807,7 +923,7 @@ impl Local {
                             .prepare(&drafts)
                         {
                             Ok((command, input)) => {
-                                Some(Command::InvokeInstalled { command, input })
+                                Some(Action::InvokeInstalled { command, input })
                             }
                             Err(fault) => {
                                 app.notice = fault.message;
@@ -815,7 +931,7 @@ impl Local {
                             }
                         }
                     } else {
-                        Some(Command::Form {
+                        Some(Action::Form {
                             action: id.clone(),
                             drafts,
                         })
@@ -827,7 +943,7 @@ impl Local {
                     fields,
                     ..
                 }) if self.chooser.is_some() => match action.as_str() {
-                    action if action.starts_with("appearance.") => Some(Command::Appearance(
+                    action if action.starts_with("appearance.") => Some(Action::Appearance(
                         crate::appearance::Choice::parse(args.as_str()?)?,
                     )),
                     "installed-command" => {
@@ -854,7 +970,7 @@ impl Local {
                         self.open_daemon_form(&args);
                         None
                     }
-                    "archive-search" => Some(Command::Archive {
+                    "archive-search" => Some(Action::Archive {
                         daemon: self.managing.clone()?,
                         prefix: fields
                             .iter()
@@ -862,7 +978,7 @@ impl Local {
                             .value
                             .clone(),
                     }),
-                    "work-form" => Some(Command::PrepareWork {
+                    "work-form" => Some(Action::PrepareWork {
                         daemon: self.managing.clone()?,
                         scope: misa_client::interface::decode(args.get("scope")?).ok()?,
                         id: args.get("id")?.as_str()?.into(),
@@ -872,7 +988,7 @@ impl Local {
                         let daemon = self.managing.clone()?;
                         let scope: misa_proto::observation::Scope =
                             misa_client::interface::decode(&args).ok()?;
-                        Some(Command::DaemonInvoke {
+                        Some(Action::DaemonInvoke {
                             scope: self
                                 .directories
                                 .iter()
@@ -890,21 +1006,21 @@ impl Local {
                     {
                         let id = args.get("id")?.as_str()?.to_owned();
                         let choice = match args.get("choice")?.as_str()? {
-                            "hide" => misa_client::composition::Choice::Hidden,
-                            "auto" => misa_client::composition::Choice::Auto,
-                            value => misa_client::composition::Choice::Variant(value.into()),
+                            "hide" => PresentationChoice::Hidden,
+                            "auto" => PresentationChoice::Auto,
+                            value => PresentationChoice::Variant(value.into()),
                         };
-                        Some(Command::Presentation { id, choice })
+                        Some(Action::Presentation { id, choice })
                     }
-                    "connect" => Some(Command::Connect(
+                    "connect" => Some(Action::Connect(
                         fields
                             .iter()
                             .find(|field| field.id == "target")?
                             .value
                             .clone(),
                     )),
-                    "discover" => Some(Command::Discover),
-                    "disconnect" => Some(Command::Disconnect(args.as_str()?.into())),
+                    "discover" => Some(Action::Discover),
+                    "disconnect" => Some(Action::Disconnect(args.as_str()?.into())),
                     "choose" | "attention" | "close-instance" => {
                         let get = |key| args.get(key).and_then(Value::as_str).map(str::to_owned);
                         let daemon = get("daemon")?;
@@ -913,16 +1029,16 @@ impl Local {
                             incarnation: get("incarnation")?,
                         };
                         let command = if action == "attention" {
-                            Command::SelectRequest {
+                            Action::SelectRequest {
                                 daemon,
                                 scope,
                                 request: get("request")?,
                                 generation: args.get("generation")?.as_i64()?,
                             }
                         } else if action == "choose" {
-                            Command::Select { daemon, scope }
+                            Action::Select { daemon, scope }
                         } else {
-                            Command::CloseInstance { daemon, scope }
+                            Action::CloseInstance { daemon, scope }
                         };
                         self.chooser = None;
                         Some(command)
@@ -932,7 +1048,7 @@ impl Local {
                 Command::Intent(misa_kit::intent::Intent::Action { action, fields, .. }) => {
                     let id = self.active.as_ref()?;
                     let (model, _) = self.requests.get(id)?;
-                    Some(Command::Request {
+                    Some(Action::Request {
                         id: id.clone(),
                         generation: model.generation,
                         action,
@@ -942,7 +1058,7 @@ impl Local {
                             .collect(),
                     })
                 }
-                Command::Copy(text) => Some(Command::Copy(text)),
+                Command::Copy(text) => Some(Action::Ui(Command::Copy(text))),
                 _ => None,
             })
             .collect()
@@ -1295,7 +1411,7 @@ mod lifecycle_tests {
         assert!(local.command_form);
         let result = local.convert(vec![intent("submit", Value::Null)]);
         assert!(
-            matches!(&result[..],[Command::InvokeInstalled{command,input}] if command=="plugin.custom" && input==&Value::map([]))
+            matches!(&result[..],[Action::InvokeInstalled{command,input}] if command=="plugin.custom" && input==&Value::map([]))
         );
     }
     #[test]
@@ -1312,7 +1428,7 @@ mod lifecycle_tests {
         let value = serde_json::from_value(serde_json::to_value(&scope).unwrap()).unwrap();
         let commands = local.convert(vec![intent("stop-session", value)]);
         assert!(
-            matches!(&commands[..], [Command::DaemonInvoke{daemon,command,input,..}] if daemon=="daemon-b" && command=="daemon.session.close" && input.get("incarnation").and_then(Value::as_str)==Some("old-incarnation"))
+            matches!(&commands[..], [Action::DaemonInvoke{daemon,command,input,..}] if daemon=="daemon-b" && command=="daemon.session.close" && input.get("incarnation").and_then(Value::as_str)==Some("old-incarnation"))
         );
         let mut search = intent("archive-search", Value::Null);
         if let Command::Intent(misa_kit::intent::Intent::Action { fields, .. }) = &mut search {
@@ -1327,7 +1443,7 @@ mod lifecycle_tests {
             });
         }
         assert!(
-            matches!(&local.convert(vec![search])[..],[Command::Archive{daemon,prefix}] if daemon=="daemon-b" && prefix=="history")
+            matches!(&local.convert(vec![search])[..],[Action::Archive{daemon,prefix}] if daemon=="daemon-b" && prefix=="history")
         );
     }
     #[test]
@@ -1397,11 +1513,47 @@ mod lifecycle_tests {
             node: "daemon.form".into(),
             field: "id".into(),
         });
-        local.key(Key::Text("resumed".into()));
+        local.input(misa_window_core::Event::Text("resumed".into()));
         local.directory(vec![]);
         assert_eq!(
             local.app().unwrap().field_text("daemon.form", "id"),
             Some("resumed")
         );
+    }
+}
+
+#[cfg(test)]
+mod overlay_clock_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn visible_overlay_uses_the_host_clock_and_owns_its_next_redraw() {
+        let mut local = Local::default();
+        local.report(
+            Node::section("report").id("report").child(
+                Node::section("status.indicators").id("status").child(
+                    Node::new(
+                        "indicator.activity",
+                        Kind::Status {
+                            text: "working".into(),
+                        },
+                    )
+                    .id("activity"),
+                ),
+            ),
+        );
+        let (first, deadline) = local.frame_at(320, 200, Duration::ZERO).unwrap();
+        assert_eq!(deadline, Some(Duration::from_millis(160)));
+        let (same, deadline) = local
+            .frame_at(320, 200, Duration::from_millis(159))
+            .unwrap();
+        assert_eq!(first, same);
+        assert_eq!(deadline, Some(Duration::from_millis(160)));
+        let (changed, deadline) = local
+            .frame_at(320, 200, Duration::from_millis(320))
+            .unwrap();
+        assert_ne!(first, changed);
+        assert_eq!(deadline, Some(Duration::from_millis(480)));
     }
 }

@@ -757,9 +757,11 @@ async fn save(
     };
     let blob = daemon.blobs.download(&reference).await?;
     let destination = destination.to_string();
-    tokio::task::spawn_blocking(move || crate::save::write_new(&destination, &blob.bytes))
-        .await
-        .map_err(|error| error.to_string())?
+    tokio::task::spawn_blocking(move || {
+        crate::attachment_file::write_new(&destination, &blob.bytes)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 #[async_trait::async_trait]
 impl Session for ScopedRemote {

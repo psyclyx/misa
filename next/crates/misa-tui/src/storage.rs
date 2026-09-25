@@ -1,9 +1,12 @@
-//! The terminal's filesystem adapter for the kit's presentation memory.
+//! The connected terminal's filesystem adapter for presentation memory.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::prefs::Storage;
+use misa_tui_ui::{
+    PreferencePersistence,
+    prefs::{Prefs, Storage},
+};
 
 pub struct File {
     path: PathBuf,
@@ -14,11 +17,7 @@ impl File {
     }
 
     /// Merge only this surface's changed settings under a stable cross-process lock.
-    pub fn update(
-        &self,
-        before: &crate::prefs::Prefs,
-        after: &crate::prefs::Prefs,
-    ) -> Result<(), String> {
+    pub fn update(&self, before: &Prefs, after: &Prefs) -> Result<(), String> {
         let parent = self
             .path
             .parent()
@@ -39,7 +38,7 @@ impl File {
         let mut current: serde_json::Value = match self.read()? {
             Some(text) => serde_json::from_str(&text)
                 .map_err(|error| format!("Cannot merge invalid preferences: {error}"))?,
-            None => serde_json::to_value(crate::prefs::Prefs::default()).unwrap(),
+            None => serde_json::to_value(Prefs::default()).unwrap(),
         };
         let current = current
             .as_object_mut()
@@ -85,6 +84,12 @@ impl File {
             })
             .unwrap_or_else(|| PathBuf::from("."));
         state.join("misa/client.json")
+    }
+}
+
+impl PreferencePersistence for File {
+    fn update(&self, base: &Prefs, next: &Prefs) -> Result<(), String> {
+        File::update(self, base, next)
     }
 }
 
@@ -135,7 +140,6 @@ impl Storage for File {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prefs::Prefs;
 
     #[test]
     fn independent_writers_merge_drafts_from_stale_snapshots() {
@@ -173,6 +177,60 @@ mod tests {
         }
         std::fs::remove_dir_all(directory).unwrap();
     }
+    #[test]
+    fn connected_screens_merge_stale_drafts_and_reopen_the_same_path() {
+        let directory = std::env::temp_dir().join(format!(
+            "misa-screen-writers-{}-{}",
+            std::process::id(),
+            crate::test_unique_id()
+        ));
+        let path = directory.join("client.json");
+        let mut first = crate::Screen::remembering(Prefs::default(), path.clone());
+        let mut second = crate::Screen::remembering(Prefs::default(), path.clone());
+        first.enter_draft_scope("first:session:epoch".into());
+        first.editor.set_text("first draft");
+        first.save();
+        second.enter_draft_scope("second:session:epoch".into());
+        second.editor.set_text("second draft");
+        second.save();
+        assert!(first.notice.is_none());
+        assert!(second.notice.is_none());
+        let stored = Prefs::load(&File::at(path.clone()));
+        assert_eq!(stored.drafts["first:session:epoch"], "first draft");
+        assert_eq!(stored.drafts["second:session:epoch"], "second draft");
+        let mut reopened = crate::Screen::remembering(stored, path);
+        reopened.enter_draft_scope("first:session:epoch".into());
+        assert_eq!(reopened.editor.text(), "first draft");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn screen_reports_failed_saves_and_retries_from_its_original_snapshot() {
+        let directory = std::env::temp_dir().join(format!(
+            "misa-screen-failure-{}-{}",
+            std::process::id(),
+            crate::test_unique_id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("client.json");
+        std::fs::create_dir(&path).unwrap(); // A directory cannot be atomically replaced by a file.
+        let mut screen = crate::Screen::remembering(Prefs::default(), path.clone());
+        screen.editor.set_text("not yet saved");
+        screen.save();
+        assert!(
+            screen
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("client.json"))
+        );
+        std::fs::remove_dir(&path).unwrap();
+        screen.notice = None;
+        screen.save();
+        assert!(screen.notice.is_none());
+        assert_eq!(Prefs::load(&File::at(path)).draft, "not yet saved");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn a_terminal_saves_private_complete_documents_and_reports_write_failures() {
         let directory = std::env::temp_dir().join(format!("misa-storage-{}", std::process::id()));

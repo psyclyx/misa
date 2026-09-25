@@ -12,14 +12,21 @@
   libXrandr,
   libxkbcommon,
   wayland,
+  vulkan-loader,
+  mesa,
 }:
 let
   # The archive is the exact Skia build paired with skia-safe in Cargo.lock. A
   # fixed-output input keeps the crate's build script offline, including in the shell.
   binaries = fetchurl {
-    url = "https://github.com/rust-skia/skia-binaries/releases/download/0.93.1/skia-binaries-319323662b1685a112f5-x86_64-unknown-linux-gnu-jpegd-jpege-pdf-textlayout.tar.gz";
-    sha256 = "0dyzzwzm5x7z1yszqy6v541q16iha7p8qajhdqlgpwpm4sbk2z88";
+    url = "https://github.com/rust-skia/skia-binaries/releases/download/0.93.1/skia-binaries-319323662b1685a112f5-x86_64-unknown-linux-gnu-jpegd-jpege-pdf-textlayout-vulkan.tar.gz";
+    sha256 = "1n6dca3rzgjpcvjvr4czd0ivw5frlnfjrqmsqr087qvchflzynlc";
   };
+  headlessLibraries = [
+    freetype
+    fontconfig
+    vulkan-loader
+  ];
   windowLibraries = [
     libX11
     libXcursor
@@ -28,23 +35,27 @@ let
     libxkbcommon
     wayland
   ];
-in
-{
-  nativeBuildInputs = [ pkg-config ];
-  buildInputs = [
-    freetype
-    fontconfig
-  ]
-  ++ windowLibraries;
-  preCheck = ''
-    export XDG_CACHE_HOME="$TMPDIR/font-cache"
-    mkdir -p "$XDG_CACHE_HOME"
-  '';
-  env = {
+  headlessEnv = {
     SKIA_BINARIES_URL = "file://${binaries}";
     FONTCONFIG_FILE = makeFontsConf { fontDirectories = [ dejavu_fonts ]; };
     FONTCONFIG_PATH = "${fontconfig.out}/etc/fonts";
-    LD_LIBRARY_PATH = lib.makeLibraryPath windowLibraries;
+    LD_LIBRARY_PATH = lib.makeLibraryPath [ vulkan-loader ];
   };
-  inherit binaries dejavu_fonts;
+in
+{
+  nativeBuildInputs = [ pkg-config ];
+  headlessBuildInputs = headlessLibraries;
+  buildInputs = headlessLibraries ++ windowLibraries;
+  preCheck = ''
+    export XDG_CACHE_HOME="$TMPDIR/font-cache"
+    mkdir -p "$XDG_CACHE_HOME"
+    # Headless Vulkan tests use the same Ganesh path as the window, without
+    # depending on a host GPU or a display server in the build sandbox.
+    export VK_ICD_FILENAMES=${mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json
+  '';
+  inherit headlessEnv;
+  env = headlessEnv // {
+    LD_LIBRARY_PATH = lib.makeLibraryPath (headlessLibraries ++ windowLibraries);
+  };
+  inherit binaries dejavu_fonts mesa;
 }

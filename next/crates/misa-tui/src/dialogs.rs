@@ -5,6 +5,18 @@ use misa_client::request::Model;
 use misa_proto::Node;
 use misa_value::Value;
 use std::collections::BTreeMap;
+/// A connected dialog can submit to a daemon independently of the UI's key results.
+#[derive(Debug, PartialEq)]
+pub enum DialogOut {
+    Ui(KeyOut),
+    DaemonInvoke {
+        daemon: String,
+        scope: misa_proto::observation::Scope,
+        command: String,
+        input: Value,
+    },
+}
+
 #[derive(Default)]
 pub struct Dialogs {
     requests: BTreeMap<String, (Model, String)>,
@@ -150,7 +162,24 @@ impl Dialogs {
     pub fn modal(&self) -> bool {
         self.report.is_some() || self.focused()
     }
-    pub fn key(&mut self, key: &Key, settings: &DialogSettings) -> Option<KeyOut> {
+    pub fn key(&mut self, key: &Key, settings: &DialogSettings) -> Option<DialogOut> {
+        let was_form = self.form.is_some();
+        let out = self.key_ui(key, settings)?;
+        Some(match out {
+            KeyOut::Invoke { command, input } if was_form => match self.form_owner.take() {
+                Some((daemon, scope)) => DialogOut::DaemonInvoke {
+                    daemon,
+                    scope,
+                    command,
+                    input,
+                },
+                None => DialogOut::Ui(KeyOut::Invoke { command, input }),
+            },
+            out => DialogOut::Ui(out),
+        })
+    }
+
+    fn key_ui(&mut self, key: &Key, settings: &DialogSettings) -> Option<KeyOut> {
         if let Some((form, drafts, index, error)) = &mut self.form {
             if settings.matches("panel.close", key) {
                 self.form = None;
@@ -165,15 +194,7 @@ impl Dialogs {
                 _ if settings.matches("panel.submit", key) => match form.prepare(drafts) {
                     Ok((command, input)) => {
                         self.form = None;
-                        return Some(match self.form_owner.take() {
-                            Some((daemon, scope)) => KeyOut::DaemonInvoke {
-                                daemon,
-                                scope,
-                                command,
-                                input,
-                            },
-                            None => KeyOut::Invoke { command, input },
-                        });
+                        return Some(KeyOut::Invoke { command, input });
                     }
                     Err(fault) => *error = Some(fault.message),
                 },
@@ -585,7 +606,7 @@ mod tests {
         dialogs.paste("bad");
         assert!(matches!(
             dialogs.key(&Key::Submit, &DialogSettings::default()),
-            Some(KeyOut::Local)
+            Some(DialogOut::Ui(KeyOut::Local))
         ));
         assert_eq!(dialogs.request_forms["custom"].0["count"], "bad");
         dialogs.key(&Key::Escape, &DialogSettings::default());
@@ -595,7 +616,7 @@ mod tests {
         }
         dialogs.paste("7");
         assert!(
-            matches!(dialogs.key(&Key::Submit, &DialogSettings::default()),Some(KeyOut::Invoke{input,..}) if input.get("value").and_then(|value|value.get("count"))==Some(&Value::Int(7)))
+            matches!(dialogs.key(&Key::Submit, &DialogSettings::default()),Some(DialogOut::Ui(KeyOut::Invoke{input,..})) if input.get("value").and_then(|value|value.get("count"))==Some(&Value::Int(7)))
         );
         dialogs.update("custom".into(), 2, None);
         assert!(!dialogs.request_forms.contains_key("custom"));
@@ -702,7 +723,7 @@ mod tests {
         assert!(!text.contains("y Allow tool"), "{text}");
         assert!(matches!(
             dialogs.key(&Key::Char('a'), &settings),
-            Some(KeyOut::Invoke { .. })
+            Some(DialogOut::Ui(KeyOut::Invoke { .. }))
         ));
     }
 }
@@ -770,14 +791,14 @@ mod action_form_tests {
         dialogs.key(&Key::Char('x'), &DialogSettings::default());
         assert!(matches!(
             dialogs.key(&Key::Submit, &DialogSettings::default()),
-            Some(KeyOut::Local)
+            Some(DialogOut::Ui(KeyOut::Local))
         ));
         assert!(dialogs.focused());
         dialogs.key(&Key::Backspace, &DialogSettings::default());
         dialogs.paste("3");
         dialogs.key(&Key::Tab, &DialogSettings::default());
         dialogs.paste("Misa");
-        let Some(KeyOut::Invoke { command, input }) =
+        let Some(DialogOut::Ui(KeyOut::Invoke { command, input })) =
             dialogs.key(&Key::Submit, &DialogSettings::default())
         else {
             panic!("valid typed form submits")
@@ -796,7 +817,7 @@ mod action_form_tests {
                 ("name".into(), "other".into()),
             ]),
         );
-        let Some(KeyOut::DaemonInvoke {
+        let Some(DialogOut::DaemonInvoke {
             daemon,
             scope: submitted,
             input,
@@ -808,6 +829,8 @@ mod action_form_tests {
         assert_eq!(daemon, "peer-a");
         assert_eq!(submitted, scope);
         assert_eq!(input.get("count"), Some(&Value::Int(7)));
+        assert!(!dialogs.focused());
+        assert!(dialogs.form_owner.is_none());
     }
 }
 

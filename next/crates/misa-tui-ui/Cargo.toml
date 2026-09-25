@@ -1,0 +1,21 @@
+[package]
+name = "misa-tui-ui"
+description = "Terminal screen, retained document, and painter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+image.workspace = true
+base64.workspace = true
+crossterm.workspace = true
+misa-kit = { path = "../misa-kit" }
+misa-linear.workspace = true
+misa-proto.workspace = true
+misa-render.workspace = true
+misa-lines.workspace = true
+misa-value.workspace = true
+tokio.workspace = true
+serde_json.workspace = true

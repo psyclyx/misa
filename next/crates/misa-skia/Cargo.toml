@@ -1,28 +1,28 @@
 [package]
 name = "misa-skia"
-description = "The pixel frontend: the semantic tree as a scene, and as a raster"
+description = "Production Skia window and PNG export host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-futures.workspace = true
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
-misa-transport.workspace = true
 misa-client.workspace = true
-misa-protocol.workspace = true
+misa-kit = { path = "../misa-kit" }
 misa-proto.workspace = true
+misa-protocol.workspace = true
 misa-render.workspace = true
-misa-syntax.workspace = true
+misa-skia-ui = { path = "../misa-skia-ui" }
+misa-skia-vulkan = { path = "../misa-skia-vulkan", features = ["window"] }
+misa-window-core = { path = "../misa-window-core" }
+misa-transport.workspace = true
 misa-value.workspace = true
 serde_json.workspace = true
-skia-safe.workspace = true
+raw-window-handle = "0.6"
 tokio.workspace = true
 winit = "0.30.13"
-softbuffer = "0.4.8"
-arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
-misa-kit = { path = "../misa-kit" }
 
 [target.'cfg(unix)'.dependencies]
 misa-local-start = { path = "../misa-local-start" }
