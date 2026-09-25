@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 crossterm.workspace = true
-misa-tui-ui = { path = "../misa-tui-ui" }
+misa-tui-app = { path = "../misa-tui-app" }
 misa-kit = { path = "../misa-kit" }
 misa-proto.workspace = true
 misa-render.workspace = true

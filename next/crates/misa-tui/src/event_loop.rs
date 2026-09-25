@@ -751,7 +751,7 @@ mod tests {
             started: started.clone(),
         };
         let mut screen = ConnectedScreen::new(80, 24);
-        screen.declare(&misa_tui_ui::Catalog {
+        screen.declare(&misa_tui_app::Catalog {
             commands: vec![
                 misa_kit::intent::Command::new("model", "Model", "choose").arg(
                     misa_proto::preparation::Arg::new("model", "Model")
@@ -1312,7 +1312,7 @@ mod scope_tests {
             changed,
         };
         let mut screen = ConnectedScreen::new(80, 24);
-        let original = misa_tui_ui::Catalog {
+        let original = misa_tui_app::Catalog {
             commands: vec![
                 Command::new("model", "Model", "choose")
                     .arg(Arg::new("model", "Model").required().from("models")),
@@ -1457,7 +1457,7 @@ mod scope_tests {
             changed,
         };
         let mut screen = ConnectedScreen::new(80, 24);
-        screen.declare(&misa_tui_ui::Catalog {
+        screen.declare(&misa_tui_app::Catalog {
             commands: vec![
                 misa_kit::intent::Command::new("actions", "Actions", "Actions"),
                 misa_kit::intent::Command::new("action", "Action", "Action")

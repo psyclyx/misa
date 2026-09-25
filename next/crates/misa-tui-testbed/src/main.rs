@@ -3,7 +3,7 @@
 //! n/Right/Tab and p/Left cycle scenes; j/k scroll; t changes theme; Ctrl-Q quits.
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use misa_proto::view::{Action, ActionOn, Field, FieldKind, Kind, Node, Span, State};
-use misa_tui_ui::{
+use misa_tui_app::{
     KeyOut, Screen,
     offline::{self, Control, Controller, Update},
 };
@@ -206,11 +206,11 @@ impl Controller for Testbed {
             }
             KeyCode::Char('q') | KeyCode::Esc => return Control::Quit,
             KeyCode::Char('j') | KeyCode::Down => {
-                screen.key(misa_tui_ui::Key::ScrollPage(1));
+                screen.key(misa_tui_app::Key::ScrollPage(1));
                 return Control::Consumed;
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                screen.key(misa_tui_ui::Key::ScrollPage(-1));
+                screen.key(misa_tui_app::Key::ScrollPage(-1));
                 return Control::Consumed;
             }
             _ => false,

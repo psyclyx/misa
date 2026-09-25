@@ -19,7 +19,7 @@ misa-linear.workspace = true
 misa-client.workspace = true
 misa-protocol.workspace = true
 misa-transport.workspace = true
-misa-tui-ui = { path = "../misa-tui-ui" }
+misa-tui-app = { path = "../misa-tui-app" }
 misa-proto.workspace = true
 misa-render.workspace = true
 misa-lines.workspace = true

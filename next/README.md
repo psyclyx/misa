@@ -138,7 +138,7 @@ waits for a live advertisement, and leaves the daemon running after the client e
 Nix frontend wrappers default it to the packaged daemon. No daemon flags are assumed for
 external binaries. Without `--start-local`, neither frontend launches a daemon.
 
-The terminal screen in `misa-tui-ui` and document presenter in `misa-pixel-document`
+The terminal screen in `misa-tui-app` and document presenter in `misa-pixel-document`
 are **Misa-specific application UI**, not reusable toolkits. Physical ANSI row
 painting, SGR and Kitty graphics live in `misa-terminal-ui`, which depends only
 on `misa-style`, `unicode-width`, `image` and `base64`; `misa-lines` supplies
@@ -155,7 +155,7 @@ keyed, width-wrapped rows drive the production `Viewport` and retained `Output` 
 memory, asserting ANSI diffs, anchoring, selection, follow and tiny resize without
 proto, kit, semantic rendering, a terminal or a daemon. `misa-tui-testbed` is a
 separate interactive _semantic_ document fixture (Semantic/Structured/Form) using
-`misa-tui-ui`; it is not the protocol-free testbed. No fixture app depends on
+`misa-tui-app`; it is not the protocol-free testbed. No fixture app depends on
 `misa-client` or `misa-transport`.
 `misa-pixel-testbed` is native-only: its Dashboard, normalized input driver and
 Vulkan readback have no protocol/tree/kit/render dependency. Its clipped list uses the

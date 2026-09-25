@@ -1,5 +1,5 @@
 [package]
-name = "misa-tui-ui"
+name = "misa-tui-app"
 description = "Terminal screen, retained document, and painter"
 version.workspace = true
 edition.workspace = true

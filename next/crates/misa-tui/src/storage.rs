@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use misa_tui_ui::{
+use misa_tui_app::{
     PreferencePersistence,
     prefs::{Prefs, Storage},
 };

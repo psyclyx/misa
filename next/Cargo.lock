@@ -3084,7 +3084,7 @@ dependencies = [
  "misa-session",
  "misa-terminal-ui",
  "misa-transport",
- "misa-tui-ui",
+ "misa-tui-app",
  "misa-value",
  "serde",
  "serde_json",
@@ -3092,20 +3092,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "misa-tui-testbed"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "misa-kit",
- "misa-proto",
- "misa-render",
- "misa-tui-ui",
- "misa-value",
- "tokio",
-]
-
-[[package]]
-name = "misa-tui-ui"
+name = "misa-tui-app"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
@@ -3121,6 +3108,19 @@ dependencies = [
  "misa-value",
  "serde",
  "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "misa-tui-testbed"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "misa-kit",
+ "misa-proto",
+ "misa-render",
+ "misa-tui-app",
+ "misa-value",
  "tokio",
 ]
 

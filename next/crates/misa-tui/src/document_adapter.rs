@@ -1,5 +1,5 @@
 //! Convert client-owned transactions into UI-owned incremental document changes.
-use misa_tui_ui::{Screen, retained::Retained};
+use misa_tui_app::{Screen, retained::Retained};
 pub fn observed(
     retained: &mut Retained,
     update: &misa_client::document::Update,

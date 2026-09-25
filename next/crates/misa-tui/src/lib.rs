@@ -10,23 +10,23 @@ mod save_transport_tests;
 pub mod scoped_remote;
 pub mod storage;
 pub mod workspace;
-pub use misa_tui_ui::{
+pub use misa_tui_app::{
     Action, Catalog, Key, KeyOut, PanelState, chrome, prefs, presentation, retained, terminal_loop,
 };
 pub mod clipboard;
 use misa_kit::intent::Intent;
 use misa_proto::{Node, view::Choice};
-pub use misa_tui_ui::buttons;
-pub use misa_tui_ui::{Accept, Picker, ed, panel_of, translate};
+pub use misa_tui_app::buttons;
+pub use misa_tui_app::{Accept, Picker, ed, panel_of, translate};
 /// Connected screen state: independent rendering and host-owned request drafts.
 pub struct ConnectedScreen {
-    pub ui: misa_tui_ui::Screen,
+    pub ui: misa_tui_app::Screen,
     pub dialogs: dialogs::Dialogs,
 }
 impl ConnectedScreen {
     pub fn new(width: u16, height: u16) -> Self {
         Self {
-            ui: misa_tui_ui::Screen::new(width, height),
+            ui: misa_tui_app::Screen::new(width, height),
             dialogs: Default::default(),
         }
     }
@@ -35,14 +35,14 @@ impl ConnectedScreen {
             ui: {
                 let path = storage::File::default_path();
                 let file = storage::File::at(path);
-                misa_tui_ui::Screen::remembering(prefs::Prefs::load(&file), Box::new(file))
+                misa_tui_app::Screen::remembering(prefs::Prefs::load(&file), Box::new(file))
             },
             dialogs: Default::default(),
         }
     }
     pub fn remembering(prefs: prefs::Prefs, path: std::path::PathBuf) -> Self {
         Self {
-            ui: misa_tui_ui::Screen::remembering(prefs, Box::new(storage::File::at(path))),
+            ui: misa_tui_app::Screen::remembering(prefs, Box::new(storage::File::at(path))),
             dialogs: Default::default(),
         }
     }
@@ -59,7 +59,7 @@ impl ConnectedScreen {
         );
     }
     pub fn refresh_dialog_surface(&mut self) {
-        self.ui.dialogs = misa_tui_ui::DialogSurface {
+        self.ui.dialogs = misa_tui_app::DialogSurface {
             modal: self.dialogs.modal(),
             content: self.dialogs.lines(
                 &self.ui.theme,
