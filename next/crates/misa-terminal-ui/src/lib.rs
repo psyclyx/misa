@@ -1,4 +1,5 @@
 //! Physical terminal rendering from styled rows, independent of semantic documents.
+pub mod clipboard;
 pub mod graphics;
 pub mod output;
 pub mod terminal_style;

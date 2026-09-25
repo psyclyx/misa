@@ -67,8 +67,8 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
     {
         screen.ui.graphics.set_cell(cell);
     }
-    let _terminal = crate::terminal_loop::Terminal::enter()?;
-    let (_reader, receiver) = crate::terminal_loop::events();
+    let _terminal = misa_terminal_runtime::Terminal::enter()?;
+    let (_reader, receiver) = misa_terminal_runtime::events();
     let result = drive(session, &mut screen, receiver, &mut std::io::stdout()).await;
     screen.ui.save();
     result
@@ -600,10 +600,8 @@ async fn drive_with_clipboard(
                 None => screen.ui.notice = Some("Unknown host command".into()),
             },
             KeyOut::Copy(text) => {
-                use base64::Engine as _;
-                let encoded = base64::engine::general_purpose::STANDARD.encode(text);
-                write!(writer, "\x1b]52;c;{encoded}\x07").map_err(|error| error.to_string())?;
-                writer.flush().map_err(|error| error.to_string())?;
+                misa_terminal_ui::clipboard::write(writer, &text)
+                    .map_err(|error| error.to_string())?;
             }
             KeyOut::StartSelection => {
                 // Selection needs the retained document's rendered geometry;

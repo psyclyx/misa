@@ -31,7 +31,6 @@ pub use reader::Reader;
 
 pub mod buttons;
 pub mod chrome;
-pub mod offline;
 pub mod prefs;
 pub mod presentation;
 pub mod retained;

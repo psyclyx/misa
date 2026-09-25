@@ -3,10 +3,9 @@
 //! n/Right/Tab and p/Left cycle scenes; j/k scroll; t changes theme; Ctrl-Q quits.
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use misa_proto::view::{Action, ActionOn, Field, FieldKind, Kind, Node, Span, State};
-use misa_tui_app::{
-    KeyOut, Screen,
-    offline::{self, Control, Controller, Update},
-};
+mod offline;
+use misa_tui_app::{KeyOut, Screen};
+use offline::{Control, Controller, Update};
 use std::io::{self, IsTerminal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -312,6 +311,44 @@ mod tests {
         assert!(paint.contains("Semantic structures"), "{paint}");
         assert_eq!((screen.width, screen.height), (40, 10));
         assert_eq!(controller.scene, 1);
+    }
+    #[tokio::test]
+    async fn fixture_update_pipe_applies_operations_while_idle() {
+        let mut screen = screen(60, 12);
+        let mut controller = Testbed::default();
+        let (sender, events) = mpsc::channel(8);
+        let (updates, incoming) = mpsc::channel(1);
+        updates
+            .send(Update::Ops(vec![misa_proto::sync::ViewOp::Replace {
+                id: "fixture.title".into(),
+                node: Node::text("session.title", [Span::plain("Updated offline")])
+                    .id("fixture.title"),
+            }]))
+            .await
+            .unwrap();
+        sender
+            .send(Ok(Event::Key(KeyEvent::new(
+                KeyCode::Char('q'),
+                KeyModifiers::NONE,
+            ))))
+            .await
+            .unwrap();
+        let mut bytes = Vec::new();
+        offline::drive(
+            &mut screen,
+            fixture(Scene::Semantic),
+            &mut controller,
+            events,
+            incoming,
+            &mut bytes,
+        )
+        .await
+        .unwrap();
+        assert!(
+            String::from_utf8(bytes)
+                .unwrap()
+                .contains("Updated offline")
+        );
     }
     #[tokio::test]
     async fn document_form_accepts_local_input_without_a_client_parser() {

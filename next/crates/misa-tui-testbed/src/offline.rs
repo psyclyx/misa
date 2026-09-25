@@ -1,8 +1,8 @@
 //! Local document driver. Uses the same screen, retained layout, terminal intake
 //! and frame emission as the connected loop, but has no session or request owner.
-use crate::{Key, KeyOut, Screen, retained::Retained};
 use crossterm::event::{self, Event, KeyEventKind};
 use misa_proto::{Node, sync::ViewOp};
+use misa_tui_app::{Key, KeyOut, Screen, retained::Retained, terminal_loop};
 use std::io::Write;
 use tokio::sync::mpsc;
 
@@ -34,8 +34,8 @@ pub async fn run<C: Controller>(
     initial: Node,
     controller: &mut C,
 ) -> Result<(), String> {
-    let _terminal = crate::terminal_loop::Terminal::enter()?;
-    let (_reader, events) = crate::terminal_loop::events();
+    let _terminal = misa_terminal_runtime::Terminal::enter()?;
+    let (_reader, events) = misa_terminal_runtime::events();
     let (_sender, updates) = mpsc::channel(1);
     drive(
         screen,
@@ -64,7 +64,7 @@ pub async fn drive<C: Controller>(
     loop {
         let frame = retained.frame_with(screen, None, &[], &[]);
         screen.viewport_resolved(retained.resolved_scroll(), retained.following());
-        crate::terminal_loop::paint(writer, &mut output, screen, frame)?;
+        terminal_loop::paint(writer, &mut output, screen, frame)?;
         let event = tokio::select! {
             biased;
             update = updates.recv(), if !updates.is_closed() => {
@@ -81,7 +81,7 @@ pub async fn drive<C: Controller>(
             }
             Event::Paste(text) => {
                 let view = retained.interaction();
-                if crate::panel_of(&view).is_some() {
+                if misa_tui_app::panel_of(&view).is_some() {
                     for character in text.chars() {
                         screen.panel_key(&view, &Key::Char(character));
                     }
@@ -105,24 +105,20 @@ pub async fn drive<C: Controller>(
                     Control::Consumed => {}
                     Control::Update(update) => apply(update, &mut retained, screen)?,
                     Control::Pass => {
-                        let Some(key) = crate::translate(key.code, key.modifiers, screen.keymap())
+                        let Some(key) =
+                            misa_tui_app::translate(key.code, key.modifiers, screen.keymap())
                         else {
                             continue;
                         };
-                        let out =
-                            crate::terminal_loop::route_key(screen, &mut retained, &view, key);
+                        let out = terminal_loop::route_key(screen, &mut retained, &view, key);
                         match out {
                             KeyOut::Quit => return Ok(()),
                             KeyOut::StartSelection => {
                                 retained.selection_key(screen, &Key::StartSelection);
                             }
                             KeyOut::Copy(text) => {
-                                use base64::Engine as _;
-                                let encoded =
-                                    base64::engine::general_purpose::STANDARD.encode(text);
-                                write!(writer, "\x1b]52;c;{encoded}\x07")
+                                misa_terminal_ui::clipboard::write(writer, &text)
                                     .map_err(|e| e.to_string())?;
-                                writer.flush().map_err(|e| e.to_string())?;
                             }
                             KeyOut::Local => {}
                             other => match controller.out(screen, other) {

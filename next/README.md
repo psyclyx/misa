@@ -141,7 +141,11 @@ external binaries. Without `--start-local`, neither frontend launches a daemon.
 The terminal screen in `misa-tui-app` and document presenter in `misa-pixel-document`
 are **Misa-specific application UI**, not reusable toolkits. Physical ANSI row
 painting, SGR and Kitty graphics live in `misa-terminal-ui`, which depends only
-on `misa-style`, `unicode-width`, `image` and `base64`; `misa-lines` supplies
+on `misa-style`, `unicode-width`, `image` and `base64`, and owns OSC 52
+clipboard bytes. Terminal raw/alternate-screen lifecycle and bounded crossterm
+input intake live in `misa-terminal-runtime` (crossterm + Tokio), used by the
+connected host and offline fixture driver, not by `misa-tui-app`.
+The offline fixture event loop lives in `misa-tui-testbed`; `misa-lines` supplies
 a `PhysicalRow` implementation for semantic lines, while the core also accepts
 owned `StyledRow` values without a semantic document. Pixel input/clock
 lives in the zero-dependency `misa-window-core`; protocol-free scene, font

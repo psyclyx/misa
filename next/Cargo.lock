@@ -3025,6 +3025,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "misa-terminal-runtime"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "tokio",
+]
+
+[[package]]
 name = "misa-terminal-testbed"
 version = "0.1.0"
 dependencies = [
@@ -3067,7 +3075,6 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "async-trait",
- "base64 0.22.1",
  "crossterm",
  "image",
  "iroh",
@@ -3082,6 +3089,7 @@ dependencies = [
  "misa-protocol",
  "misa-render",
  "misa-session",
+ "misa-terminal-runtime",
  "misa-terminal-ui",
  "misa-transport",
  "misa-tui-app",
@@ -3095,7 +3103,6 @@ dependencies = [
 name = "misa-tui-app"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "crossterm",
  "image",
  "misa-kit",
@@ -3108,7 +3115,6 @@ dependencies = [
  "misa-value",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -3119,6 +3125,8 @@ dependencies = [
  "misa-kit",
  "misa-proto",
  "misa-render",
+ "misa-terminal-runtime",
+ "misa-terminal-ui",
  "misa-tui-app",
  "misa-value",
  "tokio",

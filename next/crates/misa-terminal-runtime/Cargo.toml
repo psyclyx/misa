@@ -1,0 +1,11 @@
+[package]
+name = "misa-terminal-runtime"
+description = "Terminal lifecycle and bounded input intake for terminal hosts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+crossterm.workspace = true
+tokio.workspace = true
