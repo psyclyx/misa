@@ -1,6 +1,9 @@
 //! Protocol-free pixel drawing and measured interactive primitives.
 use misa_style::Style;
 
+mod text;
+pub use text::{LaidOutRow, TextFlow};
+
 /// Skia-independent font measurements for pixel text layout.
 ///
 /// `ascent` is negative above the baseline, as in Skia; a line whose top is

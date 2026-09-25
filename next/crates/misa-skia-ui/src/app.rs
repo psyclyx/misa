@@ -2,7 +2,7 @@
 //! this module until the person activates an action the session advertised.
 use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
-use misa_pixel_ui::{Op, Scene, TextMetrics};
+use misa_pixel_ui::{LaidOutRow, Op, Scene, TextMetrics};
 use misa_proto::sync::{StreamUpdate, ViewOp};
 #[cfg(test)]
 use misa_proto::view::FieldKind;
@@ -79,20 +79,13 @@ impl Hit {
         x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height
     }
 }
-#[derive(Debug)]
-struct RowGeometry {
-    text: String,
-    /// Measured caret positions, one per Unicode scalar boundary.
-    advances: Vec<f32>,
-    runs: Vec<(Style, String, usize)>,
-}
 #[derive(Clone, Debug)]
 struct TextRow {
     x: f32,
     y: f32,
     /// The same local viewport used by the paint op and the hit rectangle.
     width: f32,
-    geometry: Arc<RowGeometry>,
+    geometry: Arc<LaidOutRow>,
 }
 impl TextRow {
     fn column(&self, x: f32) -> usize {

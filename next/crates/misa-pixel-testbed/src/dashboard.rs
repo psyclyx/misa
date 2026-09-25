@@ -1,5 +1,5 @@
 //! Toolkit-owned scene: no semantic tree or protocol types involved.
-use misa_pixel_ui::{Button, Rect, TextMetrics};
+use misa_pixel_ui::{Button, Rect, TextFlow, TextMetrics};
 use misa_pixel_ui::{Op, Scene};
 use misa_style::Style;
 
@@ -86,17 +86,33 @@ impl Dashboard {
         };
         text(24.0, 20.0, 20.0, "Native dashboard");
         text(
-            36.0,
-            95.0,
-            15.0,
-            "This card is built from Scene / Op, not misa-proto.",
-        );
-        text(
             24.0,
             height as f32 - 48.0,
             14.0,
             "Enter / Space or click the button to toggle",
         );
+        let flow = TextFlow::new(metrics, 15.0);
+        let description = "This card is built from Scene / Op, not misa-proto.";
+        let available = (card_width - 32.0).max(0.0);
+        for (line, runs) in flow
+            .wrap(
+                vec![(Style::rgb(230, 232, 236), description.into())],
+                available,
+            )
+            .into_iter()
+            .enumerate()
+        {
+            flow.place(
+                Rect {
+                    x: 36.0,
+                    y: 95.0 + line as f32 * flow.line_height(),
+                    width: available,
+                    height: flow.line_height(),
+                },
+                runs,
+                &mut scene.ops,
+            );
+        }
         scene
     }
 }
@@ -121,6 +137,42 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn description_wraps_and_paints_inside_narrow_card() {
+        let dashboard = Dashboard { selected: false };
+        let narrow = dashboard.frame(130, 300, &Metrics);
+        let wide = dashboard.frame(500, 300, &Metrics);
+        let rows = |scene: &Scene| {
+            scene
+                .ops
+                .iter()
+                .filter_map(|op| match op {
+                    Op::ClipRect {
+                        x: 36.0,
+                        y,
+                        width,
+                        ops,
+                        ..
+                    } if *y >= 95.0 && *y < 150.0 => Some((*width, ops.clone())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let narrow_rows = rows(&narrow);
+        assert!(narrow_rows.len() > 1);
+        assert_eq!(rows(&wide).len(), 1);
+        assert!(narrow_rows.iter().all(|(width, _)| *width == 58.0));
+        let reconstructed: String = narrow_rows
+            .iter()
+            .flat_map(|(_, ops)| ops.iter())
+            .filter_map(|op| match op {
+                Op::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(reconstructed.starts_with("This card is built"));
+    }
+
     #[test]
     fn button_is_local_and_resizes_with_viewport() {
         let mut dashboard = Dashboard { selected: false };
