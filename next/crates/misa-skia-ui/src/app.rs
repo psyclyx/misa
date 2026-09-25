@@ -13,7 +13,6 @@ use misa_style::Style;
 use misa_value::Value;
 pub use misa_window_core::Key;
 use misa_window_core::{Event, Output, Size};
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -81,10 +80,8 @@ pub struct App {
     retained: retained::RetainedScenes,
     overlays: LocalOverlays,
     interaction: InteractionMap,
-    pub expanded: BTreeSet<String>,
     drafts: drafts::Drafts,
     prefixes: Vec<(Style, String)>,
-    replace_selection: bool,
     viewport: Viewport,
     offline_elapsed: Duration,
 }
@@ -97,10 +94,8 @@ impl App {
             metrics,
             overlays: LocalOverlays::default(),
             interaction: InteractionMap::default(),
-            expanded: BTreeSet::new(),
             drafts: drafts::Drafts::default(),
             prefixes: vec![],
-            replace_selection: false,
             viewport: Viewport::new(0.0, 600.0),
             offline_elapsed: Duration::ZERO,
         };
@@ -198,6 +193,7 @@ impl App {
                     .set_focus(Some(Control::Field { node, field }));
             }
         }
+        self.drafts.focus_changed(self.interaction.focus());
         Some(command.into_iter().collect())
     }
     pub fn clear_secret_drafts(&mut self) {
@@ -239,6 +235,7 @@ impl App {
             .expect("reset view is valid");
         self.invalidate_document(changes);
         self.interaction.clear_selection();
+        self.drafts.focus_changed(self.interaction.focus());
     }
 
     fn invalidate(&mut self, id: &str) {
@@ -272,6 +269,7 @@ impl App {
                     .map(|(node, field)| Control::Field { node, field }),
             );
         }
+        self.drafts.focus_changed(self.interaction.focus());
     }
     fn invalidate_document(&mut self, changes: document::Changes) {
         self.retained.invalidate_document(changes, &self.document);
@@ -331,6 +329,7 @@ impl App {
         self.invalidate_focus();
         let commands = self.pointer_inner(x, y, dragging);
         self.invalidate_focus();
+        self.drafts.focus_changed(self.interaction.focus());
         commands
     }
     fn pointer_inner(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
@@ -353,11 +352,7 @@ impl App {
             _ => {}
         }
         match control {
-            Control::Disclosure(id) => {
-                if !self.expanded.remove(&id) {
-                    self.expanded.insert(id);
-                }
-            }
+            Control::Disclosure(id) => self.interaction.toggle_disclosure(&id),
             Control::Field { node, field } => {
                 self.drafts.cycle(&node, &field, &self.document);
             }
@@ -422,6 +417,7 @@ impl App {
         self.invalidate_focus();
         let commands = self.key_inner(key);
         self.invalidate_focus();
+        self.drafts.focus_changed(self.interaction.focus());
         commands
     }
     /// Committed text is handled separately from physical and special keys.
@@ -429,11 +425,13 @@ impl App {
         self.invalidate_focus();
         let commands = self.text_inner(text);
         self.invalidate_focus();
+        self.drafts.focus_changed(self.interaction.focus());
         commands
     }
     fn text_inner(&mut self, text: &str) -> Vec<Command> {
         let decision = self.overlays.text(text, self.interaction.focus());
         if let Some(commands) = self.overlay_decision(decision) {
+            self.drafts.clear_selection();
             return commands;
         }
         if let Some(control @ Control::Field { .. }) = self.interaction.focus().cloned() {
@@ -442,25 +440,28 @@ impl App {
                 _ => false,
             };
             if discrete {
+                self.drafts.clear_selection();
                 if text == " " {
                     return self.activate(control);
                 }
                 return vec![];
             }
         }
-        let replace = std::mem::take(&mut self.replace_selection);
-        if let Some(edit) = self.editor() {
-            if replace {
-                edit.set_text("");
-            }
-            edit.insert(text);
+        if let Some(Control::Field { node, field }) = self.interaction.focus().cloned() {
+            self.drafts.insert(&node, &field, text);
+        } else {
+            self.drafts.clear_selection();
         }
         vec![]
     }
     fn key_inner(&mut self, key: Key) -> Vec<Command> {
         let decision = self.overlays.key(key.clone(), self.interaction.focus());
         if let Some(commands) = self.overlay_decision(decision) {
+            self.drafts.clear_selection();
             return commands;
+        }
+        if !matches!(key, Key::SelectAll | Key::Backspace) {
+            self.drafts.clear_selection();
         }
         if matches!(key, Key::Copy) {
             let text = if let Some(edit) = self.editor() {
@@ -475,9 +476,16 @@ impl App {
             };
         }
         if matches!(key, Key::SelectAll) {
-            if self.editor().is_some() {
-                self.replace_selection = true;
+            if let Some(Control::Field { node, field }) = self.interaction.focus().cloned()
+                && self.drafts.contains(&node, &field)
+            {
+                if self.drafts.discrete(&node, &field, &self.document) {
+                    self.drafts.clear_selection();
+                } else {
+                    self.drafts.select_all(&node, &field);
+                }
             } else {
+                self.drafts.clear_selection();
                 self.interaction.select_all();
             }
             return vec![];
@@ -528,17 +536,16 @@ impl App {
                 return vec![];
             }
         }
-        let replace = self.replace_selection;
-        self.replace_selection = false;
+        if matches!(key, Key::Backspace) {
+            if let Some(Control::Field { node, field }) = self.interaction.focus().cloned() {
+                self.drafts.backspace(&node, &field);
+            } else {
+                self.drafts.clear_selection();
+            }
+            return vec![];
+        }
         if let Some(edit) = self.editor() {
             match key {
-                Key::Backspace => {
-                    if replace {
-                        edit.set_text("");
-                    } else {
-                        edit.backspace();
-                    }
-                }
                 Key::Delete => {
                     edit.delete();
                 }
@@ -569,6 +576,7 @@ impl App {
     /// Restore local control focus (for example when a host restores a form).
     pub fn focus_control(&mut self, control: Option<Control>) {
         self.interaction.set_focus(control);
+        self.drafts.focus_changed(self.interaction.focus());
     }
 }
 

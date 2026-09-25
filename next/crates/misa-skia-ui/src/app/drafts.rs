@@ -12,6 +12,7 @@ type Key = (String, String);
 pub(super) struct Drafts {
     editors: BTreeMap<Key, Editor>,
     viewports: BTreeMap<Key, FieldViewport>,
+    pending_select_all: Option<Key>,
 }
 
 impl Drafts {
@@ -54,6 +55,7 @@ impl Drafts {
     fn retain(&mut self, valid: &BTreeSet<Key>) {
         self.editors.retain(|key, _| valid.contains(key));
         self.viewports.retain(|key, _| valid.contains(key));
+        self.pending_select_all = None;
     }
 
     /// Reset reconciles the complete addressed tree, including fields inside list items.
@@ -98,9 +100,55 @@ impl Drafts {
         });
         self.viewports
             .retain(|key, _| self.editors.contains_key(key));
+        if self
+            .pending_select_all
+            .as_ref()
+            .is_some_and(|key| !self.editors.contains_key(key))
+        {
+            self.pending_select_all = None;
+        }
         panel_input
     }
 
+    pub fn select_all(&mut self, node: &str, field: &str) {
+        let key = (node.into(), field.into());
+        self.pending_select_all = self.editors.contains_key(&key).then_some(key);
+    }
+    pub fn clear_selection(&mut self) {
+        self.pending_select_all = None;
+    }
+    pub fn focus_changed(&mut self, focus: Option<&super::Control>) {
+        if self.pending_select_all.as_ref().is_some_and(|(node, field)| {
+            !matches!(focus, Some(super::Control::Field { node: focused_node, field: focused_field })
+                if node == focused_node && field == focused_field)
+        }) {
+            self.clear_selection();
+        }
+    }
+    fn take_selection(&mut self, node: &str, field: &str) -> bool {
+        self.pending_select_all
+            .take()
+            .is_some_and(|key| key.0 == node && key.1 == field)
+    }
+    pub fn insert(&mut self, node: &str, field: &str, text: &str) {
+        let replace = self.take_selection(node, field);
+        if let Some(editor) = self.editor_mut(node, field) {
+            if replace {
+                editor.set_text("");
+            }
+            editor.insert(text);
+        }
+    }
+    pub fn backspace(&mut self, node: &str, field: &str) {
+        let replace = self.take_selection(node, field);
+        if let Some(editor) = self.editor_mut(node, field) {
+            if replace {
+                editor.set_text("");
+            } else {
+                editor.backspace();
+            }
+        }
+    }
     pub fn contains(&self, node: &str, field: &str) -> bool {
         self.editors.contains_key(&(node.into(), field.into()))
     }
@@ -169,6 +217,7 @@ impl Drafts {
             .is_some_and(|value| matches!(value.kind, FieldKind::Bool | FieldKind::Choice { .. }))
     }
     pub fn cycle(&mut self, node: &str, field: &str, document: &DocumentStore) {
+        self.clear_selection();
         let kind = document.field(node, field).map(|value| &value.kind);
         if let Some(editor) = self.editor_mut(node, field) {
             match kind {

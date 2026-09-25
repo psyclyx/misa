@@ -601,7 +601,7 @@ impl App {
         match &node.kind {
             Kind::Section => {}
             Kind::Collapsible { summary } => {
-                let open = self.expanded.contains(&node.id);
+                let open = self.interaction.is_expanded(&node.id);
                 let label = format!(
                     "{} {}",
                     if open { "▾" } else { "▸" },

@@ -4,6 +4,7 @@
 use super::{Control, text};
 use misa_pixel_ui::{LaidOutRow, Op, Scene};
 use misa_style::Style;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -44,6 +45,7 @@ pub(super) struct InteractionMap {
     hits: Vec<Hit>,
     rows: Vec<TextRow>,
     focus: Option<Control>,
+    expanded: BTreeSet<String>,
     selection: Option<((usize, usize), (usize, usize))>,
 }
 
@@ -66,6 +68,14 @@ pub(super) enum PointerResult {
 }
 
 impl InteractionMap {
+    pub(super) fn is_expanded(&self, id: &str) -> bool {
+        self.expanded.contains(id)
+    }
+    pub(super) fn toggle_disclosure(&mut self, id: &str) {
+        if !self.expanded.remove(id) {
+            self.expanded.insert(id.to_owned());
+        }
+    }
     pub(super) fn focus(&self) -> Option<&Control> {
         self.focus.as_ref()
     }

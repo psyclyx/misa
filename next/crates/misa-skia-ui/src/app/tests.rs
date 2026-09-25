@@ -401,18 +401,15 @@ fn hidden_cached_indicator_does_not_keep_the_window_awake() {
     );
     app.frame_at(640, 480, Duration::ZERO);
     assert!(!app.animating());
-    app.expanded.insert("details".into());
-    app.invalidate("details");
+    app.activate(Control::Disclosure("details".into()));
     app.frame_at(640, 480, Duration::ZERO);
     assert!(app.animating());
     let old = app.retained.cached("status").ops.clone();
-    app.expanded.remove("details");
-    app.invalidate("details");
+    app.activate(Control::Disclosure("details".into()));
     app.frame_at(640, 480, Duration::from_millis(160));
     assert!(!app.animating());
     assert!(Arc::ptr_eq(&old, &app.retained.cached("status").ops));
-    app.expanded.insert("details".into());
-    app.invalidate("details");
+    app.activate(Control::Disclosure("details".into()));
     app.frame_at(640, 480, Duration::from_millis(320));
     assert!(app.animating());
     assert!(!Arc::ptr_eq(&old, &app.retained.cached("status").ops));
@@ -1034,6 +1031,92 @@ fn committed_text_types_once_and_special_keys_do_not_insert_text() {
     assert_eq!(app.field_text("one", "value"), Some("once"));
 }
 #[test]
+fn select_all_is_bound_to_the_focused_draft_across_tab_and_return() {
+    let mut first = form("a", FieldKind::Inline);
+    let mut second = form("b", FieldKind::Inline);
+    first.actions.clear();
+    second.actions.clear();
+    let view = Node::section("root").id("root").child(first).child(second);
+    let mut app = App::new(view, test_metrics());
+    app.frame(500, 500);
+    let a = Control::Field {
+        node: "a".into(),
+        field: "value".into(),
+    };
+    let b = Control::Field {
+        node: "b".into(),
+        field: "value".into(),
+    };
+    let (x, y) = app.control_center(&a).unwrap();
+    app.pointer(x, y, false);
+    app.drive(Event::Text("alpha".into()), Duration::ZERO);
+    let (x, y) = app.control_center(&b).unwrap();
+    app.pointer(x, y, false);
+    app.drive(Event::Text("beta".into()), Duration::ZERO);
+    app.key(Key::SelectAll);
+    app.key(Key::Tab { backward: true });
+    assert_eq!(app.interaction.focus(), Some(&a));
+    app.drive(Event::Text("!".into()), Duration::ZERO);
+    assert_eq!(app.field_text("a", "value"), Some("alpha!"));
+    app.key(Key::Tab { backward: false });
+    assert_eq!(app.interaction.focus(), Some(&b));
+    app.key(Key::Backspace);
+    assert_eq!(app.field_text("b", "value"), Some("bet"));
+    app.key(Key::SelectAll);
+    app.key(Key::Tab { backward: true });
+    app.key(Key::Tab { backward: false });
+    app.drive(Event::Text("!".into()), Duration::ZERO);
+    assert_eq!(app.field_text("b", "value"), Some("bet!"));
+    app.key(Key::SelectAll);
+    app.key(Key::Left);
+    app.key(Key::Backspace);
+    assert_eq!(app.field_text("b", "value"), Some("be!"));
+    app.key(Key::SelectAll);
+    app.key(Key::Backspace);
+    assert_eq!(app.field_text("b", "value"), Some(""));
+}
+
+#[test]
+fn select_all_expires_on_reset_and_field_removal() {
+    let view = Node::section("root")
+        .id("root")
+        .child(form("a", FieldKind::Inline));
+    let mut app = App::new(view.clone(), test_metrics());
+    app.focus_control(Some(Control::Field {
+        node: "a".into(),
+        field: "value".into(),
+    }));
+    app.drive(Event::Text("old".into()), Duration::ZERO);
+    app.key(Key::SelectAll);
+    app.set_view(view.clone());
+    app.drive(Event::Text("!".into()), Duration::ZERO);
+    assert_eq!(app.field_text("a", "value"), Some("old!"));
+    app.key(Key::SelectAll);
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Remove { id: "a".into() }],
+        live: &[],
+        reset_live: false,
+    })
+    .unwrap();
+    let mut replacement = form("a", FieldKind::Inline);
+    if let Kind::Fields { fields } = &mut replacement.kind {
+        fields[0].value = "seed".into();
+    }
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Insert {
+            parent: "root".into(),
+            before: None,
+            node: replacement,
+        }],
+        live: &[],
+        reset_live: false,
+    })
+    .unwrap();
+    app.drive(Event::Text("new".into()), Duration::ZERO);
+    assert_eq!(app.field_text("a", "value"), Some("seednew"));
+}
+
+#[test]
 fn boolean_keyboard_input_cannot_produce_invalid_values() {
     let mut app = App::new(form("one", FieldKind::Bool), test_metrics());
     app.drive(Event::Text("nonsense".into()), Duration::ZERO)
@@ -1055,13 +1138,40 @@ fn disclosure_state_and_unicode_copy_are_local() {
     .id("tool")
     .child(Node::text("text", [Span::plain("héllo λ")]));
     let mut app = App::new(view.clone(), test_metrics());
-    app.activate(Control::Disclosure("tool".into()));
+    app.frame(500, 500);
+    let disclosure = Control::Disclosure("tool".into());
+    let (x, y) = app.control_center(&disclosure).unwrap();
+    app.pointer(x, y, false);
+    assert!(app.interaction.is_expanded("tool"));
+    let open = app.frame(500, 500);
+    assert!(any_op(
+        &open.ops,
+        |op| matches!(op, Op::Text { text, .. } if text == "héllo λ")
+    ));
+    let cached = app.retained.cached("tool").ops.clone();
+    app.frame(500, 500);
+    assert!(Arc::ptr_eq(&cached, &app.retained.cached("tool").ops));
     app.set_view(view);
+    let after_reset = app.frame(500, 500);
+    assert!(any_op(
+        &after_reset.ops,
+        |op| matches!(op, Op::Text { text, .. } if text == "héllo λ")
+    ));
+    let (x, y) = app.control_center(&disclosure).unwrap();
+    app.pointer(x, y, false);
+    let closed = app.frame(500, 500);
+    assert!(!app.interaction.is_expanded("tool"));
+    assert!(!any_op(
+        &closed.ops,
+        |op| matches!(op, Op::Text { text, .. } if text == "héllo λ")
+    ));
+    let (x, y) = app.control_center(&disclosure).unwrap();
+    app.pointer(x, y, false);
     app.frame(500, 500);
     app.focus_control(None);
     app.key(Key::SelectAll);
     assert_eq!(app.key(Key::Copy), vec![Command::Copy("héllo λ".into())]);
-    assert!(app.expanded.contains("tool"));
+    assert!(app.interaction.is_expanded("tool"));
 }
 #[test]
 fn save_destination_is_an_explicit_local_command() {
