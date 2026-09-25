@@ -23,10 +23,26 @@ pub fn patches(db: &Value, kind: &str, data: &Value, log_seq: i64) -> Vec<(Path,
                 if !map.contains_key("seq") {
                     map.insert("seq".into(), Value::Int(log_seq));
                 }
-                let attempt = map.remove("attempt");
-                put("messages", Op::Append(Value::Map(std::sync::Arc::new(map))));
-                if let Some(attempt) = attempt {
-                    put("attempts", Op::Append(attempt));
+                // A message settles once. A second record carrying a seq the
+                // transcript already holds is a race's residue — a cancel that
+                // arrived after the answer it meant to stop — and folding it would
+                // give one message two rows, which is one identity two nodes in the
+                // view. The first settle stands; the log keeps the late record, the
+                // fold does not, in a live acknowledgment and in a replay alike.
+                let seq = map.get("seq").and_then(Value::as_i64);
+                let settled = seq.is_some_and(|seq| {
+                    db.get("messages")
+                        .and_then(Value::as_list)
+                        .unwrap_or(&[])
+                        .iter()
+                        .any(|row| row.get("seq").and_then(Value::as_i64) == Some(seq))
+                });
+                if !settled {
+                    let attempt = map.remove("attempt");
+                    put("messages", Op::Append(Value::Map(std::sync::Arc::new(map))));
+                    if let Some(attempt) = attempt {
+                        put("attempts", Op::Append(attempt));
+                    }
                 }
             }
         }
@@ -185,6 +201,74 @@ mod tests {
         // Compaction replaces the transcript with a summary and the branch's
         // accounting survives, because the branch does.
         assert_eq!(live.get("attempts").unwrap().as_list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn one_message_settles_once_however_the_writes_race() {
+        let base = Value::map([("messages", Value::list([])), ("attempts", Value::list([]))]);
+        let answer = entry(
+            6,
+            "message",
+            Value::map([
+                ("seq", Value::Int(2)),
+                ("role", Value::str("assistant")),
+                ("text", Value::str("done")),
+                ("state", Value::str("done")),
+                (
+                    "calls",
+                    Value::list([Value::map([
+                        ("id", Value::str("toolu_racing")),
+                        ("status", Value::str("pending")),
+                    ])]),
+                ),
+                ("attempt", Value::map([("cost_micros", Value::Int(12))])),
+            ]),
+        );
+        let late_cancel = entry(
+            7,
+            "message",
+            Value::map([
+                ("seq", Value::Int(2)),
+                ("role", Value::str("assistant")),
+                ("text", Value::str("partial")),
+                ("state", Value::str("cancelled")),
+                ("calls", Value::list([])),
+            ]),
+        );
+        for (entries, kept, attempts) in [
+            (
+                vec![answer.clone(), late_cancel.clone()],
+                "done",
+                1,
+                // The answer arrived first and stands, accounting and all.
+            ),
+            (
+                vec![late_cancel.clone(), answer.clone()],
+                "cancelled",
+                0,
+                // The cancel landed first; the late answer adds nothing.
+            ),
+        ] {
+            let mut live = base.clone();
+            for (at, entry) in entries.iter().enumerate() {
+                let ops = patches(
+                    &live,
+                    entry.get("kind").unwrap().as_str().unwrap(),
+                    entry.get("data").unwrap(),
+                    entry.get("seq").unwrap().as_i64().unwrap(),
+                );
+                live = misa_value::apply(&live, &ops).unwrap();
+                assert_eq!(live, fold(base.clone(), &entries[..=at]));
+            }
+            let messages = live.get("messages").unwrap().as_list().unwrap();
+            assert_eq!(messages.len(), 1, "one message settles once");
+            assert_eq!(messages[0].get("state").unwrap().as_str(), Some(kept));
+            assert_eq!(messages[0].get("seq").unwrap(), &Value::Int(2));
+            assert_eq!(
+                live.get("attempts").unwrap().as_list().unwrap().len(),
+                attempts
+            );
+        }
     }
 
     #[test]

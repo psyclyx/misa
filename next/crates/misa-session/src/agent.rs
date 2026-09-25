@@ -740,6 +740,8 @@ fn on_cancel(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
     } else {
         crate::operations::settle_prompt(tx, "cancelled", None)?;
         tx.set("session.status", Value::str("idle"))?;
+        // A turn that ended serves the next queued prompt, whoever ended it.
+        tx.dispatch(Event::new("queue/next"));
     }
     tx.delete("session.pending")?;
     tx.delete("session.compacting")?;
@@ -1622,6 +1624,14 @@ fn on_appended(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
                     result,
                     data.get("seq").and_then(Value::as_i64),
                 )?;
+                // A stopped turn stays stopped. The record settles the message it
+                // promised no matter what, but the loop advances only while the
+                // session still has a turn: a cancel that crossed this record's
+                // journal write has already ended it, and starting the tools here
+                // would run work the person refused.
+                if tx.text("session.status") == "idle" {
+                    return Ok(());
+                }
                 tx.set(
                     "session.status",
                     Value::str(if has_calls { "tools" } else { "idle" }),
@@ -2294,6 +2304,11 @@ fn on_finished(tx: &mut Tx<'_>, event: &Event) -> Result<(), Fault> {
         message = Value::Map(std::sync::Arc::new(fields));
     }
     tx.fx(log_effect(tx, "message", message));
+    // The settle record is written once. The reservation this message was promised
+    // is consumed here rather than at the log's acknowledgment, so a cancel racing
+    // the answer cannot settle the same message a second time; a second record would
+    // be one message with two rows and one view identity with two nodes.
+    tx.delete("session.pending")?;
     tx.set("session.status", Value::str("recording"))?;
     Ok(())
 }

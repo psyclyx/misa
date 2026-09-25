@@ -2565,6 +2565,96 @@ mod stream_contract_tests {
                 .is_empty()
         );
     }
+    /// The answer's journal write and a person's cancel can cross in flight.
+    /// The message settles once — and a turn somebody stopped does not start its
+    /// tools when the record's log reply lands.
+    #[tokio::test]
+    async fn a_cancel_crossing_the_answers_journal_write_stops_the_turn() {
+        let runtime = runtime();
+        runtime.intent(Intent::Prompt {
+            text: "go".into(),
+            attachments: vec![],
+        });
+        ack(
+            &runtime,
+            1,
+            Value::map([
+                ("seq", Value::Int(1)),
+                ("role", Value::str("user")),
+                ("text", Value::str("go")),
+            ]),
+        );
+        let calls = Value::list([Value::map([
+            ("id", Value::str("toolu_crossing")),
+            ("name", Value::str("echo")),
+            ("args", Value::str("hi")),
+        ])]);
+        // The answer for the pending message arrives, tool call and all.
+        assert!(
+            runtime
+                .dispatch(
+                    Event::new("kernel/provider.finished")
+                        .with("id", Value::str("r1"))
+                        .with("ok", Value::Bool(true))
+                        .with("text", Value::str("running it"))
+                        .with("thinking", Value::str(""))
+                        .with("tool_calls", calls.clone())
+                        .with("provider_state", Value::list([]))
+                        .with("input_tokens", Value::Int(1))
+                        .with("output_tokens", Value::Int(1))
+                        .with("error", Value::str(""))
+                )
+                .is_empty()
+        );
+        // The person stops the turn while the answer's record is in flight.
+        assert!(
+            runtime
+                .intent(Intent::Action {
+                    node: "composer".into(),
+                    action: "turn.cancel".into(),
+                    args: Value::Null,
+                    fields: Vec::new(),
+                })
+                .is_empty()
+        );
+        // Its log reply lands afterwards, and settles the message it promised...
+        ack(
+            &runtime,
+            2,
+            Value::map([
+                ("seq", Value::Int(2)),
+                ("role", Value::str("assistant")),
+                ("text", Value::str("running it")),
+                ("state", Value::str("done")),
+                ("calls", calls),
+            ]),
+        );
+        let state = runtime.state.lock().unwrap();
+        let session = state.state.db().get("session").unwrap();
+        assert_eq!(
+            state
+                .state
+                .db()
+                .get("messages")
+                .unwrap()
+                .as_list()
+                .unwrap()
+                .len(),
+            2
+        );
+        // ...without restarting a turn somebody stopped.
+        assert_eq!(session.get("status").unwrap().as_str(), Some("idle"));
+        assert_eq!(
+            session
+                .get("running_tools")
+                .unwrap()
+                .as_list()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(session.get("requests").unwrap().as_i64(), Some(1));
+    }
     #[tokio::test]
     async fn repeated_interrupts_do_not_cancel_the_new_priority_turn() {
         let runtime = runtime();
