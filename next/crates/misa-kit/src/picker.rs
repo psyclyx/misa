@@ -292,15 +292,15 @@ impl Picker {
             return all;
         }
         let mut scored: Vec<(i64, usize, &Choice)> = Vec::new();
-        for (index, candidate) in self
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, candidate)| {
-                Self::in_view(view, candidate, &self.favorites, &self.frecency)
-            })
-        {
-            let haystack = format!("{} {}", candidate.value, candidate.label);
+        for (index, candidate) in self.items.iter().enumerate().filter(|(_, candidate)| {
+            Self::in_view(view, candidate, &self.favorites, &self.frecency)
+        }) {
+            let haystack = format!(
+                "{} {} {}",
+                candidate.value,
+                candidate.label,
+                candidate.detail.as_deref().unwrap_or_default()
+            );
             if let Some(score) = match_score(needle, &haystack) {
                 // A better match always wins; frecency orders equal matches, and the
                 // original order breaks the last tie so the list is stable.
@@ -552,16 +552,37 @@ impl Picker {
 
 /// How well a needle matches a haystack, or `None` when it does not.
 ///
-/// A subsequence match with a bonus at a word boundary and a bonus for consecutive
-/// characters. That is the whole rule, and it is on purpose: a fancier one needs a
-/// corpus to tune against, and the previous system grew a great deal of machinery
-/// around a rule that fits in one function.
+/// The query is split into words, as the previous system's `choices.matching` did:
+/// every word must match, and each may match anywhere. A word that appears exactly
+/// beats any subsequence, and an earlier exact hit beats a later one. A word with
+/// no exact hit still matches as a subsequence, with a bonus at a word boundary and
+/// a bonus for consecutive characters. That is the whole rule, and it is on purpose:
+/// a fancier one needs a corpus to tune against.
 pub fn match_score(needle: &str, haystack: &str) -> Option<i64> {
-    if needle.is_empty() {
+    if needle.trim().is_empty() {
         return Some(0);
     }
-    let needle: Vec<char> = needle.to_lowercase().chars().collect();
-    let haystack: Vec<char> = haystack.to_lowercase().chars().collect();
+    let haystack = haystack.to_lowercase();
+    let mut total = 0i64;
+    for word in needle.split_whitespace() {
+        let word = word.to_lowercase();
+        // An exact hit is worth more than any subsequence could be, so the two are
+        // never comparable; among exact hits, the earliest is the most prefix-like.
+        total += match haystack.find(&word) {
+            Some(index) => EXACT - index as i64,
+            None => subsequence_score(&word, &haystack)?,
+        };
+    }
+    Some(total)
+}
+
+/// A base large enough that a subsequence score can never reach it.
+const EXACT: i64 = 1_000_000;
+
+/// The bonus an exact hit earns over a subsequence, and the subsequence score.
+fn subsequence_score(needle: &str, haystack: &str) -> Option<i64> {
+    let needle: Vec<char> = needle.chars().collect();
+    let haystack: Vec<char> = haystack.chars().collect();
     let mut score = 0i64;
     let mut at = 0usize;
     let mut last: Option<usize> = None;
@@ -711,6 +732,44 @@ mod tests {
         let run = match_score("scr", "scripted").expect("a run");
         let scattered = match_score("scr", "s-c-r-ipted").expect("scattered");
         assert!(run > scattered, "a run should beat scattered matches");
+    }
+
+    #[test]
+    fn a_multi_word_query_matches_each_word_independently() {
+        // The previous system split a query into words; the whole needle is not a
+        // single subsequence that must appear in order with its spaces.
+        let mut picker = picker();
+        picker.set_query("gpt 5");
+        assert_eq!(picker.matches()[0].value, "gpt-5");
+        picker.set_query("sonnet claude");
+        assert_eq!(picker.matches()[0].value, "claude-sonnet-5");
+        picker.set_query("claude sonnet");
+        assert_eq!(picker.matches()[0].value, "claude-sonnet-5");
+    }
+
+    #[test]
+    fn an_exact_hit_beats_a_subsequence_and_the_detail_field_is_searchable() {
+        let mut picker = Picker::new("x", Accept::Run);
+        picker.set_items(
+            vec![
+                Choice {
+                    value: "a".into(),
+                    label: "Alpha".into(),
+                    detail: Some("handoff".into()),
+                    metadata: None,
+                },
+                Choice {
+                    value: "hdl".into(),
+                    label: "Scattered".into(),
+                    detail: None,
+                    metadata: None,
+                },
+            ],
+            false,
+        );
+        picker.set_query("handoff");
+        assert_eq!(picker.matches()[0].value, "a");
+        assert_eq!(picker.matches().len(), 1);
     }
 
     #[test]
