@@ -236,7 +236,7 @@ impl Controller for Testbed {
                 } else {
                     format!("Local form submitted: {answer}")
                 };
-                screen.panel = None;
+                screen.clear_panel();
                 return Control::Update(Update::Reset(
                     Node::section("session")
                         .id("fixture.result")
@@ -344,6 +344,6 @@ mod tests {
         let paint = String::from_utf8(bytes).unwrap();
         assert!(paint.contains("Local document question"));
         assert!(paint.contains("Local form submitted: no"));
-        assert!(screen.panel.is_none());
+        assert!(!screen.panel_active());
     }
 }

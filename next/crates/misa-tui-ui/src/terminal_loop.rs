@@ -87,7 +87,7 @@ pub fn events() -> (Reader, mpsc::Receiver<Result<Event, String>>) {
     )
 }
 /// Shared keyboard path after terminal translation and any modal dialog.
-/// The retained selection and semantic panel get first refusal; then the
+/// The semantic panel owns input before a retained selection; then the
 /// client's editor/picker handles the key.
 pub fn route_key(
     screen: &mut crate::Screen,
@@ -95,9 +95,9 @@ pub fn route_key(
     view: &misa_proto::Node,
     key: crate::Key,
 ) -> crate::KeyOut {
-    retained
-        .selection_key(screen, &key)
-        .or_else(|| screen.panel_key(view, &key))
+    screen
+        .panel_key(view, &key)
+        .or_else(|| retained.selection_key(screen, &key))
         .unwrap_or_else(|| screen.key(key))
 }
 

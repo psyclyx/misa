@@ -11,7 +11,7 @@ pub mod scoped_remote;
 pub mod storage;
 pub mod workspace;
 pub use misa_tui_ui::{
-    Action, Catalog, Key, KeyOut, PanelInput, chrome, prefs, presentation, retained, terminal_loop,
+    Action, Catalog, Key, KeyOut, PanelState, chrome, prefs, presentation, retained, terminal_loop,
 };
 pub mod clipboard;
 use misa_kit::intent::Intent;

@@ -1456,6 +1456,63 @@ mod review_tests {
         );
     }
     #[test]
+    fn panel_keeps_selection_and_composer_unchanged_while_typing() {
+        use misa_proto::view::{Action, ActionOn, Field, FieldKind};
+        let panel = Node::section("panel").id("question").child(
+            Node::new(
+                "form",
+                Kind::Fields {
+                    fields: vec![Field {
+                        id: "answer".into(),
+                        label: "Answer".into(),
+                        value: String::new(),
+                        hint: None,
+                        read_only: false,
+                        secret: false,
+                        kind: FieldKind::Inline,
+                    }],
+                },
+            )
+            .id("form")
+            .action(Action {
+                id: "panel.submit".into(),
+                on: ActionOn::Submit,
+                label: None,
+                args: misa_value::Value::Null,
+            }),
+        );
+        let view = Node::section("session").id("session").child(panel);
+        let mut screen = Screen::new(30, 12);
+        screen.composer.set_text("draft");
+        let mut retained = Retained::new(view.clone(), &screen);
+        screen.key(Key::Escape); // Normal mode: `v` would otherwise start selection.
+        for key in [Key::Char('v'), Key::Char('a')] {
+            assert_eq!(
+                crate::terminal_loop::route_key(&mut screen, &mut retained, &view, key),
+                KeyOut::Local
+            );
+        }
+        assert!(!screen.has_selection());
+        assert_eq!(screen.composer.text(), "draft");
+        assert!(matches!(
+            crate::terminal_loop::route_key(&mut screen, &mut retained, &view, Key::Submit),
+            KeyOut::Intent(misa_kit::intent::Intent::Action { fields, .. })
+                if fields[0].value == "va"
+        ));
+        // Even an already active selection cannot steal the next panel's typing.
+        assert_eq!(
+            retained.selection_key(&mut screen, &Key::Char('v')),
+            Some(KeyOut::Local)
+        );
+        assert!(screen.has_selection());
+        assert_eq!(
+            crate::terminal_loop::route_key(&mut screen, &mut retained, &view, Key::Char('x')),
+            KeyOut::Local
+        );
+        assert!(screen.has_selection());
+        assert_eq!(screen.composer.text(), "draft");
+    }
+    #[test]
     fn full_viewport_reserves_staged_attachment_and_multiline_editor_rows() {
         let mut root = Node::section("session").id("session");
         for i in 0..100 {

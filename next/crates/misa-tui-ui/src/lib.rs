@@ -21,9 +21,12 @@
 
 mod catalog;
 mod composer;
+mod panel;
 mod reader;
 pub use catalog::Catalog;
 pub use composer::{Composer, ParkedInput};
+use panel::PanelController;
+pub use panel::{PanelState, panel_of};
 pub use reader::Reader;
 
 pub mod buttons;
@@ -48,7 +51,9 @@ use misa_kit::intent::Intent;
 pub use misa_kit::picker::{Accept, Picker};
 use misa_lines::Line;
 use misa_lines::select;
-use misa_proto::view::{ActionOn, Choice, Field, Kind, Node};
+#[cfg(test)]
+use misa_proto::view::ActionOn;
+use misa_proto::view::{Choice, Field, Kind, Node};
 use misa_render::{Theme, ThemeOverrides};
 use misa_terminal_ui::graphics;
 
@@ -156,20 +161,6 @@ impl Action {
     }
 }
 
-/// What somebody has typed into a panel.
-///
-/// A panel is the session's state — what question is open, what field it has — and this is the
-/// client's: the text in the field before it is submitted, which belongs to whoever is typing
-/// and is never sent until they say so.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct PanelInput {
-    /// The id of the panel node this is an answer to.
-    pub panel: String,
-    /// The field being typed into, by id. Empty when the panel has nothing to type into.
-    pub field: String,
-    pub text: String,
-}
-
 /// What a keypress caused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyOut {
@@ -240,8 +231,7 @@ pub struct Screen {
     composer_settings_refreshes: usize,
     pub notice: Option<String>,
     reader: Reader,
-    /// What has been typed into an open panel, and which panel it is for.
-    pub panel: Option<PanelInput>,
+    panel: PanelController,
     pub location: String,
     pub width: u16,
     pub height: u16,
@@ -265,7 +255,7 @@ impl Screen {
             notice: None,
             dialogs: Default::default(),
             reader: Reader::new(),
-            panel: None,
+            panel: PanelController::default(),
             location: String::new(),
             width,
             height,
@@ -429,165 +419,25 @@ impl Screen {
         self.reader.selected_row(body, row)
     }
 
-    /// A key that concerns an open panel, if one is open.
-    ///
-    /// The panel is modal in the terminal, the way the picker is: it is the one thing on the
-    /// screen that is a question rather than something to read, so while it is up every key
-    /// that is not the way out belongs to it. The two exceptions are the ways out of the
-    /// *program*, because a person may always stop.
-    ///
-    /// A client that wanted a non-modal panel would put the field somewhere else; what it may
-    /// not do is decide the panel is not a question.
     pub fn panel_key(&mut self, view: &Node, key: &Key) -> Option<KeyOut> {
-        let panel = panel_of(view)?;
-        if matches!(key, Key::Quit | Key::Interrupt) {
-            return None;
+        let panel = panel::panel_of(view)?;
+        let decision = self.panel.key(panel, key, self.preferences.dialogs());
+        if let Some(notice) = decision.notice {
+            self.notice = notice;
         }
-        let asking = panel.id.clone();
-        if self.panel.as_ref().map(|state| &state.panel) != Some(&asking) {
-            // A draft belongs to the question that asked for it: a value carried into the next
-            // panel is a value nobody wrote.
-            let field = panel_field(panel)
-                .map(|field| field.id.clone())
-                .unwrap_or_default();
-            // The panel's actions are the source of truth for its affordances. The surface
-            // renders them as buttons; putting a second, client-authored prose hint in the
-            // status/notice lane makes the interaction disagree with the action model.
-            self.notice = None;
-            self.panel = Some(PanelInput {
-                panel: asking,
-                field,
-                text: String::new(),
-            });
-        }
-        if let Some(action) = panel.actions.iter().find(|action| {
-            action.on == ActionOn::Click && self.dialog_settings().matches(&action.id, key)
-        }) {
-            self.panel = None;
-            self.notice = None;
-            return Some(KeyOut::Intent(Intent::Action {
-                node: panel.id.clone(),
-                action: action.id.clone(),
-                args: action.args.clone(),
-                fields: Vec::new(),
-            }));
-        }
-        if panel
-            .children
-            .iter()
-            .flat_map(|child| child.actions.iter())
-            .any(|action| {
-                action.on == ActionOn::Submit && self.dialog_settings().matches(&action.id, key)
-            })
-        {
-            return Some(self.submit_panel(panel));
-        }
-        Some(match key {
-            Key::Eof
-                if self
-                    .panel
-                    .as_ref()
-                    .is_some_and(|panel| panel.text.is_empty()) =>
-            {
-                KeyOut::Quit
-            }
-            Key::Escape => self.dismiss_panel(panel),
-            Key::Submit if self.dialog_settings().matches("panel.submit", key) => {
-                self.submit_panel(panel)
-            }
-            Key::Backspace | Key::Delete => {
-                if let Some(state) = self.panel.as_mut() {
-                    state.text.pop();
-                }
-                KeyOut::Local
-            }
-            Key::Char(character) => {
-                if let Some(state) = self.panel.as_mut() {
-                    state.text.push(*character);
-                }
-                KeyOut::Local
-            }
-            _ => KeyOut::Local,
-        })
+        decision.out
     }
-
-    /// Take the panel away, by the action the session offered for it.
-    fn dismiss_panel(&mut self, panel: &Node) -> KeyOut {
-        let close = panel.actions.iter().find(|action| {
-            action.on == ActionOn::Click
-                && self
-                    .dialog_settings()
-                    .key(&action.id)
-                    .is_some_and(|key| key == "escape")
-        });
-        let Some(close) = close else {
-            // A panel nobody can dismiss is the session's decision; this client will not
-            // invent one, and it says so rather than eating the key in silence.
-            self.notice = Some("this panel has no way out".to_string());
-            return KeyOut::Local;
-        };
-        self.panel = None;
-        self.notice = None;
-        KeyOut::Intent(Intent::Action {
-            node: panel.id.clone(),
-            action: close.id.clone(),
-            args: misa_value::Value::Null,
-            fields: Vec::new(),
-        })
+    pub fn panel_active(&self) -> bool {
+        self.panel.active()
     }
-
-    /// Send what is in the field, if the panel asked for something.
-    fn submit_panel(&mut self, panel: &Node) -> KeyOut {
-        let Some(form) = panel
-            .children
-            .iter()
-            .find(|child| matches!(&child.kind, Kind::Fields { fields } if !fields.is_empty()))
-        else {
-            return KeyOut::Local;
-        };
-        let Some(action) = form
-            .actions
-            .iter()
-            .find(|action| action.on == ActionOn::Submit)
-        else {
-            return KeyOut::Local;
-        };
-        let Kind::Fields { fields: declared } = &form.kind else {
-            return KeyOut::Local;
-        };
-        let typed = self
-            .panel
-            .as_ref()
-            .map(|state| state.text.clone())
-            .unwrap_or_default();
-        let focused = self
-            .panel
-            .as_ref()
-            .map(|state| state.field.clone())
-            .unwrap_or_default();
-        let fields = declared
-            .iter()
-            .map(|field| Field {
-                value: if field.id == focused {
-                    typed.clone()
-                } else {
-                    field.value.clone()
-                },
-                ..field.clone()
-            })
-            .collect::<Vec<_>>();
-        // What was typed goes out of this client's hands as it leaves the screen: a secret
-        // that stays in a field after it has been sent is a secret on a screen.
-        if let Some(state) = self.panel.as_mut() {
-            state.text.clear();
-        }
-        self.notice = None;
-        KeyOut::Intent(Intent::Action {
-            node: form.id.clone(),
-            action: action.id.clone(),
-            args: misa_value::Value::Null,
-            fields,
-        })
+    pub fn clear_panel(&mut self) {
+        self.panel.clear();
+    }
+    pub fn park_panel(&mut self) -> PanelState {
+        self.panel.park()
+    }
+    pub fn restore_panel(&mut self, state: PanelState) {
+        self.panel.restore(state);
     }
 
     fn composer_settings(&self) -> composer::Settings {
@@ -735,14 +585,7 @@ impl Screen {
             .iter()
             .map(|child| self.resolve(child))
             .collect();
-        // What is being typed into a panel is drawn in the panel's field. The session sent an
-        // empty one and knows nothing about the draft, which is the whole of why a secret can
-        // be typed into a terminal and still never reach a log.
-        if let (Kind::Fields { fields }, Some(state)) = (&mut node.kind, &self.panel)
-            && let Some(field) = fields.iter_mut().find(|field| field.id == state.field)
-        {
-            field.value = state.text.clone();
-        }
+        self.panel.resolve(&mut node);
         if let Kind::Collapsible { summary } = &node.kind {
             let open = self.is_open(&node.id);
             if open {
@@ -766,33 +609,6 @@ impl Screen {
         }
         node
     }
-}
-
-/// The panel in a view, if the session has one open.
-///
-/// By role rather than by id: the id is the session's name for the panel — `login`,
-/// `authorize` — and that is what an action has to name, so the role is what says what a node
-/// *is*.
-pub fn panel_of(view: &Node) -> Option<&Node> {
-    if view.role == "panel" {
-        return Some(view);
-    }
-    view.children.iter().find_map(panel_of)
-}
-
-/// The field a panel wants typed into, if it wants one.
-fn panel_field(panel: &Node) -> Option<&Field> {
-    panel.children.iter().find_map(|child| match &child.kind {
-        Kind::Fields { fields }
-            if child
-                .actions
-                .iter()
-                .any(|action| action.on == ActionOn::Submit) =>
-        {
-            fields.iter().find(|field| !field.read_only)
-        }
-        _ => None,
-    })
 }
 
 /// A key, in the vocabulary the client cares about.
@@ -1706,6 +1522,26 @@ mod tests {
             reading.panel_key(&report, &Key::Escape),
             Some(KeyOut::Intent(_))
         ));
+    }
+
+    #[test]
+    fn parked_panel_drafts_stay_with_their_scope_and_notices_stay_local() {
+        let view = panel_view(true);
+        let mut screen = screen();
+        for character in "private-token".chars() {
+            screen.panel_key(&view, &Key::Char(character));
+        }
+        let parked = screen.park_panel();
+        assert!(!screen.panel_active());
+        screen.panel_key(&view, &Key::Char('x'));
+        assert!(matches!(screen.panel_key(&view, &Key::Submit),
+            Some(KeyOut::Intent(Intent::Action { fields, .. })) if fields[0].value == "x"));
+        screen.restore_panel(parked);
+        assert!(matches!(screen.panel_key(&view, &Key::Submit),
+            Some(KeyOut::Intent(Intent::Action { fields, .. })) if fields[0].value == "private-token"));
+        assert!(!text_of(&screen, &view).contains("private-token"));
+        screen.clear_panel();
+        assert!(!screen.panel_active());
     }
 
     #[test]

@@ -191,7 +191,7 @@ async fn drive_with_clipboard(
                 match update {
                     Some(Update::View(crate::Presentation::Forget(id)))=>{
                         parked.remove(&id);
-                        if scope==id {scope.clear();screen.composer.set_text("");screen.composer.clear_picker();screen.dialogs=Default::default();screen.panel=None;screen.clear_selection();contributions.clear();pending.clear();uploads=0;}
+                        if scope==id {scope.clear();screen.composer.set_text("");screen.composer.clear_picker();screen.dialogs=Default::default();screen.clear_panel();screen.clear_selection();contributions.clear();pending.clear();uploads=0;}
                     },
                     Some(Update::View(crate::Presentation::Documents(documents))) => {
                         for (id,update) in documents {
@@ -211,13 +211,13 @@ async fn drive_with_clipboard(
                             let old = (
                                 std::mem::replace(&mut retained, crate::retained::Retained::new(misa_proto::Node::section("session").id("session"), screen)),
                                 std::mem::take(&mut contributions), std::mem::take(&mut screen.dialogs),
-                                screen.composer.park(), screen.panel.take(),
+                                screen.composer.park(), screen.park_panel(),
                                 screen.park_reader(),
                                 std::mem::take(&mut pending), uploads, generation,
                             );
                             if !scope.is_empty() { parked.insert(scope,old); }
                             if let Some((r,c,d,composer,panel,reader,attachments,upload_count,epoch))=parked.remove(&next) {
-                                retained=r;contributions=c;screen.dialogs=d;screen.composer.restore(composer);screen.panel=panel;screen.restore_reader(reader);pending=attachments;uploads=upload_count;generation=epoch;screen.activate_draft_scope(next.clone());
+                                retained=r;contributions=c;screen.dialogs=d;screen.composer.restore(composer);screen.restore_panel(panel);screen.restore_reader(reader);pending=attachments;uploads=upload_count;generation=epoch;screen.activate_draft_scope(next.clone());
                             } else { screen.restore_draft_scope(next.clone());screen.reset_reader_viewport();uploads=0;generation=generation.wrapping_add(1); }
                             scope=next;
                         }
@@ -441,7 +441,7 @@ async fn drive_with_clipboard(
                     if key == crate::Key::Interrupt
                         && !screen.composer.has_picker()
                         && !screen.dialogs.focused()
-                        && screen.panel.is_none()
+                        && !screen.panel_active()
                         && !screen.has_selection()
                         && !has_action(&view, "turn.cancel")
                     {
@@ -450,6 +450,8 @@ async fn drive_with_clipboard(
                         continue;
                     }
                     if matches!(key, crate::Key::QueueEdit)
+                        && !screen.dialogs.focused()
+                        && crate::panel_of(&view).is_none()
                         && view.children.iter().any(|node| {
                             node.id == "queue"
                                 && node.actions.iter().any(|action| action.id == "queue.edit")
