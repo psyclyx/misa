@@ -74,7 +74,7 @@ struct FieldViewport {
     x: f32,
     line: usize,
 }
-pub struct App {
+pub struct DocumentUi {
     light: bool,
     metrics: Arc<dyn TextMetrics>,
     document: document::DocumentStore,
@@ -85,7 +85,7 @@ pub struct App {
     viewport: Viewport,
     offline_elapsed: Duration,
 }
-impl App {
+impl DocumentUi {
     pub fn new(view: Node, metrics: Arc<dyn TextMetrics>) -> Self {
         let mut app = Self {
             document: document::DocumentStore::new(Node::section("session")),

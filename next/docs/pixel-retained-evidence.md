@@ -42,7 +42,7 @@ The client-free `misa-skia-testbed --bench-ab` paints the _same_ retained warm s
 typeface cached across frames. This is a release-build, same-binary, interleaved ABBA/BAAB comparison:
 six blocks, 12 samples per mode per fixture. Uncached pixels are the reference; six unchanged
 frames, the changed-owner scene, the profiled path, and the production path match pixel-for-pixel.
-The clock excludes App construction, scene layout, PNG encoding, Vulkan window presentation,
+The clock excludes DocumentUi construction, scene layout, PNG encoding, Vulkan window presentation,
 and network delivery. Median/best raster times in **ms**, measured after splitting the UI crate:
 
 | Fixture      |        Cached |      Uncached |
@@ -66,34 +66,34 @@ painter uses; narrow rows are clipped on both raster and Vulkan canvases.
 The following baseline predates measured text layout; it is retained to show the
 cost of the correctness cutover, not as an equivalent-scene speed comparison.
 
-`misa-skia-testbed --bench-gpu` drives the same backend-neutral App and Ganesh painter used
+`misa-skia-testbed --bench-gpu` drives the same backend-neutral DocumentUi and Ganesh painter used
 by the native window, but renders to an offscreen Vulkan target and synchronously reads back
 RGBA pixels. On lavapipe at 800×600, six repeated frames passed the pixel-determinism oracle;
 the fixture includes one decoded image. Release results below are median/best in **ms** over
-12 samples per phase. App construction, PNG encoding, native swapchain presentation, and
+12 samples per phase. DocumentUi construction, PNG encoding, native swapchain presentation, and
 network delivery are excluded; the GPU column **includes synchronization and readback**.
 
-| Owners | Phase         | App frame/layout | Vulkan render + readback |
-| -----: | ------------- | ---------------: | -----------------------: |
-|     10 | cold          |    0.042 / 0.040 |            0.765 / 0.688 |
-|     10 | unchanged     |    0.017 / 0.016 |            1.025 / 0.888 |
-|     10 | replace owner |    0.041 / 0.039 |            1.017 / 0.902 |
-|  1,000 | cold          |    1.961 / 1.915 |            2.084 / 1.944 |
-|  1,000 | unchanged     |    0.042 / 0.041 |            2.022 / 1.935 |
-|  1,000 | replace owner |    2.156 / 2.026 |            2.057 / 1.921 |
+| Owners | Phase         | DocumentUi frame/layout | Vulkan render + readback |
+| -----: | ------------- | ----------------------: | -----------------------: |
+|     10 | cold          |           0.042 / 0.040 |            0.765 / 0.688 |
+|     10 | unchanged     |           0.017 / 0.016 |            1.025 / 0.888 |
+|     10 | replace owner |           0.041 / 0.039 |            1.017 / 0.902 |
+|  1,000 | cold          |           1.961 / 1.915 |            2.084 / 1.944 |
+|  1,000 | unchanged     |           0.042 / 0.041 |            2.022 / 1.935 |
+|  1,000 | replace owner |           2.156 / 2.026 |            2.057 / 1.921 |
 
 With measured text and shared retained row geometry, a subsequent release run of
 `--bench-gpu` on the same lavapipe device at 800×600 (median/best ms, 12 samples
 per phase) yielded:
 
-| Owners | Phase         | App frame/layout | Vulkan render + readback |
-| -----: | ------------- | ---------------: | -----------------------: |
-|     10 | cold          |    0.077 / 0.074 |            0.845 / 0.798 |
-|     10 | unchanged     |    0.017 / 0.016 |            1.041 / 0.956 |
-|     10 | replace owner |    0.080 / 0.076 |            1.111 / 1.014 |
-|  1,000 | cold          |    4.993 / 4.833 |            2.257 / 2.126 |
-|  1,000 | unchanged     |    0.035 / 0.033 |            2.226 / 2.077 |
-|  1,000 | replace owner |    5.277 / 5.038 |            2.307 / 2.115 |
+| Owners | Phase         | DocumentUi frame/layout | Vulkan render + readback |
+| -----: | ------------- | ----------------------: | -----------------------: |
+|     10 | cold          |           0.077 / 0.074 |            0.845 / 0.798 |
+|     10 | unchanged     |           0.017 / 0.016 |            1.041 / 0.956 |
+|     10 | replace owner |           0.080 / 0.076 |            1.111 / 1.014 |
+|  1,000 | cold          |           4.993 / 4.833 |            2.257 / 2.126 |
+|  1,000 | unchanged     |           0.035 / 0.033 |            2.226 / 2.077 |
+|  1,000 | replace owner |           5.277 / 5.038 |            2.307 / 2.115 |
 
 Measured cold/changed layout costs more than the previous guessed-width layout;
 unchanged frames still reuse display lists and row geometry. Different layout

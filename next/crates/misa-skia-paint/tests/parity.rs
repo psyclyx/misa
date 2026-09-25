@@ -1,10 +1,10 @@
+use misa_pixel_document::ui::{DocumentUi, DocumentUpdate};
 use misa_pixel_ui::{Op, Scene};
 use misa_proto::{
     sync::{IndexedTree, Stream, StreamUpdate, ViewOp},
     view::{Kind, Node, Span},
 };
 use misa_skia_paint::{draw_scene, png, raster, text_metrics};
-use misa_skia_ui::app::{App, DocumentUpdate};
 use misa_style::Color;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +25,7 @@ fn view(owners: usize) -> Node {
 #[test]
 fn scene_paints_to_png() {
     let metrics = text_metrics().expect("Skia text metrics for PNG test");
-    let scene = App::new(view(10), metrics).frame_at(800, 600, Duration::ZERO);
+    let scene = DocumentUi::new(view(10), metrics).frame_at(800, 600, Duration::ZERO);
     let bytes = png(&scene, BACKGROUND).expect("a png");
     assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
     assert!(
@@ -39,7 +39,7 @@ fn scene_paints_to_png() {
 fn raster_oracle_is_deterministic_after_reset() {
     for owners in [10, 1000] {
         let view = view(owners);
-        let mut app = App::new(
+        let mut app = DocumentUi::new(
             view.clone(),
             text_metrics().expect("Skia text metrics for raster oracle"),
         );
@@ -67,7 +67,7 @@ fn retained_bitmap_reaches_raster() {
             height: 1,
         },
     ));
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         view,
         text_metrics().expect("Skia text metrics for bitmap test"),
     );
@@ -84,7 +84,7 @@ fn retained_bitmap_reaches_raster() {
     assert!(pixels.pixels().any(|pixel| pixel.0 == [255, 0, 0, 255]));
 }
 
-fn parity(app: &mut App, tree: &IndexedTree, streams: &[Stream]) {
+fn parity(app: &mut DocumentUi, tree: &IndexedTree, streams: &[Stream]) {
     let mut view = tree.snapshot();
     let mut overlay = Node::section("streams").id("streams");
     for stream in streams {
@@ -104,7 +104,7 @@ fn parity(app: &mut App, tree: &IndexedTree, streams: &[Stream]) {
         view.children[0].children.push(overlay);
     }
     let warm = app.frame_at(800, 600, Duration::ZERO);
-    let cold = App::new(
+    let cold = DocumentUi::new(
         view,
         text_metrics().expect("Skia text metrics for cold parity frame"),
     )
@@ -115,7 +115,7 @@ fn parity(app: &mut App, tree: &IndexedTree, streams: &[Stream]) {
     );
 }
 
-fn changed(app: &mut App, tree: &[ViewOp], live: &[StreamUpdate], reset_live: bool) {
+fn changed(app: &mut DocumentUi, tree: &[ViewOp], live: &[StreamUpdate], reset_live: bool) {
     app.observed(&DocumentUpdate::Changed {
         tree,
         live,
@@ -129,7 +129,7 @@ fn scoped_transaction_and_stream_changes_match_cold_pixels() {
     for owners in [10, 1000] {
         let view = view(owners);
         let mut tree = IndexedTree::new(view.clone());
-        let mut app = App::new(
+        let mut app = DocumentUi::new(
             view,
             text_metrics().expect("Skia text metrics for stream test"),
         );
@@ -276,9 +276,9 @@ fn narrow_quote_table_selected_row_is_clipped_in_skia_pixels() {
             align: vec![],
         },
     ));
-    let mut app = App::new(view, text_metrics().unwrap());
+    let mut app = DocumentUi::new(view, text_metrics().unwrap());
     app.frame_at(92, 500, Duration::ZERO);
-    app.key(misa_skia_ui::app::Key::SelectAll);
+    app.key(misa_pixel_document::ui::Key::SelectAll);
     let scene = app.frame_at(92, 500, Duration::ZERO);
     let cell_width = (92.0 - 40.0) / 2.0;
     let left = 20.0 + cell_width + 5.0;

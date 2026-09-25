@@ -1,6 +1,6 @@
+use misa_pixel_document::ui::DocumentUi;
 use misa_pixel_ui::{Op, Scene};
 use misa_proto::view::{Node, Span};
-use misa_skia_ui::app::App;
 use misa_skia_vulkan::Renderer;
 use misa_style::Color;
 use std::{sync::Arc, time::Duration};
@@ -104,19 +104,19 @@ fn app_drives_two_deterministic_gpu_frames() {
         .id("session")
         .child(Node::text("message.user", [Span::plain("A real Skia canvas")]).id("message"));
     let metrics = misa_skia_paint::text_metrics().expect("Skia text metrics for GPU test");
-    let mut app = App::new(tree.clone(), metrics.clone());
+    let mut app = DocumentUi::new(tree.clone(), metrics.clone());
     let mut renderer = Renderer::new().expect("Vulkan/Ganesh device required (lavapipe is fine)");
     let a = renderer
         .render(&app.frame_at(320, 160, Duration::ZERO), BG)
-        .expect("first App frame");
+        .expect("first DocumentUi frame");
     let b = renderer
         .render(&app.frame_at(320, 160, Duration::ZERO), BG)
-        .expect("second App frame");
+        .expect("second DocumentUi frame");
     assert_eq!(a, b);
     assert_eq!(a.dimensions(), (320, 160));
     assert!(a.pixels().any(|p| p.0 != [20, 22, 26, 255]));
-    // Independently constructed App layout also renders on this context.
-    let scene = App::new(tree, metrics).frame_at(320, 160, Duration::ZERO);
+    // Independently constructed DocumentUi layout also renders on this context.
+    let scene = DocumentUi::new(tree, metrics).frame_at(320, 160, Duration::ZERO);
     assert!(!scene.ops.is_empty());
     assert!(renderer.render(&scene, BG).is_ok());
 }

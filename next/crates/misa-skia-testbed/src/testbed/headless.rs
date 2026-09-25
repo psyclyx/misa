@@ -2,7 +2,7 @@
 //! and a real offscreen Ganesh/Vulkan render target. No winit event loop, display
 //! handle, swapchain, transport, or raster fallback is constructed here.
 use super::Fixtures;
-use crate::app::Control;
+use misa_pixel_document::ui::Control;
 use misa_skia_vulkan::Renderer;
 use misa_style::Color;
 use misa_window_core::{Clock, Event, Key, Size};
@@ -59,7 +59,7 @@ impl Headless {
     }
 
     /// Center of the visible fixture field, for pointer-based test scripts.
-    /// Call after a semantic frame has populated the App hit map.
+    /// Call after a semantic frame has populated the DocumentUi hit map.
     pub fn field_hit(&self) -> Option<(f32, f32)> {
         self.fixtures.semantic.control_center(&Control::Field {
             node: "panel.input".into(),
@@ -85,7 +85,7 @@ impl Headless {
             .input(event, self.clock.elapsed(), self.size.width);
     }
 
-    /// A redraw drives App::drive(Event::Redraw), which calls App::frame_at,
+    /// A redraw drives DocumentUi::drive(Event::Redraw), which calls DocumentUi::frame_at,
     /// then renders that same scene through the Vulkan offscreen readback path.
     pub fn frame(&mut self) -> Result<Snapshot, String> {
         if self.size.width == 0 || self.size.height == 0 {

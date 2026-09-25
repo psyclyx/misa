@@ -14,7 +14,7 @@ native = ["dep:winit", "dep:raw-window-handle", "misa-skia-vulkan/window"]
 misa-pixel-ui = { path = "../misa-pixel-ui" }
 misa-pixel-testbed = { path = "../misa-pixel-testbed" }
 image.workspace = true
-misa-skia-ui = { path = "../misa-skia-ui" }
+misa-pixel-document = { path = "../misa-pixel-document" }
 misa-skia-paint = { path = "../misa-skia-paint" }
 misa-window-core = { path = "../misa-window-core" }
 misa-proto.workspace = true

@@ -167,9 +167,9 @@ Two actual blob-protocol tests verify reference mismatch detection, content-addr
 
 ## Native retained document application and local reports
 
-Skia App now applies shared document updates through its retained tree/live caches. A composed update applies canonical changes and live retirement before returning to the window; unchanged history retains its paint groups. A new 10/1000-owner test verifies atomic settlement, bounded changed-node layout, retained allocation identity, and pixel equality with a cold render.
+Skia document UI now applies shared document updates through its retained tree/live caches. A composed update applies canonical changes and live retirement before returning to the window; unchanged history retains its paint groups. A new 10/1000-owner test verifies atomic settlement, bounded changed-node layout, retained allocation identity, and pixel equality with a cold render.
 
-Read-only reports are local App state with scroll, copy, and dismissal. They do not enter the replica or overwrite composer drafts; report wrapping is cached until width changes. Rejected/indeterminate prompt text returns to an empty composer or remains in a separate copyable recovery report when newer typing exists. Tests verify dismissal emits no domain action, newer text survives, and canonical content is unchanged.
+Read-only reports are local document UI state with scroll, copy, and dismissal. They do not enter the replica or overwrite composer drafts; report wrapping is cached until width changes. Rejected/indeterminate prompt text returns to an empty composer or remains in a separate copyable recovery report when newer typing exists. Tests verify dismissal emits no domain action, newer text survives, and canonical content is unchanged.
 
 `cargo test --manifest-path next/Cargo.toml -p misa-skia --lib --quiet` passes all22 tests after these changes. Native transport/window event cutover is still being implemented; this result alone does not claim a working scoped native window.
 
@@ -181,7 +181,7 @@ The Chromium DOM fixture now verifies atomic canonical/live settlement as observ
 
 ### Scoped native window
 
-Skia's production native `connection.rs` now resolves the ticket through shared daemon relationships/directory, loads the installed Interface and Interaction catalogs, and observes the chosen session incarnation. It no longer attaches a legacy transport client or owns a ClientView recovery loop. One coalesced window wakeup captures the latest shared replica with `document::Reader`; the window calls `App::observed` directly. A second independent document consumer discovers image references from resets and ordered inserted/replaced subtrees.
+Skia's production native `connection.rs` now resolves the ticket through shared daemon relationships/directory, loads the installed Interface and Interaction catalogs, and observes the chosen session incarnation. It no longer attaches a legacy transport client or owns a ClientView recovery loop. One coalesced window wakeup captures the latest shared replica with `document::Reader`; the window calls `DocumentUi::observed` directly. A second independent document consumer discovers image references from resets and ordered inserted/replaced subtrees.
 
 Commands, operation-result observations, authoritative `session.attachment.resolve` saves, downloads, and blocking filesystem writes run as bounded independent tasks. Completed data/read commands open the local structured report; rejected/indeterminate prompt text is restored without overwriting newer typing. Image fetch/decode stays off observation delivery, uses shared Transfers and decoder allocation/dimension limits, and has at most two decoded image events awaiting the window. The renderer cache is limited to32MiB; eviction releases retained scene Arcs and exposes an explicit local Load image action. Dropped image owners are pruned and late decodes cannot repopulate removed owners.
 

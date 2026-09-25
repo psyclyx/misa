@@ -138,7 +138,7 @@ waits for a live advertisement, and leaves the daemon running after the client e
 Nix frontend wrappers default it to the packaged daemon. No daemon flags are assumed for
 external binaries. Without `--start-local`, neither frontend launches a daemon.
 
-The terminal screen in `misa-tui-ui` and document presenter in `misa-skia-ui`
+The terminal screen in `misa-tui-ui` and document presenter in `misa-pixel-document`
 are **Misa-specific application UI**, not reusable toolkits. Physical ANSI row
 painting, SGR and Kitty graphics live in `misa-terminal-ui`, which depends only
 on `misa-style`, `unicode-width`, `image` and `base64`; `misa-lines` supplies
@@ -162,7 +162,7 @@ Vulkan readback have no protocol/tree/kit/render dependency. Its clipped list us
 shared pixel viewport for wheel scrolling, resize clamping and following appended rows.
 `misa-skia-testbed` uses that Dashboard for Ctrl+1 and keeps its separate semantic
 `misa-proto` fixture. All semantic
-pixel views, including PNG exports, use the same `App` layout; its text positions,
+pixel views, including PNG exports, use the same `DocumentUi` layout; its text positions,
 wrapping, caret and selection use measurements from the font used for painting.
 
 The window supports typed fields, disclosure toggles, tables, meters, images, text selection and

@@ -27,18 +27,19 @@ pub async fn save(daemon: String, id: String, choice: Choice) -> Result<(), Stri
 fn appearance_path() -> Result<std::path::PathBuf, String> {
     Ok(misa_transport::identity::client_path("misa-skia")?.with_file_name("misa-skia-appearance"))
 }
-pub fn appearance() -> crate::appearance::Choice {
+pub fn appearance() -> misa_pixel_document::appearance::Choice {
     appearance_path()
         .ok()
         .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|value| crate::appearance::Choice::parse(value.trim()))
+        .and_then(|value| misa_pixel_document::appearance::Choice::parse(value.trim()))
         .unwrap_or_default()
 }
 /// One local writer preserves click order without doing filesystem work on the window loop.
 pub fn appearance_writer(
     proxy: winit::event_loop::EventLoopProxy<crate::connection::Update>,
-) -> std::sync::mpsc::SyncSender<crate::appearance::Choice> {
-    let (sender, receiver) = std::sync::mpsc::sync_channel::<crate::appearance::Choice>(8);
+) -> std::sync::mpsc::SyncSender<misa_pixel_document::appearance::Choice> {
+    let (sender, receiver) =
+        std::sync::mpsc::sync_channel::<misa_pixel_document::appearance::Choice>(8);
     std::thread::spawn(move || {
         for choice in receiver {
             if let Err(error) = write_appearance(choice) {
@@ -50,7 +51,7 @@ pub fn appearance_writer(
     });
     sender
 }
-fn write_appearance(choice: crate::appearance::Choice) -> Result<(), String> {
+fn write_appearance(choice: misa_pixel_document::appearance::Choice) -> Result<(), String> {
     use std::io::Write;
     let path = appearance_path()?;
     let parent = path.parent().ok_or("Appearance path has no parent")?;

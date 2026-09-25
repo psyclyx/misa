@@ -74,7 +74,7 @@ fn semantic_text_pointer_resize_and_fake_clock_paint_glyphs_on_gpu() {
     assert!(text(&edited.scene.ops).contains("Local draft!"));
     assert_ne!(first.pixels, edited.pixels);
     // Hit a semantic field through the same pointer event the native host sends.
-    // The field location is obtained from the App's hit map, not guessed geometry.
+    // The field location is obtained from the DocumentUi's hit map, not guessed geometry.
     let field = host.field_hit().expect("visible note field");
     host.input(Event::Pointer {
         x: field.0,

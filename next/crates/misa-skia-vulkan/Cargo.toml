@@ -1,6 +1,6 @@
 [package]
 name = "misa-skia-vulkan"
-description = "Ganesh Vulkan renderer for misa-skia-ui scenes and native windows"
+description = "Ganesh Vulkan renderer for misa-pixel-ui scenes and native windows"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -21,5 +21,5 @@ misa-style.workspace = true
 skia-safe.workspace = true
 
 [dev-dependencies]
-misa-skia-ui = { path = "../misa-skia-ui" }
+misa-pixel-document = { path = "../misa-pixel-document" }
 misa-proto.workspace = true

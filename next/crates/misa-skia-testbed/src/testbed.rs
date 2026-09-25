@@ -4,10 +4,10 @@ pub mod headless;
 #[cfg(feature = "native")]
 pub mod window;
 
-#[cfg(test)]
-use crate::app::PULSE_PERIOD;
-use crate::app::{App, Key};
 use crate::{Op, Scene};
+#[cfg(test)]
+use misa_pixel_document::ui::PULSE_PERIOD;
+use misa_pixel_document::ui::{DocumentUi, Key};
 use misa_pixel_testbed::Dashboard;
 use misa_pixel_ui::TextMetrics;
 use misa_proto::view::{Action, ActionOn, Field, FieldKind, Kind, Node, Span};
@@ -28,7 +28,7 @@ struct Fixtures {
     mode: Mode,
     native: Dashboard,
     metrics: Arc<dyn TextMetrics>,
-    semantic: App,
+    semantic: DocumentUi,
     deadline: Option<Duration>,
 }
 
@@ -39,7 +39,7 @@ impl Fixtures {
         Ok(Self {
             mode: Mode::Native,
             native: Dashboard::default(),
-            semantic: App::new(semantic_fixture(), metrics.clone()),
+            semantic: DocumentUi::new(semantic_fixture(), metrics.clone()),
             metrics,
             deadline: None,
         })
@@ -198,7 +198,7 @@ fn semantic_fixture() -> Node {
             .child(Node::text(
                 "message.user",
                 [
-                    Span::plain("A local tree rendered via App::frame."),
+                    Span::plain("A local tree rendered by the semantic document UI."),
                     Span::code(" No daemon required."),
                 ],
             )),
@@ -293,7 +293,7 @@ mod tests {
         assert!(has_text(&semantic.ops, "Semantic fixture"));
         fixtures
             .semantic
-            .focus_control(Some(crate::app::Control::Field {
+            .focus_control(Some(misa_pixel_document::ui::Control::Field {
                 node: "panel.input".into(),
                 field: "note".into(),
             }));

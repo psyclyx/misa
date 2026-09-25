@@ -2814,6 +2814,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "misa-pixel-document"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "misa-kit",
+ "misa-pixel-ui",
+ "misa-proto",
+ "misa-render",
+ "misa-style",
+ "misa-syntax",
+ "misa-value",
+ "misa-window-core",
+ "serde_json",
+]
+
+[[package]]
 name = "misa-pixel-testbed"
 version = "0.1.0"
 dependencies = [
@@ -2919,12 +2935,12 @@ dependencies = [
  "misa-client",
  "misa-kit",
  "misa-local-start",
+ "misa-pixel-document",
  "misa-pixel-ui",
  "misa-proto",
  "misa-protocol",
  "misa-render",
  "misa-skia-paint",
- "misa-skia-ui",
  "misa-skia-vulkan",
  "misa-style",
  "misa-transport",
@@ -2941,9 +2957,9 @@ name = "misa-skia-paint"
 version = "0.1.0"
 dependencies = [
  "image",
+ "misa-pixel-document",
  "misa-pixel-ui",
  "misa-proto",
- "misa-skia-ui",
  "misa-style",
  "skia-safe",
 ]
@@ -2953,12 +2969,12 @@ name = "misa-skia-testbed"
 version = "0.1.0"
 dependencies = [
  "image",
+ "misa-pixel-document",
  "misa-pixel-testbed",
  "misa-pixel-ui",
  "misa-proto",
  "misa-render",
  "misa-skia-paint",
- "misa-skia-ui",
  "misa-skia-vulkan",
  "misa-style",
  "misa-value",
@@ -2968,32 +2984,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "misa-skia-ui"
-version = "0.1.0"
-dependencies = [
- "image",
- "misa-kit",
- "misa-pixel-ui",
- "misa-proto",
- "misa-render",
- "misa-style",
- "misa-syntax",
- "misa-value",
- "misa-window-core",
- "serde_json",
-]
-
-[[package]]
 name = "misa-skia-vulkan"
 version = "0.1.0"
 dependencies = [
  "ash",
  "ash-window",
  "image",
+ "misa-pixel-document",
  "misa-pixel-ui",
  "misa-proto",
  "misa-skia-paint",
- "misa-skia-ui",
  "misa-style",
  "raw-window-handle",
  "skia-safe",

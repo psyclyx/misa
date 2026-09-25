@@ -1,6 +1,5 @@
 //! Native relationship owner. Replica delivery, requests and blob work have
 //! independent bounded lifetimes; the window never performs network IO.
-use crate::app::Command;
 use crate::workspace::{Action, PresentationChoice};
 use misa_client::{
     daemons::{Daemon, Daemons},
@@ -10,6 +9,7 @@ use misa_client::{
     interface::{self, Interface},
 };
 use misa_kit::intent::Intent;
+use misa_pixel_document::ui::Command;
 use misa_proto::{
     invocation::Outcome,
     observation::Selection,

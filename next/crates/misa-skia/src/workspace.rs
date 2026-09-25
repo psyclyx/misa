@@ -1,7 +1,7 @@
 //! Native-local relationship selection and request instances. Neither a hidden
 //! dialog nor a session switch cancels the operation that owns a request.
-use crate::app::{App, Command, Key};
 use misa_client::request::Model;
+use misa_pixel_document::ui::{Command, DocumentUi, Key};
 use misa_pixel_ui::{Scene, TextMetrics};
 use misa_proto::{
     directory::Entry,
@@ -10,12 +10,12 @@ use misa_proto::{
 use misa_value::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
-/// Actions produced by host-owned workspace controls. UI App effects are kept
+/// Actions produced by host-owned workspace controls. UI DocumentUi effects are kept
 /// distinct so relationship and request workflow never leaks into the UI crate.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Ui(Command),
-    Appearance(crate::appearance::Choice),
+    Appearance(misa_pixel_document::appearance::Choice),
     InvokeInstalled {
         command: String,
         input: Value,
@@ -91,7 +91,7 @@ pub struct DaemonChoice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Control;
+    use misa_pixel_document::ui::Control;
 
     fn request(generation: i64) -> Model {
         Model {
@@ -346,18 +346,18 @@ mod tests {
 }
 pub struct Local {
     metrics: Arc<dyn TextMetrics>,
-    report: Option<App>,
-    appearance: crate::appearance::Choice,
+    report: Option<DocumentUi>,
+    appearance: misa_pixel_document::appearance::Choice,
     installed_commands: BTreeMap<String, Result<misa_client::form::Form, String>>,
     choosing_commands: bool,
     command_form: bool,
     form_visible: bool,
     managing: Option<String>,
-    daemon_form: Option<(String, misa_client::form::Form, App)>,
-    form: Option<(String, App)>,
+    daemon_form: Option<(String, misa_client::form::Form, DocumentUi)>,
+    form: Option<(String, DocumentUi)>,
     directories: Vec<DaemonChoice>,
-    chooser: Option<App>,
-    requests: BTreeMap<String, (Model, App)>,
+    chooser: Option<DocumentUi>,
+    requests: BTreeMap<String, (Model, DocumentUi)>,
     attention: Option<(String, i64)>,
     active: Option<String>,
     catalog: Vec<misa_proto::presentation::Presentation>,
@@ -407,14 +407,14 @@ impl Local {
 
     pub fn report(&mut self, document: Node) {
         self.deactivate();
-        self.report = Some(App::new(document, self.metrics.clone()));
+        self.report = Some(DocumentUi::new(document, self.metrics.clone()));
     }
     pub fn set_light(&mut self, light: bool) {
         if let Some(app) = self.app() {
             app.set_light(light);
         }
     }
-    pub fn appearance(&mut self, choice: crate::appearance::Choice) {
+    pub fn appearance(&mut self, choice: misa_pixel_document::appearance::Choice) {
         if self.appearance != choice {
             self.appearance = choice;
             if self.choosing_presentations {
@@ -469,7 +469,7 @@ impl Local {
                 )],
             ));
         }
-        let mut app = App::new(root, self.metrics.clone());
+        let mut app = DocumentUi::new(root, self.metrics.clone());
         app.scroll(-f32::MAX);
         self.chooser = Some(app);
     }
@@ -518,7 +518,7 @@ impl Local {
             .id("local.form")
             .label(form.title.clone())
             .action(action("submit", "Submit", Value::Null, ActionOn::Submit));
-        self.form = Some((form.title, App::new(node, self.metrics.clone())));
+        self.form = Some((form.title, DocumentUi::new(node, self.metrics.clone())));
     }
     pub fn deactivate(&mut self) {
         self.report = None;
@@ -544,7 +544,10 @@ impl Local {
         self.daemon_form = None;
         self.choosing_presentations = false;
         self.hide_request();
-        self.chooser = Some(App::new(Node::section("chooser"), self.metrics.clone()));
+        self.chooser = Some(DocumentUi::new(
+            Node::section("chooser"),
+            self.metrics.clone(),
+        ));
         self.rebuild_chooser();
     }
     pub fn composition(
@@ -635,9 +638,9 @@ impl Local {
             root = root.child(row);
         }
         for choice in [
-            crate::appearance::Choice::System,
-            crate::appearance::Choice::Dark,
-            crate::appearance::Choice::Light,
+            misa_pixel_document::appearance::Choice::System,
+            misa_pixel_document::appearance::Choice::Dark,
+            misa_pixel_document::appearance::Choice::Light,
         ] {
             root = root.action(action(
                 &format!("appearance.{}", choice.name()),
@@ -646,7 +649,7 @@ impl Local {
                 ActionOn::Click,
             ));
         }
-        self.chooser = Some(App::new(root, self.metrics.clone()));
+        self.chooser = Some(DocumentUi::new(root, self.metrics.clone()));
     }
     fn rebuild_chooser(&mut self) {
         if self.managing.is_some() {
@@ -824,8 +827,10 @@ impl Local {
             .label(format!("{} · Escape hides · Ctrl+R reopens", model.title))
             .child(model.body.clone())
             .child(form);
-        self.requests
-            .insert(id.clone(), (model, App::new(view, self.metrics.clone())));
+        self.requests.insert(
+            id.clone(),
+            (model, DocumentUi::new(view, self.metrics.clone())),
+        );
         self.focus_attention();
     }
     fn hide_request(&mut self) {
@@ -852,7 +857,7 @@ impl Local {
     pub fn pending_requests(&self) -> usize {
         self.requests.len()
     }
-    fn app(&mut self) -> Option<&mut App> {
+    fn app(&mut self) -> Option<&mut DocumentUi> {
         if self.report.is_some() {
             return self.report.as_mut();
         }
@@ -974,7 +979,7 @@ impl Local {
                     ..
                 }) if self.chooser.is_some() => match action.as_str() {
                     action if action.starts_with("appearance.") => Some(Action::Appearance(
-                        crate::appearance::Choice::parse(args.as_str()?)?,
+                        misa_pixel_document::appearance::Choice::parse(args.as_str()?)?,
                     )),
                     "installed-command" => {
                         let form = self
@@ -1152,7 +1157,7 @@ impl Local {
                 Value::Null,
                 ActionOn::Submit,
             ));
-        self.daemon_form = Some((daemon, form, App::new(node, self.metrics.clone())));
+        self.daemon_form = Some((daemon, form, DocumentUi::new(node, self.metrics.clone())));
     }
     fn rebuild_management(&mut self) {
         let Some(identity) = self.managing.as_ref() else {
@@ -1542,7 +1547,7 @@ mod lifecycle_tests {
         local
             .app()
             .unwrap()
-            .focus_control(Some(crate::app::Control::Field {
+            .focus_control(Some(misa_pixel_document::ui::Control::Field {
                 node: "daemon.form".into(),
                 field: "id".into(),
             }));

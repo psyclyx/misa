@@ -1,6 +1,6 @@
 //! Optional native-window adapter for the shared offline fixtures.
 use super::{Fixtures, Mode};
-use crate::app::Key;
+use misa_pixel_document::ui::Key;
 use misa_style::Color;
 use misa_window_core::{Clock, Event, MonotonicClock, Size};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};

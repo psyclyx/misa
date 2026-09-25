@@ -1,4 +1,4 @@
-use super::{App, Control, FONT_SIZE, FieldViewport, Hit, PULSE_PERIOD, text};
+use super::{Control, DocumentUi, FONT_SIZE, FieldViewport, Hit, PULSE_PERIOD, text};
 use misa_pixel_ui::{Op, Scene};
 use misa_proto::view::{FieldKind, Node};
 use misa_render::Theme;
@@ -93,7 +93,7 @@ impl<'a> LayoutBuilder<'a> {
     }
 }
 
-impl App {
+impl DocumentUi {
     /// Offline snapshots advance a synthetic clock one pulse per call, without wall time.
     pub fn frame(&mut self, width: u32, height: u32) -> Scene {
         self.offline_elapsed = self.offline_elapsed.saturating_add(PULSE_PERIOD);
@@ -104,7 +104,7 @@ impl App {
     /// same display lists; only the animated indicator's owner and ancestors change.
     pub fn frame_at(&mut self, width: u32, height: u32, elapsed: Duration) -> Scene {
         self.retained.begin_frame(width, elapsed);
-        // Reconciliation mutates App's viewport. The builder sees snapshots of that
+        // Reconciliation mutates DocumentUi's viewport. The builder sees snapshots of that
         // small value while it borrows the other owners for the whole frame.
         let before = self.viewport;
         let mut builder = LayoutBuilder::new(

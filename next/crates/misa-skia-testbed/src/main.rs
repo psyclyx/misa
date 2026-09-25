@@ -9,7 +9,7 @@ fn main() -> Result<(), String> {
         [flag] if flag == "--bench-gpu" => misa_skia_testbed::benchmark::run_gpu(),
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "Usage: misa-skia-testbed [--headless | --window | --bench | --bench-ab | --bench-gpu | --help]\n\nNo arguments / --headless: offline Vulkan/Ganesh fixture, synthetic input/clock and GPU readback (no display; Vulkan required).\n--window: interactive offline fixture window (requires --features native).\n--bench: offline 10/1000-owner App::frame and Skia raster baseline at 800x600 (no window or network).\n--bench-ab: interleaved cached/uncached warm raster comparison on both fixtures (12 samples per mode).\n--bench-gpu: offscreen Vulkan/Ganesh App::frame_at and GPU render+sync+readback baseline (no native swapchain/full window latency)."
+                "Usage: misa-skia-testbed [--headless | --window | --bench | --bench-ab | --bench-gpu | --help]\n\nNo arguments / --headless: offline Vulkan/Ganesh fixture, synthetic input/clock and GPU readback (no display; Vulkan required).\n--window: interactive offline fixture window (requires --features native).\n--bench: offline 10/1000-owner DocumentUi::frame and Skia raster baseline at 800x600 (no window or network).\n--bench-ab: interleaved cached/uncached warm raster comparison on both fixtures (12 samples per mode).\n--bench-gpu: offscreen Vulkan/Ganesh DocumentUi::frame_at and GPU render+sync+readback baseline (no native swapchain/full window latency)."
             );
             Ok(())
         }

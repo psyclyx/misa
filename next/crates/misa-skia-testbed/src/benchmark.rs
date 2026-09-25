@@ -1,9 +1,7 @@
-//! Offline baseline for the production semantic App -> Skia raster path.
+//! Offline baseline for the production semantic DocumentUi -> Skia raster path.
 //! No window, daemon, network, PNG encoding or presenter is involved.
-use crate::{
-    Scene,
-    app::{App, DocumentUpdate},
-};
+use crate::Scene;
+use misa_pixel_document::ui::{DocumentUi, DocumentUpdate};
 use misa_proto::{
     sync::ViewOp,
     view::{BlobRef, Kind, Node, Span},
@@ -60,13 +58,13 @@ fn changed_owner(index: usize) -> Node {
         )
 }
 
-fn new_app(view: Node) -> Result<App, String> {
+fn new_app(view: Node) -> Result<DocumentUi, String> {
     let metrics =
         paint::text_metrics().map_err(|error| format!("Cannot load Skia text metrics: {error}"))?;
-    Ok(App::new(view, metrics))
+    Ok(DocumentUi::new(view, metrics))
 }
 
-fn frame(app: &mut App) -> (Scene, Duration) {
+fn frame(app: &mut DocumentUi) -> (Scene, Duration) {
     let start = Instant::now();
     let scene = app.frame_at(WIDTH, HEIGHT, GPU_CLOCK);
     (black_box(scene), start.elapsed())
@@ -93,7 +91,7 @@ fn raster_profiled(
     Ok((black_box(pixels), elapsed, phases))
 }
 
-fn replace_last(app: &mut App, owners: usize) -> Result<(), String> {
+fn replace_last(app: &mut DocumentUi, owners: usize) -> Result<(), String> {
     let op = [ViewOp::Replace {
         id: format!("owner.{}", owners - 1),
         node: changed_owner(owners - 1),
@@ -198,8 +196,8 @@ fn measure(owners: usize, iterations: usize) -> Result<Samples, String> {
     let (expected, changed) = verify(owners)?;
     let mut samples = Samples::default();
     for sample in 0..iterations {
-        // Build the same tree/App outside the timed region for each cold-cache
-        // sample. Cold means first App::frame_at after App::new, not cold OS/font
+        // Build the same tree/DocumentUi outside the timed region for each cold-cache
+        // sample. Cold means first DocumentUi::frame_at after DocumentUi::new, not cold OS/font
         // caches. Raster always creates a fresh surface via paint::raster_profiled.
         let mut app = new_app(fixture(owners))?;
         let (scene, elapsed) = frame(&mut app);
@@ -276,7 +274,7 @@ fn gpu_fixture(owners: usize) -> Node {
         }))
 }
 
-fn gpu_app(owners: usize) -> Result<App, String> {
+fn gpu_app(owners: usize) -> Result<DocumentUi, String> {
     let mut app = new_app(gpu_fixture(owners))?;
     app.image(
         GPU_IMAGE_HASH.into(),
@@ -289,7 +287,7 @@ fn gpu_app(owners: usize) -> Result<App, String> {
     Ok(app)
 }
 
-fn gpu_replace_last(app: &mut App, owners: usize) -> Result<(), String> {
+fn gpu_replace_last(app: &mut DocumentUi, owners: usize) -> Result<(), String> {
     let op = [ViewOp::Replace {
         id: format!("owner.{}", owners - 1),
         node: gpu_owner(owners - 1, true),
@@ -301,11 +299,11 @@ fn gpu_replace_last(app: &mut App, owners: usize) -> Result<(), String> {
     })
 }
 
-// Separate clocks around App layout and production offscreen Ganesh render.
+// Separate clocks around DocumentUi layout and production offscreen Ganesh render.
 // Renderer::render includes surface allocation, draw, flush_submit_and_sync_cpu,
 // and full RGBA readback; it does NOT time native swapchain presentation.
 fn gpu_frame(
-    app: &mut App,
+    app: &mut DocumentUi,
     renderer: &mut Renderer,
 ) -> Result<(image::RgbaImage, Duration, Duration), String> {
     let start = Instant::now();
@@ -337,7 +335,7 @@ fn gpu_verify(
             "{owners} owners: decoded image missing from GPU scene"
         ));
     }
-    // Use a new App for the cold correctness frame; the probe above is untimed.
+    // Use a new DocumentUi for the cold correctness frame; the probe above is untimed.
     let mut app = gpu_app(owners)?;
     let mut expected = None;
     for index in 0..6 {
@@ -386,13 +384,13 @@ impl GpuPhase {
 
     fn report(self, label: &str) {
         println!("  {label}:");
-        stats("App::frame_at/layout", self.frame);
+        stats("DocumentUi::frame_at/layout", self.frame);
         stats("GPU render+sync+readback", self.render_sync_readback);
     }
 }
 
 /// Offscreen Ganesh baseline on one production Vulkan Renderer per run.
-/// App construction, edits, pixel comparisons and device setup are untimed.
+/// DocumentUi construction, edits, pixel comparisons and device setup are untimed.
 pub fn run_gpu() -> Result<(), String> {
     let mut renderer = Renderer::new()?;
     println!(
@@ -405,7 +403,7 @@ pub fn run_gpu() -> Result<(), String> {
         renderer.device_name
     );
     println!(
-        "Cold = first frame of fresh App (not cold OS/driver/device); warm = unchanged; changed = replace last visible owner. Fixed App::frame_at clock, decoded image fixture. Oracle = six same-device GPU readbacks per unchanged state and a visible edit, NOT CPU pixel parity. GPU render total includes allocation/draw/sync/RGBA readback. No native swapchain or full window latency measured; no performance comparisons implied."
+        "Cold = first frame of fresh DocumentUi (not cold OS/driver/device); warm = unchanged; changed = replace last visible owner. Fixed DocumentUi::frame_at clock, decoded image fixture. Oracle = six same-device GPU readbacks per unchanged state and a visible edit, NOT CPU pixel parity. GPU render total includes allocation/draw/sync/RGBA readback. No native swapchain or full window latency measured; no performance comparisons implied."
     );
     for owners in [10, 1000] {
         let (expected, changed) = gpu_verify(owners, &mut renderer)?;
@@ -516,7 +514,7 @@ pub fn run_ab() -> Result<(), String> {
 /// An explicit, measured baseline; never invoked by the interactive testbed.
 pub fn run() -> Result<(), String> {
     println!(
-        "Skia offline App::frame -> profiled paint::raster baseline | {} | {WIDTH}x{HEIGHT} | {ITERATIONS} iterations/phase",
+        "Skia offline DocumentUi::frame -> profiled paint::raster baseline | {} | {WIDTH}x{HEIGHT} | {ITERATIONS} iterations/phase",
         if cfg!(debug_assertions) {
             "debug (debug_assertions)"
         } else {
@@ -524,7 +522,7 @@ pub fn run() -> Result<(), String> {
         }
     );
     println!(
-        "Cold = first frame of fresh App; warm = unchanged frame; changed = replace last visible owner. App construction, update, correctness checks and PNG/presentation excluded. Raster total uses profiled path; phases are independent medians and need not sum to total."
+        "Cold = first frame of fresh DocumentUi; warm = unchanged frame; changed = replace last visible owner. DocumentUi construction, update, correctness checks and PNG/presentation excluded. Raster total uses profiled path; phases are independent medians and need not sum to total."
     );
     for owners in [10, 1000] {
         let samples = measure(owners, ITERATIONS)?;

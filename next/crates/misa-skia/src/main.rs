@@ -255,7 +255,7 @@ fn snapshot_scene(
     let width = (margin * 2.0 + columns as f32 * metrics.measure("M", font_size)).ceil() as u32;
     let height =
         (margin * 2.0 + rows as f32 * metrics.line_metrics(font_size).line_height).ceil() as u32;
-    let mut app = misa_skia::app::App::new(view.clone(), metrics);
+    let mut app = misa_pixel_document::ui::DocumentUi::new(view.clone(), metrics);
     app.pin_to_top();
     app.frame_at(width, height, Duration::ZERO)
 }
@@ -294,8 +294,8 @@ mod snapshot_tests {
             assert!(ink, "first glyphs missing from the {rows}-row PNG viewport");
         }
 
-        // The same App without the offline choice still follows a long view.
-        let mut window = misa_skia::app::App::new(view, metrics);
+        // The same DocumentUi without the offline choice still follows a long view.
+        let mut window = misa_pixel_document::ui::DocumentUi::new(view, metrics);
         let followed = window.frame_at(380, 70, Duration::ZERO);
         assert!(matches!(followed.ops.first(), Some(Op::Group { y, .. }) if *y < 0.0));
     }

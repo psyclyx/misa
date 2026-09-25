@@ -122,8 +122,8 @@ fn floor_char_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
-pub mod app;
 pub mod appearance;
+pub mod ui;
 
 #[cfg(test)]
 mod tests {

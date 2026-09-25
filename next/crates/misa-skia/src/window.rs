@@ -1,7 +1,7 @@
 //! A real desktop window consuming the same Skia scene used by PNG export.
-use crate::app::{App, Command, Key};
 use crate::connection::{self, Update};
 use crate::workspace::Action;
+use misa_pixel_document::ui::{Command, DocumentUi, Key};
 use misa_window_core::{Clock, Event, MonotonicClock, Size};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::sync::Arc;
@@ -32,7 +32,7 @@ pub fn run(
     let mut host = Host {
         appearance: crate::preferences::appearance(),
         appearance_writer: crate::preferences::appearance_writer(events.create_proxy()),
-        app: App::new(view, metrics.clone()),
+        app: DocumentUi::new(view, metrics.clone()),
         metrics,
         local,
         directories: vec![],
@@ -65,9 +65,9 @@ pub fn run(
 }
 struct Host {
     metrics: Arc<dyn misa_pixel_ui::TextMetrics>,
-    appearance: crate::appearance::Choice,
-    appearance_writer: std::sync::mpsc::SyncSender<crate::appearance::Choice>,
-    app: App,
+    appearance: misa_pixel_document::appearance::Choice,
+    appearance_writer: std::sync::mpsc::SyncSender<misa_pixel_document::appearance::Choice>,
+    app: DocumentUi,
     local: crate::workspace::Local,
     directories: Vec<crate::workspace::DaemonChoice>,
     generation: u64,
@@ -76,13 +76,13 @@ struct Host {
     parked: std::collections::BTreeMap<
         (String, misa_proto::observation::Scope),
         (
-            App,
+            DocumentUi,
             crate::workspace::Local,
-            std::collections::BTreeMap<String, App>,
+            std::collections::BTreeMap<String, DocumentUi>,
             u64,
         ),
     >,
-    panels: std::collections::BTreeMap<String, App>,
+    panels: std::collections::BTreeMap<String, DocumentUi>,
     panel: String,
     panel_focus: bool,
     panel_top: f32,
@@ -264,7 +264,7 @@ impl Host {
         let light = self
             .appearance
             .light(window.theme() == Some(winit::window::Theme::Light));
-        let colors = crate::appearance::Palette::new(light);
+        let colors = misa_pixel_document::appearance::Palette::new(light);
         self.app.drive(Event::Theme { light }, elapsed);
         self.local.appearance(self.appearance);
         self.local.set_light(light);
@@ -423,7 +423,7 @@ impl ApplicationHandler<Update> for Host {
                 }
                 let old_app = std::mem::replace(
                     &mut self.app,
-                    App::new(
+                    DocumentUi::new(
                         misa_proto::Node::section("connecting"),
                         self.metrics.clone(),
                     ),
@@ -472,7 +472,8 @@ impl ApplicationHandler<Update> for Host {
                 if self.active.as_ref() == Some(&key) {
                     self.active = None;
                     self.generation = 0;
-                    self.app = App::new(misa_proto::Node::section("session"), self.metrics.clone());
+                    self.app =
+                        DocumentUi::new(misa_proto::Node::section("session"), self.metrics.clone());
                     self.panels.clear();
                     self.local = crate::workspace::Local::new(self.metrics.clone());
                     self.local.directory(self.directories.clone());
@@ -628,12 +629,12 @@ impl ApplicationHandler<Update> for Host {
 }
 
 /// Translate the production replica's validated transaction at the window boundary.
-/// Do not materialize the document on each append: App retains unaffected owners.
+/// Do not materialize the document on each append: DocumentUi retains unaffected owners.
 fn document_update(
     update: &misa_client::document::Update,
-) -> Option<crate::app::DocumentUpdate<'_>> {
-    use crate::app::DocumentUpdate;
+) -> Option<misa_pixel_document::ui::DocumentUpdate<'_>> {
     use misa_client::document::Update;
+    use misa_pixel_document::ui::DocumentUpdate;
     use misa_protocol::observation::{Applied, MemberChange, Status};
     match update {
         Update::Reset(document) => Some(DocumentUpdate::Reset {
@@ -688,7 +689,7 @@ mod pulse_tests {
                 start
                     + misa_window_core::next_deadline(
                         Duration::from_millis(elapsed),
-                        crate::app::PULSE_PERIOD
+                        misa_pixel_document::ui::PULSE_PERIOD
                     ),
                 start + Duration::from_millis(next)
             );
@@ -697,7 +698,7 @@ mod pulse_tests {
             start
                 + misa_window_core::next_deadline(
                     Duration::from_micros(160_001),
-                    crate::app::PULSE_PERIOD
+                    misa_pixel_document::ui::PULSE_PERIOD
                 ),
             start + Duration::from_millis(320)
         );
@@ -707,8 +708,8 @@ mod pulse_tests {
 #[cfg(test)]
 mod document_adapter_tests {
     use super::*;
-    use crate::app::DocumentUpdate;
     use misa_client::document::Update as DocumentDelivery;
+    use misa_pixel_document::ui::DocumentUpdate;
     use misa_proto::sync::{Stream, StreamUpdate, Version, ViewOp};
     use misa_protocol::observation::{Applied, MemberChange, Status};
 
@@ -730,7 +731,7 @@ mod document_adapter_tests {
             unreachable!()
         };
         let Some(DocumentUpdate::Reset { tree, streams }) = document_update(&reset) else {
-            panic!("reset must reach App")
+            panic!("reset must reach DocumentUi")
         };
         assert!(std::ptr::eq(tree, &document.tree));
         assert!(std::ptr::eq(streams, document.streams.as_slice()));
@@ -761,7 +762,7 @@ mod document_adapter_tests {
             reset_live,
         }) = document_update(&changed)
         else {
-            panic!("changed member must reach App")
+            panic!("changed member must reach DocumentUi")
         };
         assert!(std::ptr::eq(borrowed_tree, tree.as_slice()));
         assert!(std::ptr::eq(borrowed_live, live.as_slice()));
@@ -790,9 +791,9 @@ mod document_adapter_tests {
 }
 
 fn apply_update(
-    app: &mut App,
+    app: &mut DocumentUi,
     local: &mut crate::workspace::Local,
-    panels: &mut std::collections::BTreeMap<String, App>,
+    panels: &mut std::collections::BTreeMap<String, DocumentUi>,
     update: Update,
     metrics: &Arc<dyn misa_pixel_ui::TextMetrics>,
 ) {
@@ -836,8 +837,10 @@ fn apply_update(
                     &mut *app
                 } else {
                     panels.entry(slot).or_insert_with(|| {
-                        let mut app =
-                            App::new(misa_proto::Node::section("presentation"), metrics.clone());
+                        let mut app = DocumentUi::new(
+                            misa_proto::Node::section("presentation"),
+                            metrics.clone(),
+                        );
                         app.scroll(-f32::MAX);
                         app
                     })

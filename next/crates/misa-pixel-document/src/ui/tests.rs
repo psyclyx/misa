@@ -79,7 +79,7 @@ fn consecutive_frames_drop_quote_prefix_and_stale_hits() {
                 args: Value::Null,
             }),
     );
-    let mut app = App::new(quoted, test_metrics());
+    let mut app = DocumentUi::new(quoted, test_metrics());
     app.frame_at(400, 300, Duration::ZERO);
     assert!(
         app.interaction
@@ -115,7 +115,7 @@ fn viewport_follows_new_output_but_report_wheel_and_offline_pin_do_not() {
                 Node::text("message.user", [Span::plain(format!("row {i}"))]).id(format!("row.{i}"))
             }))
     };
-    let mut app = App::new(view(20), test_metrics());
+    let mut app = DocumentUi::new(view(20), test_metrics());
     assert_eq!(app.viewport.content_height(), 0.0);
     assert_eq!(app.viewport.viewport_height(), 600.0);
     app.frame(400, 100);
@@ -143,7 +143,7 @@ fn viewport_follows_new_output_but_report_wheel_and_offline_pin_do_not() {
 
 #[test]
 fn frame_positions_nonempty_runs_and_uses_syntax_colours() {
-    let mut app = App::new(scene_view(), test_metrics());
+    let mut app = DocumentUi::new(scene_view(), test_metrics());
     let scene = app.frame_at(800, 600, Duration::ZERO);
     assert_eq!((scene.width, scene.height), (800.0, 600.0));
     let mut runs = 0;
@@ -176,7 +176,7 @@ fn narrow_code_clips_before_highlighting_but_keeps_fence_and_visible_colours() {
             text: format!("{raw}\nlet y = 2;"),
         },
     );
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     let scene = app.frame(144, 180);
     assert_eq!(app.interaction.rows().len(), 3);
     assert_eq!(app.interaction.rows()[0].geometry.text, "rust");
@@ -255,7 +255,7 @@ fn frame_renders_quote_rule_meter_and_fact() {
         )
         .id("fact"),
     ]);
-    let scene = App::new(view, test_metrics()).frame_at(640, 480, Duration::ZERO);
+    let scene = DocumentUi::new(view, test_metrics()).frame_at(640, 480, Duration::ZERO);
     let mut texts = Vec::new();
     let mut rects = 0;
     walk_ops(&scene.ops, &mut |op| match op {
@@ -272,7 +272,7 @@ fn frame_renders_quote_rule_meter_and_fact() {
 
 #[test]
 fn frame_theme_changes_styles_without_changing_the_view() {
-    let mut app = App::new(scene_view(), test_metrics());
+    let mut app = DocumentUi::new(scene_view(), test_metrics());
     let dark = app.frame_at(800, 600, Duration::ZERO);
     app.set_light(true);
     let light = app.frame_at(800, 600, Duration::ZERO);
@@ -290,7 +290,7 @@ fn frame_theme_changes_styles_without_changing_the_view() {
 
 #[test]
 fn message_card_and_rail_paint_beneath_its_text() {
-    let mut app = App::new(scene_view(), test_metrics());
+    let mut app = DocumentUi::new(scene_view(), test_metrics());
     app.frame_at(800, 600, Duration::ZERO);
     let ops = &app.retained.cached("msg.1").ops;
     let surface = Theme::dark().surface("message.user").unwrap();
@@ -311,7 +311,7 @@ fn message_card_and_rail_paint_beneath_its_text() {
 
 #[test]
 fn only_a_painted_moving_indicator_animates() {
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         Node::section("session")
             .id("session")
             .child(Node::section("turn").id("turn")),
@@ -359,7 +359,7 @@ fn only_a_painted_moving_indicator_animates() {
 
 #[test]
 fn elapsed_pulse_skips_wraps_and_preserves_unrelated_owners() {
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         Node::section("session").id("session").children([
             Node::section("status.indicators").id("status").child(
                 Node::new(
@@ -421,7 +421,7 @@ fn elapsed_pulse_skips_wraps_and_preserves_unrelated_owners() {
 
 #[test]
 fn hidden_cached_indicator_does_not_keep_the_window_awake() {
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         Node::section("session").id("session").child(
             Node::new(
                 "details",
@@ -488,7 +488,7 @@ fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
     transcript.extend((0..70).map(|i| {
         Node::text("message.user", [Span::plain(format!("after {i}"))]).id(format!("after.{i}"))
     }));
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         Node::section("session").id("session").child(
             Node::section("transcript")
                 .id("transcript")
@@ -571,7 +571,7 @@ fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
 
 #[test]
 fn idle_repaints_never_invalidate_retained_owners() {
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         Node::section("session")
             .id("session")
             .child(Node::text("message.user", [Span::plain("idle")]).id("message")),
@@ -587,7 +587,7 @@ fn idle_repaints_never_invalidate_retained_owners() {
 
 #[test]
 fn width_and_theme_invalidate_retained_geometry_but_idle_frames_do_not() {
-    let mut app = App::new(scene_view(), test_metrics());
+    let mut app = DocumentUi::new(scene_view(), test_metrics());
     app.frame_at(640, 480, Duration::ZERO);
     let first = app.retained.cached("msg.1").ops.clone();
     app.frame_at(640, 480, Duration::from_secs(1));
@@ -607,7 +607,7 @@ fn width_and_theme_invalidate_retained_geometry_but_idle_frames_do_not() {
 
 #[test]
 fn changing_local_theme_preserves_drafts_and_rebuilds_cached_colors() {
-    let mut app = App::new(form("panel.input", FieldKind::Inline), test_metrics());
+    let mut app = DocumentUi::new(form("panel.input", FieldKind::Inline), test_metrics());
     app.frame(640, 480);
     app.drive(Event::Text("private draft".into()), Duration::ZERO)
         .commands;
@@ -631,7 +631,7 @@ fn command_picker_filters_navigates_and_inserts_without_sending() {
     if let Kind::Fields { fields } = &mut view.kind {
         fields[0].id = "prompt".into();
     }
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     app.declare_commands(serde_json::from_value(
         serde_json::json!([{ "id":"model", "label":"Model" }, { "id":"clear", "label":"Clear" }]),
     )
@@ -658,7 +658,7 @@ fn command_picker_filters_navigates_and_inserts_without_sending() {
 }
 #[test]
 fn empty_picker_and_modal_input_preserve_draft() {
-    let mut app = App::new(form("form", FieldKind::Inline), test_metrics());
+    let mut app = DocumentUi::new(form("form", FieldKind::Inline), test_metrics());
     app.frame(900, 720);
     app.key(Key::Commands);
     app.drive(Event::Text("query".into()), Duration::ZERO)
@@ -692,7 +692,7 @@ fn registered_composite_receives_its_indexed_subtree() {
             .id("model.value"),
         ),
     );
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     let scene = app.frame(900, 120);
     assert!(any_op(
         &scene.ops,
@@ -751,7 +751,7 @@ fn status_footer_and_queue_components_render_natively() {
             Node::text("queue.item", [Span::plain("second")]).id("queue.item.2"),
         ]),
     ]);
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     let scene = app.frame(900, 400);
     assert!(any_op(
         &scene.ops,
@@ -779,7 +779,7 @@ fn semantic_action_uses_measured_button_paint_and_hit_bounds() {
         label: Some("Run".into()),
         args: Value::Null,
     });
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     let scene = app.frame_at(400, 200, Duration::ZERO);
     let hit = app
         .interaction
@@ -882,7 +882,7 @@ fn field_paint(scene: &Scene) -> (f32, f32, f32, f32, String, f32, f32, f32) {
 
 #[test]
 fn inline_field_scrolls_to_measured_cursor_and_home_restores_start() {
-    let mut app = App::new(form("one", FieldKind::Inline), test_metrics());
+    let mut app = DocumentUi::new(form("one", FieldKind::Inline), test_metrics());
     let draft = "W界".repeat(25);
     app.drive(Event::Text(draft.clone()), Duration::ZERO);
     let end = field_paint(&app.frame(160, 400));
@@ -921,7 +921,7 @@ fn secret_field_scroll_and_caret_use_bullet_advances_only() {
         unreachable!()
     };
     fields[0].secret = true;
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     app.drive(Event::Text("W界".repeat(20)), Duration::ZERO);
     let paint = field_paint(&app.frame(160, 400));
     assert_eq!(paint.4, "•".repeat(40));
@@ -941,7 +941,7 @@ fn secret_field_scroll_and_caret_use_bullet_advances_only() {
 
 #[test]
 fn capped_block_field_scrolls_lines_and_caret_inside_clip() {
-    let mut app = App::new(form("one", FieldKind::Block), test_metrics());
+    let mut app = DocumentUi::new(form("one", FieldKind::Block), test_metrics());
     let draft = (0..24)
         .map(|n| format!("line {n}"))
         .collect::<Vec<_>>()
@@ -976,7 +976,7 @@ fn reports_and_rejected_prompts_preserve_local_typing() {
         unreachable!()
     };
     fields[0].id = "prompt".into();
-    let mut app = App::new(view.clone(), test_metrics());
+    let mut app = DocumentUi::new(view.clone(), test_metrics());
     app.focus_control(Some(Control::Field {
         node: "composer".into(),
         field: "prompt".into(),
@@ -1029,7 +1029,7 @@ fn drafts_survive_updates_and_submit_only_the_target_panel() {
     let view = Node::section("root")
         .child(form("one", FieldKind::Inline))
         .child(form("two", FieldKind::Inline));
-    let mut app = App::new(view.clone(), test_metrics());
+    let mut app = DocumentUi::new(view.clone(), test_metrics());
     app.focus_control(Some(Control::Field {
         node: "one".into(),
         field: "value".into(),
@@ -1046,7 +1046,7 @@ fn drafts_survive_updates_and_submit_only_the_target_panel() {
 }
 #[test]
 fn committed_text_types_once_and_special_keys_do_not_insert_text() {
-    let mut app = App::new(form("one", FieldKind::Inline), test_metrics());
+    let mut app = DocumentUi::new(form("one", FieldKind::Inline), test_metrics());
     assert_eq!(
         app.interaction.focus().cloned(),
         Some(Control::Field {
@@ -1082,7 +1082,7 @@ fn select_all_is_bound_to_the_focused_draft_across_tab_and_return() {
     first.actions.clear();
     second.actions.clear();
     let view = Node::section("root").id("root").child(first).child(second);
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     app.frame(500, 500);
     let a = Control::Field {
         node: "a".into(),
@@ -1126,7 +1126,7 @@ fn select_all_expires_on_reset_and_field_removal() {
     let view = Node::section("root")
         .id("root")
         .child(form("a", FieldKind::Inline));
-    let mut app = App::new(view.clone(), test_metrics());
+    let mut app = DocumentUi::new(view.clone(), test_metrics());
     app.focus_control(Some(Control::Field {
         node: "a".into(),
         field: "value".into(),
@@ -1163,7 +1163,7 @@ fn select_all_expires_on_reset_and_field_removal() {
 
 #[test]
 fn boolean_keyboard_input_cannot_produce_invalid_values() {
-    let mut app = App::new(form("one", FieldKind::Bool), test_metrics());
+    let mut app = DocumentUi::new(form("one", FieldKind::Bool), test_metrics());
     app.drive(Event::Text("nonsense".into()), Duration::ZERO)
         .commands;
     assert_eq!(app.field_text("one", "value"), Some(""));
@@ -1182,7 +1182,7 @@ fn disclosure_state_and_unicode_copy_are_local() {
     )
     .id("tool")
     .child(Node::text("text", [Span::plain("héllo λ")]));
-    let mut app = App::new(view.clone(), test_metrics());
+    let mut app = DocumentUi::new(view.clone(), test_metrics());
     app.frame(500, 500);
     let disclosure = Control::Disclosure("tool".into());
     let (x, y) = app.control_center(&disclosure).unwrap();
@@ -1220,7 +1220,7 @@ fn disclosure_state_and_unicode_copy_are_local() {
 }
 #[test]
 fn save_destination_is_an_explicit_local_command() {
-    let mut app = App::new(Node::section("root"), test_metrics());
+    let mut app = DocumentUi::new(Node::section("root"), test_metrics());
     app.activate(Control::Action {
         node: "attachment".into(),
         action: "attachment.save".into(),
@@ -1238,7 +1238,7 @@ fn save_destination_is_an_explicit_local_command() {
 }
 #[test]
 fn save_modal_confirms_only_nonblank_paths_and_cancels_without_effects() {
-    let mut app = App::new(Node::section("root"), test_metrics());
+    let mut app = DocumentUi::new(Node::section("root"), test_metrics());
     app.activate(Control::Action {
         node: "attachment".into(),
         action: "attachment.save".into(),
@@ -1303,7 +1303,7 @@ fn rich_shapes_draw_wrapped_table_meter_and_bitmap() {
                 height: 1,
             },
         ));
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     app.image(
         "image".into(),
         Arc::new(image::RgbaImage::from_pixel(
@@ -1354,7 +1354,7 @@ fn evicted_images_release_retained_scenes_and_can_be_reloaded() {
         )
         .id(hash)
     };
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         Node::section("root")
             .id("root")
             .child(node("a"))
@@ -1416,7 +1416,7 @@ fn shared_image_reference_survives_one_owner_and_late_decode_after_reset_is_igno
         )
         .id(id)
     };
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         Node::section("root")
             .id("root")
             .child(image_node("first"))
@@ -1440,7 +1440,7 @@ fn shared_image_reference_survives_one_owner_and_late_decode_after_reset_is_igno
 #[test]
 fn live_updates_do_not_steal_the_local_save_dialog() {
     let view = form("panel.input", FieldKind::Inline);
-    let mut app = App::new(view.clone(), test_metrics());
+    let mut app = DocumentUi::new(view.clone(), test_metrics());
     app.activate(Control::Action {
         node: "image".into(),
         action: "attachment.save".into(),
@@ -1460,7 +1460,7 @@ fn live_updates_do_not_steal_the_local_save_dialog() {
 }
 #[test]
 fn pointer_selection_uses_measured_unicode_boundaries() {
-    let mut app = App::new(Node::text("text", [Span::plain("界hi")]), test_metrics());
+    let mut app = DocumentUi::new(Node::text("text", [Span::plain("界hi")]), test_metrics());
     app.frame(400, 200);
     app.pointer(20.0 + 18.1, 25.0, false);
     app.pointer(20.0 + 27.1, 25.0, true);
@@ -1468,7 +1468,7 @@ fn pointer_selection_uses_measured_unicode_boundaries() {
 }
 #[test]
 fn blank_text_row_accepts_pointer_selection_across_its_width() {
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         Node::text("text", [Span::plain("first\n\nlast")]),
         test_metrics(),
     );
@@ -1494,7 +1494,7 @@ fn styled_narrow_unicode_rows_share_paint_hit_and_selection_positions() {
         "text",
         [Span::plain("界"), Span::strong("ill"), Span::plain(" W")],
     );
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     let scene = app.frame(400, 200);
     let row = &app.interaction.rows()[0];
     assert_eq!(
@@ -1554,7 +1554,7 @@ fn giant_unwrapped_status_and_label_only_measure_and_paint_visible_prefixes() {
         },
     )
     .label(&label);
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         view,
         Arc::new(Counted {
             longest: longest.clone(),
@@ -1599,7 +1599,7 @@ fn narrow_quote_table_rows_clip_without_losing_copy_or_hit_bounds() {
             align: vec![],
         },
     ));
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     let scene = app.frame(95, 500);
     let cell_width = 55.0 / 2.0;
     let viewport = cell_width - 10.0;
@@ -1644,7 +1644,7 @@ fn measured_wrap_handles_long_tokens_styled_runs_and_quote_prefixes() {
             Span::plain("界界界"),
         ],
     ));
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     app.frame(95, 250);
     assert!(app.interaction.rows().len() > 2);
     for row in app.interaction.rows() {
@@ -1666,7 +1666,7 @@ fn measured_wrap_handles_long_tokens_styled_runs_and_quote_prefixes() {
 
 #[test]
 fn report_reflows_at_measured_pixel_width() {
-    let mut app = App::new(Node::section("root"), test_metrics());
+    let mut app = DocumentUi::new(Node::section("root"), test_metrics());
     app.report("Report".into(), Value::str("WWWWiiii界界"));
     app.frame(132, 280);
     let lines = app.overlays.report_mut().unwrap().lines.clone();
@@ -1709,7 +1709,7 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
         .children((0..20).map(|i| {
             Node::text("text", [Span::plain(format!("line {i}"))]).id(format!("tail.{i}"))
         }));
-    let mut app = App::new(view, Arc::new(Counted(calls.clone())));
+    let mut app = DocumentUi::new(view, Arc::new(Counted(calls.clone())));
     app.frame(400, 100);
     let geometry = Arc::clone(&app.retained.cached("child").geometry.rows()[0].geometry);
     assert!(Arc::ptr_eq(&geometry, &app.interaction.rows()[0].geometry));
@@ -1767,7 +1767,7 @@ fn deterministic_scene_and_unchanged_frames_do_no_layout() {
                         .id(format!("message.{index}"))
                 })),
         );
-        let mut app = App::new(view.clone(), test_metrics());
+        let mut app = DocumentUi::new(view.clone(), test_metrics());
         let mut first = None;
         for _ in 0..6 {
             app.set_view(view.clone());
@@ -1787,7 +1787,7 @@ fn scoped_document_transaction_settles_live_text_without_rebuilding_history() {
     use misa_proto::sync::Stream;
     for owners in [10, 1000] {
         let view = protocol_view(owners);
-        let mut app = App::new(Node::section("empty"), test_metrics());
+        let mut app = DocumentUi::new(Node::section("empty"), test_metrics());
         app.observed(&DocumentUpdate::Reset {
             tree: &view,
             streams: &[Stream {
@@ -1825,7 +1825,7 @@ fn scoped_document_transaction_settles_live_text_without_rebuilding_history() {
         );
         let mut expected = view;
         expected.children[0].children.push(answer);
-        let mut cold = App::new(expected, test_metrics());
+        let mut cold = DocumentUi::new(expected, test_metrics());
         assert_eq!(scene, cold.frame(800, 600));
     }
 }
@@ -1841,7 +1841,7 @@ fn protocol_view(owners: usize) -> Node {
 }
 // Independent cold tree/materialization oracle; no protocol cursor or wire adapter.
 fn cold_scene(
-    app: &mut App,
+    app: &mut DocumentUi,
     tree: &misa_proto::sync::IndexedTree,
     streams: &[misa_proto::sync::Stream],
 ) {
@@ -1864,11 +1864,11 @@ fn cold_scene(
         view.children[0].children.push(overlay);
     }
     let scene = app.frame(800, 600);
-    let expected = App::new(view, test_metrics()).frame(800, 600);
+    let expected = DocumentUi::new(view, test_metrics()).frame(800, 600);
     assert_eq!(scene, expected);
 }
 fn observed_changes(
-    app: &mut App,
+    app: &mut DocumentUi,
     tree: Vec<ViewOp>,
     live: Vec<misa_proto::sync::StreamUpdate>,
     reset_live: bool,
@@ -1886,7 +1886,7 @@ fn stream_append_and_subtree_replace_reuse_unchanged_owner_scenes() {
     for owners in [10, 1000] {
         let view = protocol_view(owners);
         let mut tree = IndexedTree::new(view.clone());
-        let mut app = App::new(view, test_metrics());
+        let mut app = DocumentUi::new(view, test_metrics());
         app.frame(800, 600);
         let retained: Vec<_> = (0..owners)
             .map(|index| app.retained.cached(&format!("message.{index}")).ops.clone())
@@ -1947,7 +1947,7 @@ fn stream_completion_and_owner_removal_match_cold_rebuilds() {
     use misa_proto::sync::{IndexedTree, Stream, StreamUpdate};
     let view = protocol_view(4);
     let mut tree = IndexedTree::new(view.clone());
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     let stream = Stream {
         id: "live.text".into(),
         role: "message.assistant".into(),
@@ -1997,7 +1997,7 @@ fn headless_driver_uses_fake_clock_and_never_presents() {
         }
     }
     let mut clock = FakeClock(Duration::ZERO);
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         Node::section("status.indicators").id("status").child(
             Node::new(
                 "indicator.activity",
@@ -2058,7 +2058,7 @@ fn editing_a_field_does_not_relayout_the_transcript() {
                 .child(Node::text("message", [Span::plain("old text")]).id("message.1")),
         )
         .child(form("panel.input", FieldKind::Inline));
-    let mut app = App::new(view, test_metrics());
+    let mut app = DocumentUi::new(view, test_metrics());
     app.frame(800, 600);
     let owner = app.retained.cached("transcript").ops.clone();
     app.drive(Event::Text("draft".into()), Duration::ZERO)
@@ -2088,7 +2088,7 @@ fn list_item_edits_survive_reset_and_replace_without_reallocating_the_owner() {
         .id("list")
     };
     let view = Node::section("root").id("root").child(list());
-    let mut app = App::new(view.clone(), test_metrics());
+    let mut app = DocumentUi::new(view.clone(), test_metrics());
     assert_eq!(app.field_text("nested", "value"), Some(""));
     let editor = app.drafts.identity("nested", "value").unwrap();
     app.frame(400, 400);
@@ -2132,7 +2132,7 @@ fn clearing_secret_erases_its_viewport_and_only_invalidates_its_owner() {
         unreachable!()
     };
     fields[0].secret = true;
-    let mut app = App::new(
+    let mut app = DocumentUi::new(
         Node::section("root")
             .id("root")
             .child(secret)
@@ -2178,7 +2178,7 @@ fn choice_selected_default_cycles_and_keeps_local_value_on_refresh() {
             selected: Some("second".into()),
         },
     );
-    let mut app = App::new(view.clone(), test_metrics());
+    let mut app = DocumentUi::new(view.clone(), test_metrics());
     assert_eq!(app.field_text("choice", "value"), Some("second"));
     app.activate(Control::Field {
         node: "choice".into(),
