@@ -737,14 +737,16 @@ mod tests {
             started: started.clone(),
         };
         let mut screen = Screen::new(80, 24);
-        screen.commands = vec![
-            misa_kit::intent::Command::new("model", "Model", "choose").arg(
-                misa_proto::preparation::Arg::new("model", "Model")
-                    .required()
-                    .from("models"),
-            ),
-        ];
-        screen.sources = vec![misa_kit::intent::Source::resident("models", "Models")];
+        screen.declare(&misa_tui_ui::Catalog {
+            commands: vec![
+                misa_kit::intent::Command::new("model", "Model", "choose").arg(
+                    misa_proto::preparation::Arg::new("model", "Model")
+                        .required()
+                        .from("models"),
+                ),
+            ],
+            sources: vec![misa_kit::intent::Source::resident("models", "Models")],
+        });
         screen.editor.set_text("/model");
         let (sender, receiver) = mpsc::channel(64);
         sender
@@ -1323,11 +1325,14 @@ mod scope_tests {
             changed,
         };
         let mut screen = Screen::new(80, 24);
-        screen.commands = vec![
-            misa_kit::intent::Command::new("actions", "Actions", "Actions"),
-            misa_kit::intent::Command::new("action", "Action", "Action")
-                .arg(misa_proto::preparation::Arg::new("action", "Action").required()),
-        ];
+        screen.declare(&misa_tui_ui::Catalog {
+            commands: vec![
+                misa_kit::intent::Command::new("actions", "Actions", "Actions"),
+                misa_kit::intent::Command::new("action", "Action", "Action")
+                    .arg(misa_proto::preparation::Arg::new("action", "Action").required()),
+            ],
+            sources: vec![],
+        });
         screen.editor.set_text("/actions");
         let mut pet = misa_proto::Node::section("pet").id("pet");
         pet.actions.push(misa_proto::view::Action {

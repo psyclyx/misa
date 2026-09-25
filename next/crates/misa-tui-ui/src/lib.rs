@@ -19,6 +19,9 @@
 //! holds; the matching happens here. A session is asked only when a source has no
 //! items to hold — see [`misa_kit::picker`].
 
+mod catalog;
+pub use catalog::Catalog;
+
 pub mod buttons;
 pub mod chrome;
 pub mod offline;
@@ -32,26 +35,18 @@ thread_local! { static RESOLVE_VISITS: std::cell::Cell<usize> = const { std::cel
 
 use crate::prefs::Prefs;
 use crate::retained::Retained;
+use catalog::ComposerCatalog;
 pub use misa_kit::editor as ed;
 use misa_kit::intent as line;
 use misa_kit::intent::Command;
 use misa_kit::intent::Intent;
-use misa_kit::intent::Source;
 use misa_kit::picker::Effect as PickerEffect;
 pub use misa_kit::picker::{Accept, Picker};
 use misa_lines::Line;
 use misa_lines::select;
-use misa_proto::preparation::SourceKind;
 use misa_proto::view::{ActionOn, Choice, Field, Kind, Node};
 use misa_render::{Theme, ThemeOverrides};
 use misa_terminal_ui::graphics;
-
-/// Client-side catalog for the composer, independent of any session connection.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Catalog {
-    pub commands: Vec<Command>,
-    pub sources: Vec<Source>,
-}
 
 /// One action this program can take on its own display.
 ///
@@ -266,15 +261,8 @@ pub struct Screen {
     pub selection: Option<select::Selection>,
     /// What has been typed into an open panel, and which panel it is for.
     pub panel: Option<PanelInput>,
-    pub commands: Vec<Command>,
-    raw_commands: Vec<String>,
-    pub sources: Vec<Source>,
+    catalog: ComposerCatalog,
     pub location: String,
-    resident: std::collections::HashMap<String, (Vec<Choice>, bool)>,
-    /// Resident sources have a loading state at the client boundary. This is not
-    /// picker state: it prevents a slow/empty catalog from turning every keystroke
-    /// into another request while still allowing the editor to remain usable.
-    resident_requests: std::collections::HashSet<String>,
     pub scroll: usize,
     /// Whether the viewport follows new output. Scrolling away stops it, which is
     /// what lets somebody read while a model is still writing.
@@ -309,12 +297,8 @@ impl Screen {
             dialogs: Default::default(),
             selection: None,
             panel: None,
-            commands: Vec::new(),
-            raw_commands: Vec::new(),
-            sources: Vec::new(),
+            catalog: ComposerCatalog::default(),
             location: String::new(),
-            resident: Default::default(),
-            resident_requests: Default::default(),
             scroll: 0,
             follow: true,
             scroll_intent: 0,
@@ -378,21 +362,7 @@ impl Screen {
     /// Add host-owned commands whose arguments are interpreted by the host rather
     /// than the session's positional command parser. Session declarations win on id collisions.
     pub fn declare_with_raw(&mut self, info: &Catalog, raw: &[Command]) {
-        self.resident.clear();
-        self.resident_requests.clear();
-        self.commands = info.commands.clone();
-        self.raw_commands.clear();
-        for command in raw {
-            if !self
-                .commands
-                .iter()
-                .any(|existing| existing.id == command.id)
-            {
-                self.raw_commands.push(command.id.clone());
-                self.commands.push(command.clone());
-            }
-        }
-        self.sources = info.sources.clone();
+        self.catalog.declare_with_raw(info, raw);
     }
 
     /// The commands as candidates, built from the declaration.
@@ -402,50 +372,13 @@ impl Screen {
     /// as well, for a frontend that renders server-side and has no declaration in
     /// hand; the two say the same thing.
     pub fn command_candidates(&self) -> Vec<Choice> {
-        self.commands
-            .iter()
-            .map(|command| Choice {
-                value: format!("/{}", command.id),
-                label: format!("/{}", command.id),
-                detail: Some(if command.args.is_empty() {
-                    command.description.clone()
-                } else {
-                    format!(
-                        "{} — {}",
-                        command.description,
-                        command
-                            .args
-                            .iter()
-                            .map(|arg| arg.label.clone())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    )
-                }),
-                metadata: None,
-            })
-            .collect()
-    }
-
-    fn source(&self, id: &str) -> Option<&Source> {
-        self.sources.iter().find(|source| source.id == id)
-    }
-
-    /// Whether a source can be answered from what this client already holds.
-    fn is_resident(&self, id: &str) -> bool {
-        self.source(id)
-            .map(|source| source.kind == SourceKind::Resident)
-            .unwrap_or(false)
+        self.catalog.command_candidates()
     }
 
     /// Open the picker a command's next argument needs.
     fn open_argument_picker(&mut self, command: &str, argument: &str, source: &str) -> KeyOut {
         let words = line::words(self.editor.text().trim_start_matches('/'));
-        let index = self
-            .commands
-            .iter()
-            .find(|item| item.id == command)
-            .and_then(|item| item.args.iter().position(|item| item.name == argument))
-            .unwrap_or(0);
+        let index = self.catalog.argument_index(command, argument).unwrap_or(0);
         if words.values.first().map(String::as_str) != Some(command) {
             self.editor.set_text(format!("/{command} "));
         } else if words.values.len() <= index + 1 && !words.trailing_space {
@@ -468,7 +401,7 @@ impl Screen {
                 .with_frecency(self.prefs.frecency())
                 .with_favorites(self.prefs.favorites()),
         );
-        if let Some((items, truncated)) = self.resident.get(source) {
+        if let Some((items, truncated)) = self.catalog.held(source) {
             self.picker
                 .as_mut()
                 .unwrap()
@@ -478,12 +411,10 @@ impl Screen {
             picker.set_query(Self::picker_query(
                 self.editor.text(),
                 &picker.accept,
-                &self.commands,
+                &self.catalog,
             ));
         }
-        let needs_catalog = self.is_resident(source)
-            && !self.resident.contains_key(source)
-            && self.resident_requests.insert(source.to_string());
+        let needs_catalog = self.catalog.request(source);
         if needs_catalog {
             KeyOut::Complete {
                 source: source.to_string(),
@@ -500,12 +431,7 @@ impl Screen {
 
     /// Give the picker the items a source produced.
     pub fn candidates(&mut self, source: &str, items: Vec<Choice>, truncated: bool) {
-        let resident = self.is_resident(source);
-        if resident {
-            self.resident_requests.remove(source);
-            self.resident
-                .insert(source.into(), (items.clone(), truncated));
-        }
+        let resident = self.catalog.received(source, &items, truncated);
         if let Some(picker) = self.picker.as_mut()
             && picker.source.as_deref() == Some(source)
             && resident
@@ -519,10 +445,8 @@ impl Screen {
     /// are subscriptions from the client's point of view: one successful answer
     /// is enough for every later picker in this scope.
     pub fn completion(&mut self, source: &str, prefix: &str, items: Vec<Choice>, truncated: bool) {
-        if self.is_resident(source) {
-            self.resident_requests.remove(source);
-            self.resident
-                .insert(source.to_string(), (items.clone(), truncated));
+        if !self.catalog.completed(source, &items, truncated) {
+            return;
         }
         if let Some(picker) = self.picker.as_mut()
             && picker.source.as_deref() == Some(source)
@@ -536,7 +460,7 @@ impl Screen {
     /// failure is different from a successful empty catalogue: the former is a
     /// recoverable transport state, not an empty list that should trap the picker.
     pub fn completion_failed(&mut self, source: &str) {
-        self.resident_requests.remove(source);
+        self.catalog.failed(source);
     }
 
     /// The rendered body a selection moves over. Nothing here reaches a session.
@@ -1076,14 +1000,14 @@ impl Screen {
             .strip_prefix('/')
             .filter(|word| !word.contains('\n'))
             .and_then(|word| word.split_whitespace().next())
-            && self.raw_commands.iter().any(|id| id == word)
+            && self.catalog.is_raw(word)
         {
             self.editor.submit();
             self.notice = None;
             self.save();
             return KeyOut::Submitted(text);
         }
-        match line::parse(&text, &self.commands) {
+        match line::parse(&text, self.catalog.commands()) {
             line::Parsed::Invalid { message } => {
                 self.notice = Some(message);
                 KeyOut::Local
@@ -1132,12 +1056,7 @@ impl Screen {
         };
         let words = line::words(rest);
         let name = words.values.first().cloned().unwrap_or_default();
-        let Some(command) = self
-            .commands
-            .iter()
-            .find(|command| command.id == name)
-            .cloned()
-        else {
+        let Some(command) = self.catalog.command(&name).cloned() else {
             return KeyOut::Local;
         };
         let count = words.values.len().saturating_sub(1);
@@ -1168,7 +1087,7 @@ impl Screen {
         self.editor.set_text("/");
         // `/` on an empty line is a request for the session's commands, and the
         // promise the declaration made is that they can be listed without asking.
-        let mut picker = if self.sources.iter().any(|source| source.id == "commands") {
+        let mut picker = if self.catalog.has_source("commands") {
             match placement {
                 misa_kit::picker::PickerPlacement::Inline => {
                     Picker::inline("commands", "Commands", Accept::Run)
@@ -1206,7 +1125,7 @@ impl Screen {
             Action::ALL
                 .iter()
                 .filter(|action| match action.command_name() {
-                    Some(command) => self.commands.iter().any(|entry| entry.id == command),
+                    Some(command) => self.catalog.has_command(command),
                     None => true,
                 })
                 .map(|action| {
@@ -1255,10 +1174,10 @@ impl Screen {
             && self.editor.text().starts_with('/')
         {
             let name = self.editor.text().trim_start_matches('/');
-            if self.commands.iter().any(|command| command.id == name) {
+            if self.catalog.has_command(name) {
                 self.editor.type_char(' ');
                 self.picker = None;
-                return match line::parse(self.editor.text(), &self.commands) {
+                return match line::parse(self.editor.text(), self.catalog.commands()) {
                     line::Parsed::Needs {
                         source: Some(_), ..
                     } => self.submit(),
@@ -1316,7 +1235,7 @@ impl Screen {
                 picker.set_query(Self::picker_query(
                     self.editor.text(),
                     &picker.accept,
-                    &self.commands,
+                    &self.catalog,
                 ))
             }
             Key::Backspace | Key::Delete => {
@@ -1331,7 +1250,7 @@ impl Screen {
                     picker.set_query(Self::picker_query(
                         self.editor.text(),
                         &picker.accept,
-                        &self.commands,
+                        &self.catalog,
                     ))
                 }
             }
@@ -1347,13 +1266,10 @@ impl Screen {
         self.picker_effect(effect)
     }
 
-    fn picker_query(text: &str, accept: &Accept, commands: &[line::Command]) -> String {
+    fn picker_query(text: &str, accept: &Accept, catalog: &ComposerCatalog) -> String {
         match accept {
             Accept::Argument { command, argument } => {
-                let index = commands
-                    .iter()
-                    .find(|item| &item.id == command)
-                    .and_then(|item| item.args.iter().position(|item| &item.name == argument));
+                let index = catalog.argument_index(command, argument);
                 index
                     .and_then(|index| {
                         line::words(text.trim_start_matches('/'))
@@ -1377,12 +1293,7 @@ impl Screen {
         };
         match &picker.accept {
             Accept::Argument { command, argument } => {
-                let index = self
-                    .commands
-                    .iter()
-                    .find(|item| &item.id == command)
-                    .and_then(|item| item.args.iter().position(|item| &item.name == argument))
-                    .unwrap_or(0);
+                let index = self.catalog.argument_index(command, argument).unwrap_or(0);
                 let mut values = line::words(self.editor.text().trim_start_matches('/'))
                     .values
                     .into_iter()
@@ -1417,7 +1328,7 @@ impl Screen {
             picker.set_query(Self::picker_query(
                 self.editor.text(),
                 &picker.accept,
-                &self.commands,
+                &self.catalog,
             ))
         });
         effect.map_or(KeyOut::Local, |effect| self.picker_effect(effect))
@@ -1433,11 +1344,10 @@ impl Screen {
                 KeyOut::Local
             }
             PickerEffect::Ask { source, prefix } => {
-                if self.is_resident(&source) {
-                    self.resident_requests.insert(source);
-                    KeyOut::Local
-                } else {
+                if self.catalog.should_ask(&source) {
                     KeyOut::Complete { source, prefix }
+                } else {
+                    KeyOut::Local
                 }
             }
             PickerEffect::Accepted(accepted) => {
@@ -1455,12 +1365,7 @@ impl Screen {
                 // An accepted argument completes the line rather than sending it, so
                 // somebody can add the next argument or edit what they got.
                 if let Accept::Argument { command, argument } = &accepted.accept {
-                    let index = self
-                        .commands
-                        .iter()
-                        .find(|item| &item.id == command)
-                        .and_then(|item| item.args.iter().position(|item| &item.name == argument))
-                        .unwrap_or(0);
+                    let index = self.catalog.argument_index(command, argument).unwrap_or(0);
                     let mut values = line::words(self.editor.text().trim_start_matches('/'))
                         .values
                         .into_iter()
@@ -1481,7 +1386,7 @@ impl Screen {
                     // A command whose arguments are all filled is complete, so it is
                     // sent: somebody who picked a model has said what they meant. One
                     // that is not complete leaves the line for the next argument.
-                    match line::parse(self.editor.text(), &self.commands) {
+                    match line::parse(self.editor.text(), self.catalog.commands()) {
                         line::Parsed::Command { .. } => self.submit(),
                         _ => KeyOut::Local,
                     }
@@ -1605,18 +1510,17 @@ impl Screen {
         )
         .with_frecency(self.prefs.frecency())
         .with_favorites(self.prefs.favorites());
-        if let Some((items, truncated)) = self.resident.get(source) {
+        if let Some((items, truncated)) = self.catalog.held(source) {
             picker.set_items(items.clone(), *truncated);
         }
         self.picker = Some(picker);
-        if self.resident.contains_key(source) {
-            KeyOut::Local
-        } else {
-            self.resident_requests.insert(source.into());
+        if self.catalog.should_ask(source) {
             KeyOut::Complete {
                 source: source.into(),
                 prefix: String::new(),
             }
+        } else {
+            KeyOut::Local
         }
     }
 
@@ -2441,6 +2345,7 @@ pub fn prompt_field(view: &Node) -> Option<&Field> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use misa_kit::intent::Source;
     use misa_proto::preparation::Arg;
 
     fn declaration() -> Catalog {
@@ -2821,9 +2726,78 @@ mod tests {
     }
 
     #[test]
+    fn empty_success_is_held_but_failure_can_retry_and_declaration_resets_requests() {
+        let mut screen = screen();
+        screen.editor.set_text("/model");
+        assert!(matches!(screen.key(Key::Tab), KeyOut::Complete { .. }));
+        screen.completion_failed("models");
+        // A keystroke in the still-open picker retries after failure.
+        assert_eq!(
+            screen.key(Key::Char('x')),
+            KeyOut::Complete {
+                source: "models".into(),
+                prefix: "x".into(),
+            }
+        );
+        screen.completion("models", "x", vec![], false);
+        screen.picker = None;
+        assert_eq!(screen.key(Key::Tab), KeyOut::Local);
+        screen.declare(&declaration());
+        screen.picker = None;
+        assert!(matches!(screen.key(Key::Tab), KeyOut::Complete { .. }));
+        screen.declare(&declaration());
+        // An answer from the abandoned request cannot fill the new scope's cache.
+        screen.completion("models", "", vec![], false);
+        screen.picker = None;
+        assert!(matches!(screen.key(Key::Tab), KeyOut::Complete { .. }));
+    }
+
+    #[test]
+    fn stale_completion_keeps_current_query_but_populates_resident_cache() {
+        let mut screen = screen();
+        screen.editor.set_text("/model");
+        assert!(matches!(screen.key(Key::Tab), KeyOut::Complete { .. }));
+        screen.key(Key::Char('n'));
+        screen.completion(
+            "models",
+            "",
+            vec![Choice {
+                value: "new-model".into(),
+                label: "New model".into(),
+                detail: None,
+                metadata: None,
+            }],
+            false,
+        );
+        assert_eq!(screen.picker.as_ref().unwrap().query, "n");
+        assert!(screen.picker.as_ref().unwrap().items().is_empty());
+        screen.picker = None;
+        assert_eq!(screen.key(Key::Tab), KeyOut::Local);
+        assert_eq!(
+            screen.picker.as_ref().unwrap().items()[0].value,
+            "new-model"
+        );
+    }
+
+    #[test]
+    fn session_command_wins_over_colliding_host_raw_command() {
+        let mut screen = screen();
+        screen.declare_with_raw(&declaration(), &[Command::new("clear", "Raw", "raw")]);
+        screen.editor.set_text("/clear");
+        assert_eq!(
+            screen.key(Key::Submit),
+            KeyOut::Intent(Intent::Command {
+                name: "clear".into(),
+                args: misa_value::Value::map([]),
+            })
+        );
+    }
+
+    #[test]
     fn quoted_argument_completion_keeps_prior_arguments_and_decoded_prefix() {
         let mut screen = screen();
-        screen.commands.push(
+        let mut info = declaration();
+        info.commands.push(
             line::Command::new("visit", "Visit", "")
                 .arg(line::Arg::new("daemon", "Daemon").required())
                 .arg(
@@ -2832,6 +2806,7 @@ mod tests {
                         .from("models"),
                 ),
         );
+        screen.declare(&info);
         screen.editor.set_text("/visit 'daemon one' 'child se");
         assert_eq!(
             screen.key(Key::Tab),
