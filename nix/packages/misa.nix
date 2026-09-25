@@ -13,15 +13,25 @@ in
 stdenv.mkDerivation {
   pname = "misa";
   version = "0.1.0";
-  src = lib.cleanSourceWith {
-    src = lib.cleanSource ../..;
-    filter =
-      path: _type:
-      !(builtins.elem (baseNameOf path) [
-        ".zig-cache"
-        "zig-out"
-        ".direnv"
-      ]);
+  # Only the files the build and its checks consume: the build graph
+  # (build.zig imports the extension catalog from src/ at graph-construction
+  # time), the sources (incl. the vendored fennel and the .fnl runtime the
+  # build translates), the bundled extensions and default config it
+  # installs, and the tools/tests the check phase runs. Entry points
+  # (default.nix, nix/, npins/), next/, docs, and benchmarks are not
+  # package inputs, so editing them must not churn the source hash.
+  src = lib.fileset.toSource {
+    root = ../..;
+    fileset = lib.fileset.unions [
+      ../../build.zig
+      ../../build.zig.zon
+      ../../config
+      ../../extensions
+      ../../src
+      ../../tests
+      ../../tools/compile-fennel.lua
+      ../../tools/fennel
+    ];
   };
 
   nativeBuildInputs = [
