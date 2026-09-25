@@ -1,6 +1,5 @@
 //! Native-local relationship selection and request instances. Neither a hidden
 //! dialog nor a session switch cancels the operation that owns a request.
-use misa_client::request::Model;
 use misa_pixel_document::ui::{Command, DocumentUi, Key};
 use misa_pixel_ui::{Scene, TextMetrics};
 use misa_proto::{
@@ -9,6 +8,9 @@ use misa_proto::{
 };
 use misa_value::Value;
 use std::{collections::BTreeMap, sync::Arc};
+
+mod requests;
+use requests::Requests;
 
 /// Actions produced by host-owned workspace controls. UI DocumentUi effects are kept
 /// distinct so relationship and request workflow never leaks into the UI crate.
@@ -91,6 +93,7 @@ pub struct DaemonChoice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use misa_client::request::Model;
     use misa_pixel_document::ui::Control;
 
     fn request(generation: i64) -> Model {
@@ -120,21 +123,27 @@ mod tests {
     #[test]
     fn exact_attention_waits_for_matching_request_and_rejects_replaced_generation() {
         let mut local = Local::default();
-        local.open_request("credential".into(), 2);
+        local.show_request("credential".into(), 2);
         assert!(local.app().is_none());
-        local.request("credential".into(), 2, Some(request(2)));
+        local
+            .requests
+            .update("credential".into(), 2, Some(request(2)));
         assert!(local.app().is_some());
-        local.open_request("credential".into(), 1);
+        local.show_request("credential".into(), 1);
         assert!(local.app().is_none());
-        local.request("credential".into(), 3, Some(request(3)));
+        local
+            .requests
+            .update("credential".into(), 3, Some(request(3)));
         assert!(local.app().is_none());
     }
     #[test]
     fn requests_never_take_focus_and_hiding_clears_secrets_without_cancelling() {
         let mut local = Local::default();
-        local.request("credential".into(), 2, Some(request(2)));
+        local
+            .requests
+            .update("credential".into(), 2, Some(request(2)));
         assert!(local.app().is_none());
-        local.open_requests();
+        local.show_requests();
         let app = local.app().unwrap();
         app.focus_control(Some(Control::Field {
             node: "request.form".into(),
@@ -154,17 +163,60 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(local.pending_requests(), 1);
-        local.open_requests();
+        assert_eq!(local.requests.len(), 1);
+        local.show_requests();
         assert_eq!(
             local.app().unwrap().field_text("request.form", "value"),
             Some("")
         );
-        local.request("credential".into(), 1, Some(request(1)));
-        assert_eq!(local.requests["credential"].0.generation, 2);
-        local.request("credential".into(), 3, None);
+        local
+            .requests
+            .update("credential".into(), 1, Some(request(1)));
+        assert!(matches!(
+            local.requests.action("submit".into(), vec![]),
+            Some(Action::Request { generation: 2, .. })
+        ));
+        local.requests.update("credential".into(), 3, None);
         assert!(local.app().is_none());
-        assert_eq!(local.pending_requests(), 0);
+        assert_eq!(local.requests.len(), 0);
+    }
+
+    #[test]
+    fn replaced_generation_never_reuses_secret_drafts_or_old_attention() {
+        let mut local = Local::default();
+        local.show_request("credential".into(), 2);
+        local
+            .requests
+            .update("credential".into(), 2, Some(request(2)));
+        let app = local.app().unwrap();
+        app.focus_control(Some(Control::Field {
+            node: "request.form".into(),
+            field: "value".into(),
+        }));
+        local.input(misa_window_core::Event::Text("old-secret".into()));
+        local
+            .requests
+            .update("credential".into(), 3, Some(request(3)));
+        assert_eq!(
+            local.app().unwrap().field_text("request.form", "value"),
+            Some("")
+        );
+        assert!(matches!(
+            local.requests.action("submit".into(), vec![]),
+            Some(Action::Request { generation: 3, .. })
+        ));
+        local.input(misa_window_core::Event::Key(Key::Escape));
+        local.show_request("credential".into(), 2);
+        assert!(local.app().is_none());
+        local
+            .requests
+            .update("credential".into(), 2, Some(request(2)));
+        assert!(local.app().is_none());
+        local.show_requests();
+        assert_eq!(
+            local.app().unwrap().field_text("request.form", "value"),
+            Some("")
+        );
     }
 
     #[test]
@@ -197,8 +249,8 @@ mod tests {
         });
         model.actions[0].id = "resolve".into();
         let mut local = Local::default();
-        local.request("credential".into(), 2, Some(model));
-        local.open_requests();
+        local.requests.update("credential".into(), 2, Some(model));
+        local.show_requests();
         for (id, value) in [("count", "3"), ("name", "example")] {
             local.app().unwrap().focus_control(Some(Control::Field {
                 node: "request.form".into(),
@@ -207,7 +259,7 @@ mod tests {
             local.input(misa_window_core::Event::Text(value.into()));
         }
         local.input(misa_window_core::Event::Key(Key::Escape));
-        local.open_requests();
+        local.show_requests();
         assert_eq!(
             local.app().unwrap().field_text("request.form", "count"),
             Some("3")
@@ -357,9 +409,7 @@ pub struct Local {
     form: Option<(String, DocumentUi)>,
     directories: Vec<DaemonChoice>,
     chooser: Option<DocumentUi>,
-    requests: BTreeMap<String, (Model, DocumentUi)>,
-    attention: Option<(String, i64)>,
-    active: Option<String>,
+    pub(crate) requests: Requests,
     catalog: Vec<misa_proto::presentation::Presentation>,
     preferences: misa_client::composition::Preferences,
     pub observation: Option<misa_client::ObservationId>,
@@ -383,7 +433,7 @@ impl Default for Local {
 impl Local {
     pub fn new(metrics: Arc<dyn TextMetrics>) -> Self {
         Self {
-            metrics,
+            metrics: metrics.clone(),
             report: None,
             appearance: Default::default(),
             installed_commands: Default::default(),
@@ -395,9 +445,7 @@ impl Local {
             form: None,
             directories: Vec::new(),
             chooser: None,
-            requests: Default::default(),
-            attention: None,
-            active: None,
+            requests: Requests::new(metrics.clone()),
             catalog: Vec::new(),
             preferences: Default::default(),
             observation: None,
@@ -487,7 +535,7 @@ impl Local {
         {
             self.chooser = None;
             self.report = None;
-            self.hide_request();
+            self.requests.hide();
             self.form_visible = true;
             return;
         }
@@ -528,7 +576,7 @@ impl Local {
         self.managing = None;
         self.chooser = None;
         self.choosing_presentations = false;
-        self.hide_request();
+        self.requests.hide();
     }
     pub fn directory(&mut self, entries: Vec<DaemonChoice>) {
         self.directories = entries;
@@ -543,7 +591,7 @@ impl Local {
         self.managing = None;
         self.daemon_form = None;
         self.choosing_presentations = false;
-        self.hide_request();
+        self.requests.hide();
         self.chooser = Some(DocumentUi::new(
             Node::section("chooser"),
             self.metrics.clone(),
@@ -568,7 +616,7 @@ impl Local {
         self.daemon_form = None;
         self.form_visible = false;
         self.choosing_commands = false;
-        self.hide_request();
+        self.requests.hide();
         self.choosing_presentations = true;
         let mut root = Node::section("presentations")
             .id("presentations")
@@ -723,139 +771,17 @@ impl Local {
             chooser.set_view(root);
         }
     }
-    pub fn open_request(&mut self, id: String, generation: i64) {
+    /// Opening attention dismisses other local overlays while awaiting its exact generation.
+    pub fn show_request(&mut self, id: String, generation: i64) {
         self.deactivate();
-        self.attention = Some((id, generation));
-        self.focus_attention();
+        self.requests.attend(id, generation);
     }
-    fn focus_attention(&mut self) {
-        if let Some((id, generation)) = &self.attention {
-            if let Some((model, _)) = self.requests.get(id) {
-                if model.generation == *generation {
-                    self.active = Some(id.clone());
-                }
-                self.attention = None;
-            }
-        }
-    }
-    pub fn request(&mut self, id: String, generation: i64, model: Option<Model>) {
-        if self.requests.len() >= 32 && !self.requests.contains_key(&id) {
-            return;
-        }
-        if self
-            .requests
-            .get(&id)
-            .is_some_and(|(old, _)| old.generation > generation)
-        {
-            return;
-        }
-        let Some(model) = model else {
-            self.requests.remove(&id);
-            if self.active.as_ref() == Some(&id) {
-                self.active = None;
-            }
-            return;
-        };
-        if model.generation != generation {
-            return;
-        }
-        if self
-            .requests
-            .get(&id)
-            .is_some_and(|(old, _)| old.generation == generation)
-        {
-            return;
-        }
-        let mut inputs = model.input.iter().cloned().collect::<Vec<_>>();
-        if let Some(form) = &model.form
-            && let misa_proto::schema::Schema::Record { fields, .. } = &form.input
-        {
-            inputs.extend(
-                fields
-                    .iter()
-                    .map(|(id, field)| misa_client::request::Input {
-                        id: id.clone(),
-                        label: format!(
-                            "{}{}{}",
-                            form.fields
-                                .get(id)
-                                .map(|field| field.label.as_str())
-                                .unwrap_or(id),
-                            if field.optional { " (optional)" } else { "" },
-                            if matches!(field.schema, misa_proto::schema::Schema::String) {
-                                ""
-                            } else {
-                                " · JSON value"
-                            }
-                        ),
-                        secret: false,
-                    }),
-            );
-        }
-        let mut form = Node::new(
-            "request.form",
-            Kind::Fields {
-                fields: inputs
-                    .iter()
-                    .map(|input| Field {
-                        id: input.id.clone(),
-                        label: input.label.clone(),
-                        value: String::new(),
-                        hint: None,
-                        kind: FieldKind::default(),
-                        read_only: false,
-                        secret: input.secret,
-                    })
-                    .collect(),
-            },
-        )
-        .id("request.form");
-        for (index, choice) in model.actions.iter().enumerate() {
-            form = form.action(action(
-                &choice.id,
-                &choice.label,
-                Value::Null,
-                if index == 0 && (model.input.is_some() || model.form.is_some()) {
-                    ActionOn::Submit
-                } else {
-                    ActionOn::Click
-                },
-            ));
-        }
-        let view = Node::section("request")
-            .id("request")
-            .label(format!("{} · Escape hides · Ctrl+R reopens", model.title))
-            .child(model.body.clone())
-            .child(form);
-        self.requests.insert(
-            id.clone(),
-            (model, DocumentUi::new(view, self.metrics.clone())),
-        );
-        self.focus_attention();
-    }
-    fn hide_request(&mut self) {
-        if let Some(id) = self.active.take() {
-            if let Some((_, app)) = self.requests.get_mut(&id) {
-                app.clear_secret_drafts();
-            }
-        }
-    }
-    pub fn open_requests(&mut self) {
+    pub fn show_requests(&mut self) {
         self.report = None;
         self.daemon_form = None;
         self.form_visible = false;
         self.chooser = None;
-        let ids: Vec<_> = self.requests.keys().cloned().collect();
-        let next = self
-            .active
-            .as_ref()
-            .and_then(|id| ids.iter().position(|value| value == id))
-            .map_or(0, |index| (index + 1) % ids.len().max(1));
-        self.hide_request();
-        self.active = ids.get(next).cloned();
-    }
-    pub fn pending_requests(&self) -> usize {
-        self.requests.len()
+        self.requests.cycle();
     }
     fn app(&mut self) -> Option<&mut DocumentUi> {
         if self.report.is_some() {
@@ -870,9 +796,7 @@ impl Local {
         if self.chooser.is_some() {
             self.chooser.as_mut()
         } else {
-            self.active
-                .as_ref()
-                .and_then(|id| self.requests.get_mut(id).map(|(_, app)| app))
+            self.requests.visible_app()
         }
     }
     pub fn frame_at(
@@ -1081,17 +1005,7 @@ impl Local {
                     _ => None,
                 },
                 Command::Intent(misa_kit::intent::Intent::Action { action, fields, .. }) => {
-                    let id = self.active.as_ref()?;
-                    let (model, _) = self.requests.get(id)?;
-                    Some(Action::Request {
-                        id: id.clone(),
-                        generation: model.generation,
-                        action,
-                        fields: fields
-                            .into_iter()
-                            .map(|field| (field.id, Value::str(field.value)))
-                            .collect(),
-                    })
+                    self.requests.action(action, fields)
                 }
                 Command::Copy(text) => Some(Action::Ui(Command::Copy(text))),
                 _ => None,
