@@ -74,6 +74,19 @@ impl Drop for Advertisement {
     }
 }
 
+/// Create the discovery directory with private permissions before placing any local
+/// startup coordination files in it. Reject existing public directories and symlinks.
+pub fn ensure_directory() -> Result<PathBuf, String> {
+    let dir = directory()?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| e.to_string())?;
+    private_directory(&dir)?;
+    Ok(dir)
+}
+
 pub fn advertise(
     node: &str,
     session: &str,
