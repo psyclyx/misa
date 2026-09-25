@@ -19,22 +19,11 @@ use misa_proto::{Node, view::Choice};
 pub use misa_tui_ui::buttons;
 pub use misa_tui_ui::{Accept, Picker, ed, panel_of, translate};
 /// Connected screen state: independent rendering and host-owned request drafts.
-pub struct Screen {
+pub struct ConnectedScreen {
     pub ui: misa_tui_ui::Screen,
     pub dialogs: dialogs::Dialogs,
 }
-impl std::ops::Deref for Screen {
-    type Target = misa_tui_ui::Screen;
-    fn deref(&self) -> &Self::Target {
-        &self.ui
-    }
-}
-impl std::ops::DerefMut for Screen {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.ui
-    }
-}
-impl Screen {
+impl ConnectedScreen {
     pub fn new(width: u16, height: u16) -> Self {
         Self {
             ui: misa_tui_ui::Screen::new(width, height),
@@ -78,6 +67,23 @@ impl Screen {
                 self.ui.dialog_settings(),
             ),
         };
+    }
+}
+
+#[cfg(test)]
+mod connected_screen_tests {
+    use super::ConnectedScreen;
+
+    #[test]
+    fn connected_dialogs_project_only_into_the_ui_surface() {
+        let mut screen = ConnectedScreen::new(80, 24);
+        assert!(!screen.ui.dialogs.modal);
+        screen.dialogs.report(misa_proto::Node::section("report"));
+        assert!(screen.dialogs.modal());
+        assert!(!screen.ui.dialogs.modal);
+        screen.refresh_dialog_surface();
+        assert!(screen.ui.dialogs.modal);
+        assert!(!screen.ui.dialogs.content.is_empty());
     }
 }
 

@@ -91,23 +91,24 @@ mod tests {
 
     #[test]
     fn connected_host_declares_save_but_never_shadows_a_session_save() {
-        use crate::{Catalog, Key, KeyOut, Screen};
+        use crate::{Catalog, ConnectedScreen, Key, KeyOut};
         use misa_kit::intent::{Command, Intent};
 
-        let mut screen = Screen::new(80, 24);
+        let mut screen = ConnectedScreen::new(80, 24);
         screen.declare(&Catalog::default());
         assert!(
             screen
+                .ui
                 .command_candidates()
                 .iter()
                 .any(|item| item.value == "/save")
         );
-        screen.composer.set_text("/save 2 /tmp/my file.png");
+        screen.ui.composer.set_text("/save 2 /tmp/my file.png");
         assert_eq!(
-            screen.key(Key::Submit),
+            screen.ui.key(Key::Submit),
             KeyOut::Submitted("/save 2 /tmp/my file.png".into())
         );
-        assert!(screen.composer.is_empty());
+        assert!(screen.ui.composer.is_empty());
 
         screen.declare(&Catalog {
             commands: vec![Command::new("save", "Session save", "session-owned")],
@@ -115,18 +116,19 @@ mod tests {
         });
         assert_eq!(
             screen
+                .ui
                 .command_candidates()
                 .iter()
                 .filter(|item| item.value == "/save")
                 .count(),
             1
         );
-        screen.composer.set_text("/save");
+        screen.ui.composer.set_text("/save");
         assert!(
-            matches!(screen.key(Key::Submit), KeyOut::Intent(Intent::Command { name, .. }) if name == "save")
+            matches!(screen.ui.key(Key::Submit), KeyOut::Intent(Intent::Command { name, .. }) if name == "save")
         );
-        screen.composer.set_text("/save /tmp/local");
-        assert_eq!(screen.key(Key::Submit), KeyOut::Local);
-        assert_eq!(screen.composer.text(), "/save /tmp/local");
+        screen.ui.composer.set_text("/save /tmp/local");
+        assert_eq!(screen.ui.key(Key::Submit), KeyOut::Local);
+        assert_eq!(screen.ui.composer.text(), "/save /tmp/local");
     }
 }

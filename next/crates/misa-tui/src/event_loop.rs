@@ -1,5 +1,5 @@
 //! Keyboard and local animation remain live while the session has nothing to send.
-use crate::{KeyOut, Screen, Session};
+use crate::{ConnectedScreen, KeyOut, Session};
 use crate::{SessionReply, SessionRequest as Request};
 use crossterm::event::{self, Event, KeyEventKind};
 use std::io::Write;
@@ -46,37 +46,37 @@ fn offered_actions(
     actions
 }
 pub async fn run(session: &mut dyn Session) -> Result<(), String> {
-    let mut screen = Screen::durable();
+    let mut screen = ConnectedScreen::durable();
     screen.declare(&session.catalog());
-    screen.location = session.location();
+    screen.ui.location = session.location();
     if let Ok((width, height)) = crossterm::terminal::size() {
-        screen.width = width;
-        screen.height = height;
+        screen.ui.width = width;
+        screen.ui.height = height;
     }
     // Kitty support is advertised, never probed synchronously. A terminal that
     // reports its pixel geometry also tells us how big a cell is; otherwise the
     // default ratio is used.
-    screen.graphics = misa_terminal_ui::graphics::Kitty::detect();
+    screen.ui.graphics = misa_terminal_ui::graphics::Kitty::detect();
     if let Ok(size) = crossterm::terminal::window_size()
         && let Some(cell) = misa_terminal_ui::graphics::CellSize::from_window(
-            screen.width,
-            screen.height,
+            screen.ui.width,
+            screen.ui.height,
             size.width,
             size.height,
         )
     {
-        screen.graphics.set_cell(cell);
+        screen.ui.graphics.set_cell(cell);
     }
     let _terminal = crate::terminal_loop::Terminal::enter()?;
     let (_reader, receiver) = crate::terminal_loop::events();
     let result = drive(session, &mut screen, receiver, &mut std::io::stdout()).await;
-    screen.save();
+    screen.ui.save();
     result
 }
 
 async fn drive(
     session: &mut dyn Session,
-    screen: &mut Screen,
+    screen: &mut ConnectedScreen,
     events: mpsc::Receiver<Result<Event, String>>,
     writer: &mut impl Write,
 ) -> Result<(), String> {
@@ -91,13 +91,15 @@ async fn drive(
 }
 async fn drive_with_clipboard(
     session: &mut dyn Session,
-    screen: &mut Screen,
+    screen: &mut ConnectedScreen,
     mut events: mpsc::Receiver<Result<Event, String>>,
     writer: &mut impl Write,
     clipboard: &mut dyn crate::clipboard::Source,
 ) -> Result<(), String> {
-    let mut retained =
-        crate::retained::Retained::new(misa_proto::Node::section("session").id("session"), screen);
+    let mut retained = crate::retained::Retained::new(
+        misa_proto::Node::section("session").id("session"),
+        &screen.ui,
+    );
     let mut contributions = std::collections::BTreeMap::<String, crate::retained::Retained>::new();
     let mut pending = Vec::<misa_proto::view::BlobRef>::new();
     let mut uploads = 0usize;
@@ -127,14 +129,14 @@ async fn drive_with_clipboard(
         // placeholder stays until the bytes arrive.
         if images_dirty {
             images_dirty = false;
-            if screen.graphics.enabled() {
+            if screen.ui.graphics.enabled() {
                 let blobs: Vec<_> = retained
                     .image_blobs()
                     .into_iter()
                     .chain(contributions.values().flat_map(|c| c.image_blobs()))
                     .collect();
                 for blob in blobs {
-                    if screen.graphics.has(&blob.hash) || requested.contains(&blob.hash) {
+                    if screen.ui.graphics.has(&blob.hash) || requested.contains(&blob.hash) {
                         continue;
                     }
                     requested.insert(blob.hash.clone());
@@ -152,18 +154,24 @@ async fn drive_with_clipboard(
         let mut extra_document = vec![];
         let mut extra_footer = vec![];
         for contribution in contributions.values_mut() {
-            contribution.local(screen);
-            let (document, footer) = contribution.placed_lines(screen.height as usize);
+            contribution.local(&screen.ui);
+            let (document, footer) = contribution.placed_lines(screen.ui.height as usize);
             extra_document.extend(document);
             extra_footer.extend(footer);
         }
         screen.refresh_dialog_surface();
-        let rendered =
-            retained.frame_with(screen, staging.as_deref(), &extra_document, &extra_footer);
+        let rendered = retained.frame_with(
+            &screen.ui,
+            staging.as_deref(),
+            &extra_document,
+            &extra_footer,
+        );
         // The viewport resolved a physical first row from the semantic anchor; keep
         // `scroll` at that row so the next reader delta is relative to what was shown,
         // and mirror back whether a scroll reached the tail and resumed following.
-        screen.viewport_resolved(retained.resolved_scroll(), retained.following());
+        screen
+            .ui
+            .viewport_resolved(retained.resolved_scroll(), retained.following());
         let mut rendered = rendered;
         let lines = &mut rendered.lines;
         if retained.has_turn() {
@@ -173,10 +181,12 @@ async fn drive_with_clipboard(
                 .iter_mut()
                 .find(|line| line.node.as_deref() == Some("indicators"))
             {
-                let selected =
-                    misa_lines::components::animation_for(screen.component_settings(), "activity")
-                        .as_deref()
-                        .and_then(|id| animations.frame(id, true, frame as u64));
+                let selected = misa_lines::components::animation_for(
+                    screen.ui.component_settings(),
+                    "activity",
+                )
+                .as_deref()
+                .and_then(|id| animations.frame(id, true, frame as u64));
                 if let Some(selected) = selected
                     && let Some((_, text)) = line.spans.iter_mut().find(|(_, text)| text == "●")
                 {
@@ -184,50 +194,50 @@ async fn drive_with_clipboard(
                 }
             }
         }
-        crate::terminal_loop::paint(writer, &mut output, screen, rendered)?;
+        crate::terminal_loop::paint(writer, &mut output, &screen.ui, rendered)?;
         let event = tokio::select! {
             result = &mut driver => return result,
             update = incoming.recv() => {
                 match update {
                     Some(Update::View(crate::Presentation::Forget(id)))=>{
                         parked.remove(&id);
-                        if scope==id {scope.clear();screen.composer.set_text("");screen.composer.clear_picker();screen.dialogs=Default::default();screen.clear_panel();screen.clear_selection();contributions.clear();pending.clear();uploads=0;}
+                        if scope==id {scope.clear();screen.ui.composer.set_text("");screen.ui.composer.clear_picker();screen.dialogs=Default::default();screen.ui.clear_panel();screen.ui.clear_selection();contributions.clear();pending.clear();uploads=0;}
                     },
                     Some(Update::View(crate::Presentation::Documents(documents))) => {
                         for (id,update) in documents {
                             if id.is_empty() {
-                                crate::document_adapter::observed(&mut retained, &update,screen)?;
+                                crate::document_adapter::observed(&mut retained, &update,&screen.ui)?;
                             } else if let misa_client::document::Update::Unavailable(fault)=&update {
-                                contributions.remove(&id);screen.notice=Some(format!("{id}: {}",fault.message));
+                                contributions.remove(&id);screen.ui.notice=Some(format!("{id}: {}",fault.message));
                             } else {
-                                let contribution=contributions.entry(id).or_insert_with(||crate::retained::Retained::new(misa_proto::Node::section("presentation").id("presentation"),screen));
-                                crate::document_adapter::observed(contribution, &update,screen)?;
+                                let contribution=contributions.entry(id).or_insert_with(||crate::retained::Retained::new(misa_proto::Node::section("presentation").id("presentation"),&screen.ui));
+                                crate::document_adapter::observed(contribution, &update,&screen.ui)?;
                             }
                         }
                     },
                     Some(Update::View(crate::Presentation::Activate(next))) => {
-                        if scope.is_empty() {screen.enter_draft_scope(next.clone());scope=next;} else if scope != next {
-                            screen.remember_draft();
+                        if scope.is_empty() {screen.ui.enter_draft_scope(next.clone());scope=next;} else if scope != next {
+                            screen.ui.remember_draft();
                             let old = (
-                                std::mem::replace(&mut retained, crate::retained::Retained::new(misa_proto::Node::section("session").id("session"), screen)),
+                                std::mem::replace(&mut retained, crate::retained::Retained::new(misa_proto::Node::section("session").id("session"), &screen.ui)),
                                 std::mem::take(&mut contributions), std::mem::take(&mut screen.dialogs),
-                                screen.composer.park(), screen.park_panel(),
-                                screen.park_reader(),
+                                screen.ui.composer.park(), screen.ui.park_panel(),
+                                screen.ui.park_reader(),
                                 std::mem::take(&mut pending), uploads, generation,
                             );
                             if !scope.is_empty() { parked.insert(scope,old); }
                             if let Some((r,c,d,composer,panel,reader,attachments,upload_count,epoch))=parked.remove(&next) {
-                                retained=r;contributions=c;screen.dialogs=d;screen.composer.restore(composer);screen.restore_panel(panel);screen.restore_reader(reader);pending=attachments;uploads=upload_count;generation=epoch;screen.activate_draft_scope(next.clone());
-                            } else { screen.restore_draft_scope(next.clone());screen.reset_reader_viewport();uploads=0;generation=generation.wrapping_add(1); }
+                                retained=r;contributions=c;screen.dialogs=d;screen.ui.composer.restore(composer);screen.ui.restore_panel(panel);screen.ui.restore_reader(reader);pending=attachments;uploads=upload_count;generation=epoch;screen.ui.activate_draft_scope(next.clone());
+                            } else { screen.ui.restore_draft_scope(next.clone());screen.ui.reset_reader_viewport();uploads=0;generation=generation.wrapping_add(1); }
                             scope=next;
                         }
                     },
                     Some(Update::View(crate::Presentation::Contribution { id, update })) => {
                         match &update {
-                            misa_client::document::Update::Unavailable(fault) => { contributions.remove(&id); screen.notice = Some(format!("{id}: {}", fault.message)); },
+                            misa_client::document::Update::Unavailable(fault) => { contributions.remove(&id); screen.ui.notice = Some(format!("{id}: {}", fault.message)); },
                             _ => {
-                                let contribution = contributions.entry(id).or_insert_with(|| crate::retained::Retained::new(misa_proto::Node::section("presentation").id("presentation"), screen));
-                                crate::document_adapter::observed(contribution, &update, screen)?;
+                                let contribution = contributions.entry(id).or_insert_with(|| crate::retained::Retained::new(misa_proto::Node::section("presentation").id("presentation"), &screen.ui));
+                                crate::document_adapter::observed(contribution, &update, &screen.ui)?;
                             },
                         }
                     },
@@ -238,54 +248,54 @@ async fn drive_with_clipboard(
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Form(form)))) => screen.dialogs.form(form),
                     Some(Update::View(crate::Presentation::TurnOutput(_))) => {},
                     Some(Update::View(crate::Presentation::Declaration{catalog,location})) => {
-                        screen.declare(&catalog); screen.location = location;
+                        screen.declare(&catalog); screen.ui.location = location;
                     }
-                    Some(Update::View(crate::Presentation::Candidates { source, items, truncated })) => screen.candidates(&source, items, truncated),
-                    Some(Update::View(crate::Presentation::Snapshot(next))) => retained = crate::retained::Retained::new(next, screen),
+                    Some(Update::View(crate::Presentation::Candidates { source, items, truncated })) => screen.ui.candidates(&source, items, truncated),
+                    Some(Update::View(crate::Presentation::Snapshot(next))) => retained = crate::retained::Retained::new(next, &screen.ui),
                     Some(Update::View(crate::Presentation::Document(update))) => {
                         match &update {
-                            misa_client::document::Update::Unavailable(fault) => screen.notice = Some(fault.message.clone()),
+                            misa_client::document::Update::Unavailable(fault) => screen.ui.notice = Some(fault.message.clone()),
                             // Status is a semantic indicator rendered by the retained
                             // status owner. Turning it into a debug notice duplicates the
                             // status bar and makes normal activity look like an error.
                             misa_client::document::Update::Status(_) => {},
                             _ => {},
                         }
-                        crate::document_adapter::observed(&mut retained, &update, screen)?;
+                        crate::document_adapter::observed(&mut retained, &update, &screen.ui)?;
                     }
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Complete { source, prefix, result }))) => match result {
                         Ok((items, truncated)) => {
-                            screen.completion(&source, &prefix, items, truncated);
+                            screen.ui.completion(&source, &prefix, items, truncated);
                         }
                         Err(error) => {
-                            screen.completion_failed(&source);
-                            screen.notice = Some(error);
+                            screen.ui.completion_failed(&source);
+                            screen.ui.notice = Some(error);
                         }
                     },
-                    Some(Update::View(crate::Presentation::Reply(SessionReply::Notice(notice)))) => screen.notice = Some(notice),
+                    Some(Update::View(crate::Presentation::Reply(SessionReply::Notice(notice)))) => screen.ui.notice = Some(notice),
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Uploaded { generation: reply_generation, result }))) => {
                         uploads = uploads.saturating_sub(1);
                         if generation == reply_generation {
-                            match result { Ok(blob) => { pending.push(blob); screen.notice = Some("Image attached; Enter sends the prompt".into()); }, Err(error) => screen.notice = Some(error) }
+                            match result { Ok(blob) => { pending.push(blob); screen.ui.notice = Some("Image attached; Enter sends the prompt".into()); }, Err(error) => screen.ui.notice = Some(error) }
                         }
                     }
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Downloaded { reference, result }))) => {
                         match result {
                             Ok(bytes) => match image::load_from_memory(&bytes) {
-                                Ok(image) => screen.graphics.insert(&reference.hash, image.into_rgba8()),
-                                Err(error) => screen.notice = Some(format!("Image decode failed: {error}")),
+                                Ok(image) => screen.ui.graphics.insert(&reference.hash, image.into_rgba8()),
+                                Err(error) => screen.ui.notice = Some(format!("Image decode failed: {error}")),
                             },
-                            Err(error) => screen.notice = Some(error),
+                            Err(error) => screen.ui.notice = Some(error),
                         }
                     }
                     Some(Update::View(crate::Presentation::Reply(SessionReply::Sent { draft, result }))) => match result {
-                        Ok(()) => screen.notice = None,
+                        Ok(()) => screen.ui.notice = None,
                         Err(error) => {
                             if let Some((text, attachments)) = draft {
-                                screen.composer.prepend(&text);
+                                screen.ui.composer.prepend(&text);
                                 pending.extend(attachments);
                             }
-                            screen.notice = Some(error);
+                            screen.ui.notice = Some(error);
                         }
                     },
                     None => return Ok(()),
@@ -301,9 +311,9 @@ async fn drive_with_clipboard(
         let view = retained.interaction();
         let out = match event {
             Event::Resize(width, height) => {
-                screen.width = width;
-                screen.height = height;
-                retained.local(screen);
+                screen.ui.width = width;
+                screen.ui.height = height;
+                retained.local(&screen.ui);
                 output.invalidate();
                 continue;
             }
@@ -311,12 +321,12 @@ async fn drive_with_clipboard(
                 if screen.dialogs.paste(&text) {
                 } else if crate::panel_of(&view).is_some() {
                     for character in text.chars() {
-                        screen.panel_key(&view, &crate::Key::Char(character));
+                        screen.ui.panel_key(&view, &crate::Key::Char(character));
                     }
                 } else {
                     paste(screen, &text, &commands);
                 }
-                retained.local(screen);
+                retained.local(&screen.ui);
                 continue;
             }
             Event::Mouse(mouse) => {
@@ -324,14 +334,14 @@ async fn drive_with_clipboard(
                 // same handler the keyboard scroll actions use.
                 match mouse.kind {
                     event::MouseEventKind::ScrollUp => {
-                        let _ = screen.key(crate::Key::ScrollPage(-3));
+                        let _ = screen.ui.key(crate::Key::ScrollPage(-3));
                     }
                     event::MouseEventKind::ScrollDown => {
-                        let _ = screen.key(crate::Key::ScrollPage(3));
+                        let _ = screen.ui.key(crate::Key::ScrollPage(3));
                     }
                     _ => continue,
                 }
-                retained.local(screen);
+                retained.local(&screen.ui);
                 continue;
             }
             Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -341,7 +351,7 @@ async fn drive_with_clipboard(
                     if key.modifiers.contains(event::KeyModifiers::ALT) {
                         generation = generation.wrapping_add(1);
                         pending.clear();
-                        screen.notice = Some("Clipboard attachments discarded".into());
+                        screen.ui.notice = Some("Clipboard attachments discarded".into());
                         continue;
                     }
                     match clipboard.read() {
@@ -349,7 +359,7 @@ async fn drive_with_clipboard(
                             if screen.dialogs.paste(&text) {
                             } else if crate::panel_of(&view).is_some() {
                                 for character in text.chars() {
-                                    screen.panel_key(&view, &crate::Key::Char(character));
+                                    screen.ui.panel_key(&view, &crate::Key::Char(character));
                                 }
                             } else {
                                 paste(screen, &text, &commands);
@@ -361,13 +371,13 @@ async fn drive_with_clipboard(
                             rgba,
                         }) => {
                             if screen.dialogs.focused() || crate::panel_of(&view).is_some() {
-                                screen.notice = Some(
+                                screen.ui.notice = Some(
                                     "Close the input form to attach an image to the prompt".into(),
                                 );
                                 continue;
                             }
                             if pending.len() + uploads >= 16 {
-                                screen.notice = Some(
+                                screen.ui.notice = Some(
                                     "Send or discard staged attachments before adding more".into(),
                                 );
                                 continue;
@@ -386,12 +396,12 @@ async fn drive_with_clipboard(
                                         uploads += 1;
                                     }
                                 }
-                                Err(error) => screen.notice = Some(error),
+                                Err(error) => screen.ui.notice = Some(error),
                             }
                         }
-                        Err(error) => screen.notice = Some(error),
+                        Err(error) => screen.ui.notice = Some(error),
                     }
-                    retained.local(screen);
+                    retained.local(&screen.ui);
                     continue;
                 }
                 if key.code == event::KeyCode::Enter
@@ -399,13 +409,13 @@ async fn drive_with_clipboard(
                     && !key.modifiers.contains(event::KeyModifiers::SHIFT)
                     && uploads > 0
                 {
-                    screen.notice = Some("Wait for the attachment upload before sending".into());
+                    screen.ui.notice = Some("Wait for the attachment upload before sending".into());
                     continue;
                 }
                 let queued = view.children.iter().any(|node| node.id == "queue");
                 if key.code == event::KeyCode::Enter
                     && !screen.dialogs.focused()
-                    && screen.composer.text().is_empty()
+                    && screen.ui.composer.text().is_empty()
                     && crate::panel_of(&view).is_none()
                     && !key.modifiers.contains(event::KeyModifiers::SHIFT)
                     && (queued || !pending.is_empty())
@@ -429,7 +439,7 @@ async fn drive_with_clipboard(
                         })
                     }
                 } else {
-                    let Some(key) = crate::translate(key.code, key.modifiers, screen.keymap())
+                    let Some(key) = crate::translate(key.code, key.modifiers, screen.ui.keymap())
                     else {
                         continue;
                     };
@@ -439,14 +449,14 @@ async fn drive_with_clipboard(
                     // belongs to this input router because only it has both the
                     // rendered session actions and the terminal-local draft.
                     if key == crate::Key::Interrupt
-                        && !screen.composer.has_picker()
+                        && !screen.ui.composer.has_picker()
                         && !screen.dialogs.focused()
-                        && !screen.panel_active()
-                        && !screen.has_selection()
+                        && !screen.ui.panel_active()
+                        && !screen.ui.has_selection()
                         && !has_action(&view, "turn.cancel")
                     {
-                        screen.composer.set_text("");
-                        screen.notice = None;
+                        screen.ui.composer.set_text("");
+                        screen.ui.notice = None;
                         continue;
                     }
                     if matches!(key, crate::Key::QueueEdit)
@@ -464,7 +474,7 @@ async fn drive_with_clipboard(
                             fields: vec![],
                         })
                     } else {
-                        let dialog_keys = screen.dialog_settings().clone();
+                        let dialog_keys = screen.ui.dialog_settings().clone();
                         match screen.dialogs.key(&key, &dialog_keys) {
                             Some(crate::dialogs::DialogOut::Ui(out)) => out,
                             Some(crate::dialogs::DialogOut::DaemonInvoke {
@@ -483,12 +493,15 @@ async fn drive_with_clipboard(
                                     },
                                     screen,
                                 );
-                                retained.local(screen);
+                                retained.local(&screen.ui);
                                 continue;
                             }
-                            None => {
-                                crate::terminal_loop::route_key(screen, &mut retained, &view, key)
-                            }
+                            None => crate::terminal_loop::route_key(
+                                &mut screen.ui,
+                                &mut retained,
+                                &view,
+                                key,
+                            ),
                         }
                     }
                 }
@@ -517,7 +530,7 @@ async fn drive_with_clipboard(
                             .collect(),
                         false,
                     );
-                    screen.composer.open_host_picker(picker, ":");
+                    screen.ui.composer.open_host_picker(picker, ":");
                     continue;
                 }
                 if let misa_kit::intent::Intent::Command { name, args } = &intent
@@ -529,7 +542,7 @@ async fn drive_with_clipboard(
                         .and_then(misa_value::Value::as_str)
                         .unwrap_or("");
                     let Some((node, _, _)) = actions.get(id) else {
-                        screen.notice =
+                        screen.ui.notice =
                             Some("Action is no longer offered by a visible document".into());
                         continue;
                     };
@@ -559,7 +572,7 @@ async fn drive_with_clipboard(
                         pending.clear();
                     }
                 } else if let Some(text) = draft {
-                    screen.composer.set_text(text);
+                    screen.ui.composer.set_text(text);
                 }
             }
             KeyOut::Complete { source, prefix } => {
@@ -577,14 +590,14 @@ async fn drive_with_clipboard(
                             screen,
                         );
                     }
-                    Err(error) => screen.notice = Some(error),
+                    Err(error) => screen.ui.notice = Some(error),
                 },
                 Some(Err(error)) => {
-                    screen.composer.set_text(text);
-                    screen.save();
-                    screen.notice = Some(error);
+                    screen.ui.composer.set_text(text);
+                    screen.ui.save();
+                    screen.ui.notice = Some(error);
                 }
-                None => screen.notice = Some("Unknown host command".into()),
+                None => screen.ui.notice = Some("Unknown host command".into()),
             },
             KeyOut::Copy(text) => {
                 use base64::Engine as _;
@@ -595,11 +608,11 @@ async fn drive_with_clipboard(
             KeyOut::StartSelection => {
                 // Selection needs the retained document's rendered geometry;
                 // keep that operation at the client/view boundary rather than
-                // smuggling a second document copy into Screen::action.
-                let _ = retained.selection_key(screen, &crate::Key::StartSelection);
+                // smuggling a second document copy into the UI screen.
+                let _ = retained.selection_key(&mut screen.ui, &crate::Key::StartSelection);
             }
         }
-        retained.local(screen);
+        retained.local(&screen.ui);
     }
 }
 
@@ -619,14 +632,18 @@ fn has_action(node: &misa_proto::Node, id: &str) -> bool {
 enum Update {
     View(crate::Presentation),
 }
-fn paste(screen: &mut Screen, text: &str, commands: &mpsc::UnboundedSender<Request>) {
-    if let KeyOut::Complete { source, prefix } = screen.paste(text) {
+fn paste(screen: &mut ConnectedScreen, text: &str, commands: &mpsc::UnboundedSender<Request>) {
+    if let KeyOut::Complete { source, prefix } = screen.ui.paste(text) {
         enqueue(commands, Request::Complete { source, prefix }, screen);
     }
 }
-fn enqueue(sender: &mpsc::UnboundedSender<Request>, request: Request, screen: &mut Screen) -> bool {
+fn enqueue(
+    sender: &mpsc::UnboundedSender<Request>,
+    request: Request,
+    screen: &mut ConnectedScreen,
+) -> bool {
     if sender.send(request).is_err() {
-        screen.notice = Some("The session request owner is closed".into());
+        screen.ui.notice = Some("The session request owner is closed".into());
         false
     } else {
         true
@@ -683,7 +700,7 @@ mod tests {
     #[tokio::test]
     async fn an_idle_session_still_accepts_paste_resize_and_quit() {
         let mut session = Idle { first: true };
-        let mut screen = Screen::new(80, 24);
+        let mut screen = ConnectedScreen::new(80, 24);
         let (sender, receiver) = mpsc::channel(64);
         sender
             .try_send(Ok(Event::Paste("two\nlines".into())))
@@ -703,8 +720,8 @@ mod tests {
         .await
         .expect("idle session blocked local input")
         .unwrap();
-        assert_eq!(screen.composer.text(), "two\nlines");
-        assert_eq!((screen.width, screen.height), (100, 30));
+        assert_eq!(screen.ui.composer.text(), "two\nlines");
+        assert_eq!((screen.ui.width, screen.ui.height), (100, 30));
     }
 
     struct Waiting {
@@ -733,7 +750,7 @@ mod tests {
         let mut session = Waiting {
             started: started.clone(),
         };
-        let mut screen = Screen::new(80, 24);
+        let mut screen = ConnectedScreen::new(80, 24);
         screen.declare(&misa_tui_ui::Catalog {
             commands: vec![
                 misa_kit::intent::Command::new("model", "Model", "choose").arg(
@@ -744,7 +761,7 @@ mod tests {
             ],
             sources: vec![misa_kit::intent::Source::resident("models", "Models")],
         });
-        screen.composer.set_text("/model");
+        screen.ui.composer.set_text("/model");
         let (sender, receiver) = mpsc::channel(64);
         sender
             .try_send(Ok(Event::Key(event::KeyEvent::new(
@@ -775,8 +792,8 @@ mod tests {
         })
         .await
         .expect("completion blocked local input");
-        assert!(screen.composer.text().contains("still editing"));
-        assert_eq!((screen.width, screen.height), (100, 30));
+        assert!(screen.ui.composer.text().contains("still editing"));
+        assert_eq!((screen.ui.width, screen.ui.height), (100, 30));
     }
 
     #[tokio::test]
@@ -784,7 +801,7 @@ mod tests {
         let mut session = Waiting {
             started: Default::default(),
         };
-        let mut screen = Screen::new(80, 24);
+        let mut screen = ConnectedScreen::new(80, 24);
         let (sender, receiver) = mpsc::channel(64);
         sender
             .try_send(Ok(Event::Key(event::KeyEvent::new(
@@ -913,8 +930,8 @@ mod clipboard_tests {
             frame,
             changed,
         };
-        let mut screen = Screen::new(80, 24);
-        screen.composer.set_text("a picture");
+        let mut screen = ConnectedScreen::new(80, 24);
+        screen.ui.composer.set_text("a picture");
         let (sender, receiver) = mpsc::channel(64);
         let script = async move {
             sender
@@ -968,7 +985,7 @@ mod clipboard_tests {
         assert!(
             matches!(&session.sent[1], Intent::Prompt { text, attachments } if text == "a picture" && attachments.len() == 1 && attachments[0].hash == "blob-1")
         );
-        assert!(screen.composer.text().is_empty());
+        assert!(screen.ui.composer.text().is_empty());
         assert!(
             String::from_utf8(writer.bytes)
                 .unwrap()
@@ -992,7 +1009,7 @@ mod clipboard_tests {
             frame,
             changed,
         };
-        let mut screen = Screen::new(80, 24);
+        let mut screen = ConnectedScreen::new(80, 24);
         let (sender, receiver) = mpsc::channel(64);
         let script = async move {
             sender
@@ -1091,9 +1108,9 @@ mod save_liveness_test {
             first: true,
             started: started.clone(),
         };
-        let mut screen = Screen::new(80, 24);
+        let mut screen = ConnectedScreen::new(80, 24);
         screen.declare(&session.catalog());
-        screen.composer.set_text("/save /tmp/unused-save-test");
+        screen.ui.composer.set_text("/save /tmp/unused-save-test");
         let mut writer = Observed {
             bytes: vec![],
             ready: ready.clone(),
@@ -1128,8 +1145,8 @@ mod save_liveness_test {
         })
         .await
         .expect("save wait blocked keyboard");
-        assert_eq!(screen.composer.text(), "still editing");
-        assert_eq!((screen.width, screen.height), (90, 30));
+        assert_eq!(screen.ui.composer.text(), "still editing");
+        assert_eq!((screen.ui.width, screen.ui.height), (90, 30));
     }
 }
 
@@ -1203,8 +1220,8 @@ mod scope_tests {
             frames: frame.clone(),
             changed,
         };
-        let mut screen = Screen::new(80, 24);
-        screen.set_draft_for("A".into(), "draft A".into());
+        let mut screen = ConnectedScreen::new(80, 24);
+        screen.ui.set_draft_for("A".into(), "draft A".into());
         screen.dialogs.update(
             "secret".into(),
             1,
@@ -1225,10 +1242,10 @@ mod scope_tests {
         screen.dialogs.open();
         screen
             .dialogs
-            .key(&crate::Key::Char('s'), &screen.dialog_settings().clone());
+            .key(&crate::Key::Char('s'), &screen.ui.dialog_settings().clone());
         screen
             .dialogs
-            .key(&crate::Key::Escape, &screen.dialog_settings().clone());
+            .key(&crate::Key::Escape, &screen.ui.dialog_settings().clone());
         let (keys, events) = mpsc::channel(8);
         let script = async move {
             for scope in ["A", "B"] {
@@ -1262,15 +1279,15 @@ mod scope_tests {
         })
         .await
         .unwrap();
-        assert_eq!(screen.composer.text(), "draft A");
+        assert_eq!(screen.ui.composer.text(), "draft A");
         screen.dialogs.open();
         screen
             .dialogs
-            .key(&crate::Key::Char('t'), &screen.dialog_settings().clone());
+            .key(&crate::Key::Char('t'), &screen.ui.dialog_settings().clone());
         let text = misa_lines::to_plain(&screen.dialogs.lines(
-            &screen.theme,
+            &screen.ui.theme,
             80,
-            screen.dialog_settings(),
+            screen.ui.dialog_settings(),
         ));
         assert!(text.contains("••"), "hidden secret draft was lost: {text}");
     }
@@ -1294,7 +1311,7 @@ mod scope_tests {
             frames: frame,
             changed,
         };
-        let mut screen = Screen::new(80, 24);
+        let mut screen = ConnectedScreen::new(80, 24);
         let original = misa_tui_ui::Catalog {
             commands: vec![
                 Command::new("model", "Model", "choose")
@@ -1303,13 +1320,13 @@ mod scope_tests {
             sources: vec![Source::resident("models", "Models")],
         };
         screen.declare(&original);
-        screen.composer.set_text("/model");
+        screen.ui.composer.set_text("/model");
         assert!(matches!(
-            screen.key(crate::Key::Submit),
+            screen.ui.key(crate::Key::Submit),
             KeyOut::Complete { .. }
         ));
-        screen.key(crate::Key::Char('f'));
-        screen.set_draft_for("A".into(), "/model f".into());
+        screen.ui.key(crate::Key::Char('f'));
+        screen.ui.set_draft_for("A".into(), "/model f".into());
         let mut latest = original.clone();
         latest
             .commands
@@ -1366,21 +1383,23 @@ mod scope_tests {
         })
         .await
         .unwrap();
-        assert_eq!(screen.composer.text(), "/model f");
-        assert_eq!(screen.composer.picker().unwrap().query, "f");
+        assert_eq!(screen.ui.composer.text(), "/model f");
+        assert_eq!(screen.ui.composer.picker().unwrap().query, "f");
         assert!(
             screen
+                .ui
                 .command_candidates()
                 .iter()
                 .any(|c| c.value == "/fresh")
         );
-        screen.key(crate::Key::Escape);
+        screen.ui.key(crate::Key::Escape);
         assert_eq!(
-            screen.key(crate::Key::Action(crate::Action::OpenModel)),
+            screen.ui.key(crate::Key::Action(crate::Action::OpenModel)),
             KeyOut::Local
         );
         assert_eq!(
             screen
+                .ui
                 .composer
                 .picker()
                 .unwrap()
@@ -1392,7 +1411,7 @@ mod scope_tests {
 
     #[test]
     fn optional_documents_contribute_portable_actions_without_merging_node_spaces() {
-        let screen = Screen::new(80, 24);
+        let screen = ConnectedScreen::new(80, 24);
         let root = misa_proto::Node::section("conversation").id("same");
         let mut pet = misa_proto::Node::section("pet").id("same");
         pet.actions.push(misa_proto::view::Action {
@@ -1403,7 +1422,7 @@ mod scope_tests {
         });
         let mut documents = std::collections::BTreeMap::from([(
             "plugin.pet.companion".into(),
-            crate::retained::Retained::new(pet, &screen),
+            crate::retained::Retained::new(pet, &screen.ui),
         )]);
         let actions = offered_actions(&root, &documents);
         assert_eq!(
@@ -1437,7 +1456,7 @@ mod scope_tests {
             frames: frame.clone(),
             changed,
         };
-        let mut screen = Screen::new(80, 24);
+        let mut screen = ConnectedScreen::new(80, 24);
         screen.declare(&misa_tui_ui::Catalog {
             commands: vec![
                 misa_kit::intent::Command::new("actions", "Actions", "Actions"),
@@ -1446,7 +1465,7 @@ mod scope_tests {
             ],
             sources: vec![],
         });
-        screen.composer.set_text("/actions");
+        screen.ui.composer.set_text("/actions");
         let mut pet = misa_proto::Node::section("pet").id("pet");
         pet.actions.push(misa_proto::view::Action {
             id: "pet.feed".into(),

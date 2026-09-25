@@ -185,22 +185,22 @@ mod tests {
             crate::test_unique_id()
         ));
         let path = directory.join("client.json");
-        let mut first = crate::Screen::remembering(Prefs::default(), path.clone());
-        let mut second = crate::Screen::remembering(Prefs::default(), path.clone());
-        first.enter_draft_scope("first:session:epoch".into());
-        first.composer.set_text("first draft");
-        first.save();
-        second.enter_draft_scope("second:session:epoch".into());
-        second.composer.set_text("second draft");
-        second.save();
-        assert!(first.notice.is_none());
-        assert!(second.notice.is_none());
+        let mut first = crate::ConnectedScreen::remembering(Prefs::default(), path.clone());
+        let mut second = crate::ConnectedScreen::remembering(Prefs::default(), path.clone());
+        first.ui.enter_draft_scope("first:session:epoch".into());
+        first.ui.composer.set_text("first draft");
+        first.ui.save();
+        second.ui.enter_draft_scope("second:session:epoch".into());
+        second.ui.composer.set_text("second draft");
+        second.ui.save();
+        assert!(first.ui.notice.is_none());
+        assert!(second.ui.notice.is_none());
         let stored = Prefs::load(&File::at(path.clone()));
         assert_eq!(stored.drafts["first:session:epoch"], "first draft");
         assert_eq!(stored.drafts["second:session:epoch"], "second draft");
-        let mut reopened = crate::Screen::remembering(stored, path);
-        reopened.enter_draft_scope("first:session:epoch".into());
-        assert_eq!(reopened.composer.text(), "first draft");
+        let mut reopened = crate::ConnectedScreen::remembering(stored, path);
+        reopened.ui.enter_draft_scope("first:session:epoch".into());
+        assert_eq!(reopened.ui.composer.text(), "first draft");
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -214,19 +214,20 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("client.json");
         std::fs::create_dir(&path).unwrap(); // A directory cannot be atomically replaced by a file.
-        let mut screen = crate::Screen::remembering(Prefs::default(), path.clone());
-        screen.composer.set_text("not yet saved");
-        screen.save();
+        let mut screen = crate::ConnectedScreen::remembering(Prefs::default(), path.clone());
+        screen.ui.composer.set_text("not yet saved");
+        screen.ui.save();
         assert!(
             screen
+                .ui
                 .notice
                 .as_deref()
                 .is_some_and(|notice| notice.contains("client.json"))
         );
         std::fs::remove_dir(&path).unwrap();
-        screen.notice = None;
-        screen.save();
-        assert!(screen.notice.is_none());
+        screen.ui.notice = None;
+        screen.ui.save();
+        assert!(screen.ui.notice.is_none());
         assert_eq!(Prefs::load(&File::at(path)).draft, "not yet saved");
         std::fs::remove_dir_all(directory).unwrap();
     }
