@@ -595,16 +595,20 @@ fn registered_composite_receives_its_indexed_subtree() {
         &scene.ops,
         |op| matches!(op, Op::Text { text, .. } if text.contains("scripted/model"))
     ));
-    app.apply_tree([&ViewOp::Replace {
-        id: "model.value".into(),
-        node: Node::new(
-            "value.text",
-            Kind::Fact {
-                value: Value::str("changed/model"),
-            },
-        )
-        .id("model.value"),
-    }])
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Replace {
+            id: "model.value".into(),
+            node: Node::new(
+                "value.text",
+                Kind::Fact {
+                    value: Value::str("changed/model"),
+                },
+            )
+            .id("model.value"),
+        }],
+        live: &[],
+        reset_live: false,
+    })
     .unwrap();
     let scene = app.frame(900, 120);
     assert!(any_op(
@@ -911,7 +915,7 @@ fn reports_and_rejected_prompts_preserve_local_typing() {
     app.reject_prompt("restored".into(), "Rejected".into());
     assert_eq!(app.field_text("composer", "prompt"), Some("restored"));
     assert_eq!(
-        app.tree.snapshot(),
+        app.document.snapshot(),
         view,
         "local reports must not change authoritative content"
     );
@@ -1050,7 +1054,7 @@ fn rich_shapes_draw_wrapped_table_meter_and_bitmap() {
             },
         ));
     let mut app = App::new(view, test_metrics());
-    app.images.insert(
+    app.image(
         "image".into(),
         Arc::new(image::RgbaImage::from_pixel(
             1,
@@ -1117,13 +1121,7 @@ fn evicted_images_release_retained_scenes_and_can_be_reloaded() {
         weak.upgrade().is_none(),
         "Cached display lists must not pin evicted bytes"
     );
-    assert!(
-        app.images
-            .values()
-            .map(|image| image.as_raw().len())
-            .sum::<usize>()
-            <= 32 * 1024 * 1024
-    );
+    assert!(app.decoded_image_bytes() <= 32 * 1024 * 1024);
     app.frame(800, 600);
     assert!(
         app.hits
@@ -1135,15 +1133,58 @@ fn evicted_images_release_retained_scenes_and_can_be_reloaded() {
         vec![Command::LoadImage(reference("a"))]
     );
     app.image("a".into(), Arc::new(image::RgbaImage::new(1, 1)));
-    app.apply_tree([&ViewOp::Remove { id: "a".into() }])
-        .unwrap();
-    assert!(!app.images.contains_key("a"));
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Remove { id: "a".into() }],
+        live: &[],
+        reset_live: false,
+    })
+    .unwrap();
+    assert!(!app.has_image("a"));
     app.image("a".into(), Arc::new(image::RgbaImage::new(1, 1)));
     assert!(
-        !app.images.contains_key("a"),
+        !app.has_image("a"),
         "Late decode cannot repopulate a removed owner"
     );
 }
+#[test]
+fn shared_image_reference_survives_one_owner_and_late_decode_after_reset_is_ignored() {
+    let image_node = |id: &str| {
+        Node::new(
+            "image",
+            Kind::Image {
+                blob: misa_proto::view::BlobRef {
+                    hash: "shared".into(),
+                    len: 4,
+                    media: Some("image/png".into()),
+                },
+                alt: id.into(),
+                width: 1,
+                height: 1,
+            },
+        )
+        .id(id)
+    };
+    let mut app = App::new(
+        Node::section("root")
+            .id("root")
+            .child(image_node("first"))
+            .child(image_node("second")),
+        test_metrics(),
+    );
+    app.image("shared".into(), Arc::new(image::RgbaImage::new(1, 1)));
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Remove { id: "first".into() }],
+        live: &[],
+        reset_live: false,
+    })
+    .unwrap();
+    assert!(app.has_image("shared"));
+    app.set_view(Node::section("empty").id("empty"));
+    assert!(!app.has_image("shared"));
+    app.image("shared".into(), Arc::new(image::RgbaImage::new(1, 1)));
+    assert!(!app.has_image("shared"));
+}
+
 #[test]
 fn live_updates_do_not_steal_the_local_save_dialog() {
     let view = form("panel.input", FieldKind::Inline);
@@ -1423,10 +1464,14 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
     assert!(app.scroll < scroll);
     assert_eq!(app.rows[0].y, y + scroll - app.scroll);
 
-    app.apply_tree([&ViewOp::Replace {
-        id: "child".into(),
-        node: Node::text("text", [Span::plain("界ill updated")]).id("child"),
-    }])
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Replace {
+            id: "child".into(),
+            node: Node::text("text", [Span::plain("界ill updated")]).id("child"),
+        }],
+        live: &[],
+        reset_live: false,
+    })
     .unwrap();
     app.frame(400, 100);
     assert!(!Arc::ptr_eq(
@@ -1497,8 +1542,8 @@ fn scoped_document_transaction_settles_live_text_without_rebuilding_history() {
             reset_live: false,
         };
         app.observed(&update).unwrap();
-        assert!(app.streams.is_empty());
-        assert!(app.tree.contains("answer"));
+        assert!(app.document.streams_empty());
+        assert!(app.document.contains("answer"));
         let scene = app.frame(800, 600);
         assert!(Arc::ptr_eq(&retained, &app.cache["message.0"].ops));
         assert!(

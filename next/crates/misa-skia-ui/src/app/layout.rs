@@ -25,7 +25,7 @@ impl App {
         } else {
             let node = if id == "streams" {
                 Node::section("streams").id("streams")
-            } else if let Some(node) = self.streams.get(id).or_else(|| self.tree.node(id)) {
+            } else if let Some(node) = self.document.stream_or_node(id) {
                 node.clone()
             } else {
                 return;
@@ -193,7 +193,7 @@ impl App {
             height: height as f32,
             ops: vec![],
         };
-        let root = self.root.clone();
+        let root = self.document.root().to_string();
         let theme = if self.light {
             Theme::light()
         } else {
@@ -405,10 +405,13 @@ impl App {
         let (cursor, mut viewport) = match &control {
             Control::Field { node, field } => {
                 let key = (node.clone(), field.clone());
-                let field_model = self.tree.node(node).and_then(|owner| match &owner.kind {
-                    Kind::Fields { fields } => fields.iter().find(|value| value.id == *field),
-                    _ => None,
-                });
+                let field_model = self
+                    .document
+                    .node(node)
+                    .and_then(|owner| match &owner.kind {
+                        Kind::Fields { fields } => fields.iter().find(|value| value.id == *field),
+                        _ => None,
+                    });
                 let cursor = self
                     .drafts
                     .get(&key)
@@ -666,7 +669,10 @@ impl App {
         ) {
             // Indexed nodes contain no children. A registered composite owns its
             // subtree, so materialize that subtree only when its cache is dirty.
-            let model = self.tree.subtree(&node.id).unwrap_or_else(|| node.clone());
+            let model = self
+                .document
+                .subtree(&node.id)
+                .unwrap_or_else(|| node.clone());
             if node.role == "status.indicators" {
                 if model.children.iter().any(|child| {
                     child.role == "indicator.activity" && indicator_value(child) != "ready"
@@ -943,7 +949,7 @@ impl App {
                 }
             }
             Kind::Image { blob, alt, .. } => {
-                if let Some(image) = self.images.get(&blob.hash) {
+                if let Some(image) = self.document.image_ref(&blob.hash) {
                     let scale = (width / image.width() as f32)
                         .min(320.0 / image.height() as f32)
                         .min(1.0);
@@ -1037,17 +1043,19 @@ impl App {
             }
         }
         if children {
-            for id in self.tree.children(&node.id) {
+            for id in self.document.children(&node.id) {
                 self.present(&id, x, y, width, theme, scene);
             }
             for child in &node.children {
                 self.node_uncached(child, x, y, width, theme, scene);
             }
-            if node.id == self.stream_parent() && !self.visible_streams().is_empty() {
+            if node.id == self.document.stream_parent()
+                && !self.document.visible_streams().is_empty()
+            {
                 self.present("streams", x, y, width, theme, scene);
             }
             if node.id == "streams" {
-                let ids = self.visible_streams();
+                let ids = self.document.visible_streams();
                 for id in ids {
                     self.present(&id, x, y, width, theme, scene);
                 }

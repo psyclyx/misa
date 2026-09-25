@@ -71,7 +71,7 @@ fn retained_bitmap_reaches_raster() {
         view,
         text_metrics().expect("Skia text metrics for bitmap test"),
     );
-    app.images.insert(
+    app.image(
         "image".into(),
         Arc::new(image::RgbaImage::from_pixel(
             1,

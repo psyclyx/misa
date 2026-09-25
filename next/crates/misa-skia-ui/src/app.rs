@@ -3,7 +3,7 @@
 use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
 use misa_pixel_ui::{Op, Scene, TextMetrics};
-use misa_proto::sync::{IndexedTree, StreamUpdate, ViewOp};
+use misa_proto::sync::{StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, FieldKind, Kind, Node};
 #[cfg(test)]
 use misa_render::Theme;
@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod document;
 mod layout;
 #[cfg(test)]
 mod tests;
@@ -130,9 +131,7 @@ pub struct App {
     metrics: Arc<dyn TextMetrics>,
     #[cfg(test)]
     rendered_nodes: usize,
-    tree: IndexedTree,
-    root: String,
-    streams: BTreeMap<String, Node>,
+    document: document::DocumentStore,
     cache: BTreeMap<String, Arc<Cached>>,
     /// Painted status owners with a moving activity indicator (not document-wide turns).
     moving_indicators: BTreeSet<String>,
@@ -144,7 +143,6 @@ pub struct App {
     pub hits: Vec<Hit>,
     pub focus: Option<Control>,
     pub expanded: BTreeSet<String>,
-    pub images: BTreeMap<String, Arc<image::RgbaImage>>,
     drafts: BTreeMap<(String, String), Editor>,
     field_viewports: BTreeMap<(String, String), FieldViewport>,
     save_viewport: FieldViewport,
@@ -210,9 +208,7 @@ impl App {
         let mut app = Self {
             #[cfg(test)]
             rendered_nodes: 0,
-            tree: IndexedTree::new(Node::section("session")),
-            root: "session".into(),
-            streams: BTreeMap::new(),
+            document: document::DocumentStore::new(Node::section("session")),
             cache: BTreeMap::new(),
             moving_indicators: BTreeSet::new(),
             indicator_stack: vec![],
@@ -224,7 +220,6 @@ impl App {
             hits: vec![],
             focus: None,
             expanded: BTreeSet::new(),
-            images: BTreeMap::new(),
             drafts: BTreeMap::new(),
             field_viewports: BTreeMap::new(),
             save_viewport: FieldViewport::default(),
@@ -303,7 +298,7 @@ impl App {
     fn visible_indicators(&self) -> impl Iterator<Item = &str> {
         let top = 20.0 - self.scroll;
         self.cache
-            .get(&self.root)
+            .get(self.document.root())
             .into_iter()
             .flat_map(|cached| cached.indicators.iter())
             .filter(move |bounds| {
@@ -328,7 +323,7 @@ impl App {
     }
     pub fn clear_secret_drafts(&mut self) {
         for ((node, field), edit) in &mut self.drafts {
-            if self.tree.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields {fields} if fields.iter().any(|value| &value.id == field && value.secret))) { edit.set_text(""); }
+            if self.document.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields {fields} if fields.iter().any(|value| &value.id == field && value.secret))) { edit.set_text(""); }
         }
         self.cache.clear();
         self.moving_indicators.clear();
@@ -349,14 +344,13 @@ impl App {
         }
         self.notice = reason;
     }
-    pub fn set_view(&mut self, mut view: Node) {
+    pub fn set_view(&mut self, view: Node) {
+        self.set_view_with_streams(view, &[]);
+    }
+    fn set_view_with_streams(&mut self, mut view: Node, streams: &[misa_proto::sync::Stream]) {
         misa_proto::sync::address(&mut view);
         self.cache.clear();
         self.moving_indicators.clear();
-        self.streams.clear();
-        let mut references = BTreeSet::new();
-        image_hashes(&view, &mut references);
-        self.images.retain(|hash, _| references.contains(hash));
         fn fields(node: &Node, keys: &mut Vec<(String, misa_proto::view::Field)>) {
             if let Kind::Fields { fields } = &node.kind {
                 for field in fields {
@@ -400,36 +394,30 @@ impl App {
         }
         if self.save.is_some() {
             // A live update cannot steal focus from a local destination dialog.
-        } else if let Some((node, field)) = keys.iter().find(|(node, _)| node == "panel.input" && self.tree.node(node).is_none()) {
+        } else if let Some((node, field)) = keys.iter().find(|(node, _)| node == "panel.input" && self.document.node(node).is_none()) {
             if !matches!(&self.focus, Some(Control::Field { node: focused, .. }) if focused == node) {
                 self.focus = Some(Control::Field { node: node.clone(), field: field.id.clone() });
             }
         } else if self.focus.as_ref().is_none_or(|control| matches!(control, Control::Field { node, field } if !self.drafts.contains_key(&(node.clone(),field.clone())))) {
             self.focus = keys.last().map(|(node,field)| Control::Field { node: node.clone(), field: field.id.clone() });
         }
-        self.root = view.id.clone();
-        self.tree = IndexedTree::new(view);
+        let changes = self
+            .document
+            .observe(&DocumentUpdate::Reset {
+                tree: &view,
+                streams,
+            })
+            .expect("reset view is valid");
+        self.invalidate_document(changes);
         self.selection = None;
     }
 
-    fn visible_streams(&self) -> Vec<String> {
-        self.streams.iter().filter(|(id,node)| {
-            !self.tree.contains(id.rsplit_once('.').map(|(owner,_)|owner).unwrap_or(id)) && matches!(&node.kind,Kind::Text {spans} if spans.iter().any(|span|!span.text.is_empty()))
-        }).map(|(id,_)|id.clone()).collect()
-    }
-    fn stream_parent(&self) -> &str {
-        if self.tree.contains("transcript") {
-            "transcript"
-        } else {
-            &self.root
-        }
-    }
     fn invalidate(&mut self, id: &str) {
         let mut cursor = Some(id.to_string());
         while let Some(id) = cursor {
             self.cache.remove(&id);
             self.moving_indicators.remove(&id);
-            cursor = self.tree.parent(&id).map(str::to_owned);
+            cursor = self.document.parent(&id).map(str::to_owned);
         }
     }
     fn invalidate_focus(&mut self) {
@@ -442,30 +430,6 @@ impl App {
         if let Some(id) = id {
             self.invalidate(&id);
         }
-    }
-    fn invalidate_streams(&mut self) {
-        self.cache.remove("streams");
-        let parent = self.stream_parent().to_string();
-        self.invalidate(&parent);
-    }
-    fn forget_subtree(&mut self, id: &str) {
-        if let Some(node) = self.tree.node(id) {
-            let mut references = BTreeSet::new();
-            image_hashes(node, &mut references);
-            let mut removed = false;
-            for hash in references {
-                removed |= self.images.remove(&hash).is_some();
-            }
-            if removed {
-                self.cache.clear();
-                self.moving_indicators.clear();
-            }
-        }
-        for child in self.tree.children(id) {
-            self.forget_subtree(&child);
-        }
-        self.cache.remove(id);
-        self.moving_indicators.remove(id);
     }
     fn refresh_fields(&mut self, node: &Node) {
         if let Kind::Fields { fields } = &node.kind {
@@ -498,28 +462,16 @@ impl App {
             self.refresh_fields(child);
         }
     }
-    fn apply_tree<'a>(
-        &mut self,
-        operations: impl IntoIterator<Item = &'a ViewOp>,
-    ) -> Result<(), String> {
+    fn refresh_tree_fields(&mut self, operations: &[ViewOp]) {
         for op in operations {
             match op {
-                ViewOp::Insert { parent, node, .. } => {
-                    self.invalidate(parent);
-                    self.tree.apply(op)?;
-                    self.refresh_fields(node);
+                ViewOp::Insert { node, .. } | ViewOp::Replace { node, .. } => {
+                    self.refresh_fields(node)
                 }
-                ViewOp::Remove { id } | ViewOp::Replace { id, .. } => {
-                    self.invalidate(id);
-                    self.forget_subtree(id);
-                    self.tree.apply(op)?;
-                    if let ViewOp::Replace { node, .. } = op {
-                        self.refresh_fields(node);
-                    }
-                }
+                ViewOp::Remove { .. } => {}
             }
         }
-        self.drafts.retain(|(id,field),_|self.tree.node(id).is_some_and(|node|matches!(&node.kind,Kind::Fields {fields} if fields.iter().any(|value|&value.id==field && !value.read_only))));
+        self.drafts.retain(|(id,field),_|self.document.node(id).is_some_and(|node|matches!(&node.kind,Kind::Fields {fields} if fields.iter().any(|value|&value.id==field && !value.read_only))));
         self.field_viewports
             .retain(|key, _| self.drafts.contains_key(key));
         if matches!(&self.focus,Some(Control::Field {node,field}) if !self.drafts.contains_key(&(node.clone(),field.clone())))
@@ -536,131 +488,52 @@ impl App {
                     field: field.clone(),
                 });
         }
-        Ok(())
     }
-    fn reset_streams(&mut self, streams: &[misa_proto::sync::Stream]) {
-        for id in self.streams.keys() {
-            self.cache.remove(id);
+    fn invalidate_document(&mut self, changes: document::Changes) {
+        if changes.full {
+            self.cache.clear();
+            self.moving_indicators.clear();
+            return;
         }
-        self.streams.clear();
-        for stream in streams {
-            self.streams.insert(
-                stream.id.clone(),
-                Node::text(&stream.role, [misa_proto::view::Span::plain(&stream.text)])
-                    .id(&stream.id)
-                    .state(misa_proto::view::State::Streaming),
-            );
+        for id in changes.ids {
+            self.invalidate(&id);
         }
-        self.invalidate_streams();
-    }
-    fn apply_stream(&mut self, update: &StreamUpdate) {
-        match update {
-            StreamUpdate::Current { stream } => {
-                self.cache.remove(&stream.id);
-                self.streams.insert(
-                    stream.id.clone(),
-                    Node::text(&stream.role, [misa_proto::view::Span::plain(&stream.text)])
-                        .id(&stream.id)
-                        .state(misa_proto::view::State::Streaming),
-                );
-            }
-            StreamUpdate::Append { id, text, .. } => {
-                self.cache.remove(id);
-                if let Some(Node {
-                    kind: Kind::Text { spans },
-                    ..
-                }) = self.streams.get_mut(id)
-                {
-                    if let Some(span) = spans.first_mut() {
-                        span.text.push_str(text);
-                    }
-                }
-            }
-            StreamUpdate::End { id } => {
-                self.cache.remove(id);
-                self.streams.remove(id);
-            }
-        }
-        self.invalidate_streams();
     }
     /// One already-validated replica transaction. The window paints only after
     /// canonical changes and live retirement have both reached its derived cache.
     pub fn observed(&mut self, update: &DocumentUpdate<'_>) -> Result<(), String> {
         match update {
             DocumentUpdate::Reset { tree, streams } => {
-                self.set_view((*tree).clone());
-                self.reset_streams(streams);
+                self.set_view_with_streams((*tree).clone(), streams);
             }
-            DocumentUpdate::Changed {
-                tree,
-                live,
-                reset_live,
-            } => {
+            DocumentUpdate::Changed { tree, .. } => {
+                let changes = self.document.observe(update)?;
                 if !tree.is_empty() {
-                    self.apply_tree(*tree)?;
+                    self.refresh_tree_fields(tree);
                 }
-                if *reset_live {
-                    self.reset_streams(&[]);
-                }
-                for update in *live {
-                    self.apply_stream(update);
-                }
+                self.invalidate_document(changes);
             }
             DocumentUpdate::Notice(message) => self.notice = message.to_string(),
         }
         Ok(())
     }
+    /// Accept a decoder result only while its blob is still referenced by the document.
     pub fn image(&mut self, hash: String, image: Arc<image::RgbaImage>) {
-        let mut live = BTreeSet::new();
-        let mut pending = vec![self.root.clone()];
-        while let Some(id) = pending.pop() {
-            if let Some(node) = self.tree.node(&id) {
-                image_hashes(node, &mut live);
+        match self.document.image(hash, image) {
+            document::ImageChange::Ignored => {}
+            document::ImageChange::TooLarge => {
+                self.notice = "Image exceeds the decoded cache limit".into()
             }
-            pending.extend(self.tree.children(&id));
+            document::ImageChange::Loaded(changes) => self.invalidate_document(changes),
         }
-        if !live.contains(&hash) {
-            return;
-        }
-        const MAX_BYTES: usize = 32 * 1024 * 1024;
-        let bytes = image.as_raw().len();
-        if bytes > MAX_BYTES {
-            self.notice = "Image exceeds the decoded cache limit".into();
-            return;
-        }
-        self.images.remove(&hash);
-        let mut total: usize = self.images.values().map(|image| image.as_raw().len()).sum();
-        let mut evicted = false;
-        while total.saturating_add(bytes) > MAX_BYTES {
-            let Some((_, image)) = self.images.pop_first() else {
-                break;
-            };
-            total -= image.as_raw().len();
-            evicted = true;
-        }
-        // Cached display lists own image Arcs too. Eviction must release those
-        // copies and expose the local Load image affordance on remaining owners.
-        if evicted {
-            self.cache.clear();
-            self.moving_indicators.clear();
-        }
-        // Image decode is infrequent; only owners containing this reference are invalidated.
-        let ids: Vec<_> = self
-            .cache
-            .keys()
-            .filter(|id| {
-                self.tree.node(id).is_some_and(|node| {
-                    let mut hashes = BTreeSet::new();
-                    image_hashes(node, &mut hashes);
-                    hashes.contains(&hash)
-                })
-            })
-            .cloned()
-            .collect();
-        for id in ids {
-            self.invalidate(&id);
-        }
-        self.images.insert(hash, image);
+    }
+    /// Inspect decoded-image retention without exposing the cache for mutation.
+    pub fn has_image(&self, hash: &str) -> bool {
+        self.document.has_image(hash)
+    }
+    /// Decoded bytes currently owned by the document (excludes display-list references).
+    pub fn decoded_image_bytes(&self) -> usize {
+        self.document.decoded_image_bytes()
     }
     pub fn field_text(&self, node: &str, field: &str) -> Option<&str> {
         self.drafts
@@ -740,7 +613,7 @@ impl App {
                 }
             }
             Control::Field { node, field } => {
-                let kind = self.tree.node(&node).and_then(|node| match &node.kind {
+                let kind = self.document.node(&node).and_then(|node| match &node.kind {
                     Kind::Fields { fields } => fields
                         .iter()
                         .find(|value| value.id == field)
@@ -796,7 +669,7 @@ impl App {
         vec![]
     }
     fn submit(&mut self, node_id: &str, action_id: &str) -> Vec<Command> {
-        let Some(node) = self.tree.node(node_id) else {
+        let Some(node) = self.document.node(node_id) else {
             return vec![];
         };
         let Some(action) = node.actions.iter().find(|action| action.id == action_id) else {
@@ -878,7 +751,7 @@ impl App {
         }
         if let Some(control @ Control::Field { .. }) = self.focus.clone() {
             let discrete = match &control {
-                Control::Field { node, field } => self.tree.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields { fields } if fields.iter().any(|value| &value.id == field && matches!(value.kind, FieldKind::Bool | FieldKind::Choice { .. })))),
+                Control::Field { node, field } => self.document.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields { fields } if fields.iter().any(|value| &value.id == field && matches!(value.kind, FieldKind::Bool | FieldKind::Choice { .. })))),
                 _ => false,
             };
             if discrete {
@@ -1023,7 +896,7 @@ impl App {
                     return vec![];
                 }
                 let action = self
-                    .tree
+                    .document
                     .node(&node)
                     .and_then(|node| {
                         node.actions
@@ -1042,7 +915,7 @@ impl App {
         }
         if let Some(control @ Control::Field { .. }) = self.focus.clone() {
             let discrete = match &control {
-                Control::Field {node,field} => self.tree.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields {fields} if fields.iter().any(|value| &value.id == field && matches!(value.kind,FieldKind::Bool|FieldKind::Choice {..})))),
+                Control::Field {node,field} => self.document.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields {fields} if fields.iter().any(|value| &value.id == field && matches!(value.kind,FieldKind::Bool|FieldKind::Choice {..})))),
                 _ => false,
             };
             if discrete {
@@ -1106,19 +979,6 @@ impl App {
     }
 }
 
-fn image_hashes(node: &Node, hashes: &mut BTreeSet<String>) {
-    if let Kind::Image { blob, .. } = &node.kind {
-        hashes.insert(blob.hash.clone());
-    }
-    for child in &node.children {
-        image_hashes(child, hashes);
-    }
-    if let Kind::List { items, .. } = &node.kind {
-        for child in items.iter().flatten() {
-            image_hashes(child, hashes);
-        }
-    }
-}
 const FONT_SIZE: f32 = 15.0;
 fn text(x: f32, y: f32, value: &str, style: Style) -> Op {
     Op::Text {

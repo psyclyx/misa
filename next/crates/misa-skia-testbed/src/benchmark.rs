@@ -278,7 +278,7 @@ fn gpu_fixture(owners: usize) -> Node {
 
 fn gpu_app(owners: usize) -> Result<App, String> {
     let mut app = new_app(gpu_fixture(owners))?;
-    app.images.insert(
+    app.image(
         GPU_IMAGE_HASH.into(),
         Arc::new(image::RgbaImage::from_pixel(
             16,
