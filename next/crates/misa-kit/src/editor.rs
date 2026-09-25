@@ -15,6 +15,64 @@
 //! both, and a `plain` policy is one line rather than a second implementation.
 
 use crate::intent::Intent;
+use unicode_segmentation::UnicodeSegmentation;
+
+/// Clamp a byte cursor to the text and to a character boundary.
+fn clamp_char(text: &str, cursor: usize) -> usize {
+    let mut cursor = cursor.min(text.len());
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
+}
+
+/// The grapheme boundary at or before a byte cursor.
+pub fn boundary_at_or_before(text: &str, cursor: usize) -> usize {
+    let cursor = clamp_char(text, cursor);
+    let mut boundary = 0;
+    for (index, _) in text.grapheme_indices(true) {
+        if index > cursor {
+            break;
+        }
+        boundary = index;
+    }
+    boundary
+}
+
+/// The start of the grapheme a backspace at `cursor` removes.
+///
+/// A cursor inside a cluster removes the whole cluster; a cursor at a cluster's
+/// start removes the one before it.
+pub fn previous_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = clamp_char(text, cursor);
+    let mut previous = 0;
+    for (index, grapheme) in text.grapheme_indices(true) {
+        let end = index + grapheme.len();
+        if cursor > index && cursor < end {
+            return index;
+        }
+        if index >= cursor {
+            break;
+        }
+        previous = index;
+    }
+    previous
+}
+
+/// The end of the grapheme a delete at `cursor` removes.
+pub fn next_boundary(text: &str, cursor: usize) -> usize {
+    let cursor = clamp_char(text, cursor);
+    for (index, grapheme) in text.grapheme_indices(true) {
+        let end = index + grapheme.len();
+        if cursor >= index && cursor < end {
+            return end;
+        }
+        if index > cursor {
+            return index;
+        }
+    }
+    text.len()
+}
 
 /// How a keypress is interpreted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,14 +219,9 @@ impl Editor {
             return Effect::Ignored;
         }
         self.remember_for_undo();
-        let previous = self.text[..self.cursor]
-            .chars()
-            .next_back()
-            .map(char::len_utf8)
-            .unwrap_or(1);
-        self.text
-            .replace_range(self.cursor - previous..self.cursor, "");
-        self.cursor -= previous;
+        let previous = previous_boundary(&self.text, self.cursor);
+        self.text.replace_range(previous..self.cursor, "");
+        self.cursor = previous;
         Effect::Changed
     }
 
@@ -177,25 +230,15 @@ impl Editor {
             return Effect::Ignored;
         }
         self.remember_for_undo();
-        let next = self.text[self.cursor..]
-            .chars()
-            .next()
-            .map(char::len_utf8)
-            .unwrap_or(1);
-        self.text.replace_range(self.cursor..self.cursor + next, "");
+        let next = next_boundary(&self.text, self.cursor);
+        self.text.replace_range(self.cursor..next, "");
         Effect::Changed
     }
 
     pub fn move_cursor(&mut self, motion: Motion) -> Effect {
         let target = match motion {
-            Motion::Left => self.text[..self.cursor]
-                .chars()
-                .next_back()
-                .map(|c| self.cursor - c.len_utf8()),
-            Motion::Right => self.text[self.cursor..]
-                .chars()
-                .next()
-                .map(|c| self.cursor + c.len_utf8()),
+            Motion::Left => Some(previous_boundary(&self.text, self.cursor)),
+            Motion::Right => Some(next_boundary(&self.text, self.cursor)),
             // On a single line, the start and the end of the line are the ends of the
             // text: a motion that did nothing because there was no newline would be a
             // key that silently depends on something unrelated.
@@ -216,7 +259,7 @@ impl Editor {
             Motion::WordEnd => Some(word_end(&self.text, self.cursor)),
             Motion::Up | Motion::Down => {
                 let start = self.text[..self.cursor].rfind('\n').map_or(0, |at| at + 1);
-                let column = self.text[start..self.cursor].chars().count();
+                let column = self.text[start..self.cursor].graphemes(true).count();
                 let next_start = if motion == Motion::Up {
                     start
                         .checked_sub(1)
@@ -232,7 +275,7 @@ impl Editor {
                         .map_or(self.text.len(), |at| start + at);
                     start
                         + self.text[start..end]
-                            .char_indices()
+                            .grapheme_indices(true)
                             .nth(column)
                             .map_or(end - start, |(at, _)| at)
                 })
@@ -577,6 +620,33 @@ mod tests {
         // And the boundary is never split.
         editor.backspace();
         assert_eq!(editor.text(), "hél");
+    }
+
+    #[test]
+    fn a_grapheme_cluster_is_one_keypress_and_one_backspace() {
+        // A combining mark and a joined emoji are each one thing to a person, and
+        // backspace must not leave half of one behind.
+        let mut editor = typed("a\u{301}e\u{301}");
+        editor.backspace();
+        assert_eq!(editor.text(), "a\u{301}");
+        editor.backspace();
+        assert_eq!(editor.text(), "");
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        let mut editor = typed(&format!("x{family}"));
+        editor.backspace();
+        assert_eq!(editor.text(), "x");
+    }
+
+    #[test]
+    fn grapheme_motion_crosses_a_whole_cluster() {
+        let text = "a\u{301}";
+        assert_eq!(next_boundary(text, 0), text.len());
+        assert_eq!(previous_boundary(text, text.len()), 0);
+        assert_eq!(
+            boundary_at_or_before(text, 1),
+            0,
+            "a cursor inside a cluster settles before it"
+        );
     }
 
     #[test]
