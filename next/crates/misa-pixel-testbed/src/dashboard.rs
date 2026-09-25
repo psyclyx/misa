@@ -1,5 +1,8 @@
 //! Toolkit-owned scene: no semantic tree or protocol types involved.
-use misa_pixel_ui::{Button, Rect, TextFlow, TextMetrics, Viewport};
+use misa_pixel_ui::{
+    Button, FieldInsets, FieldViewport, PlacedField, Rect, TextField, TextFlow, TextMetrics,
+    Viewport,
+};
 use misa_pixel_ui::{Op, Scene};
 use misa_style::Style;
 use std::sync::Arc;
@@ -7,12 +10,17 @@ use std::sync::Arc;
 #[derive(Clone, Copy)]
 enum NativeAction {
     Toggle,
+    Note,
 }
 
 pub struct Dashboard {
     pub selected: bool,
     viewport: Viewport,
     rows: usize,
+    note: String,
+    note_cursor: usize,
+    note_focused: bool,
+    note_viewport: FieldViewport,
 }
 
 impl Default for Dashboard {
@@ -23,6 +31,10 @@ impl Default for Dashboard {
             selected: false,
             viewport,
             rows: 20,
+            note: String::new(),
+            note_cursor: 0,
+            note_focused: false,
+            note_viewport: FieldViewport::default(),
         }
     }
 }
@@ -50,6 +62,58 @@ impl Dashboard {
 
     pub fn toggle(&mut self) {
         self.selected = !self.selected;
+    }
+
+    pub fn note(&self) -> &str {
+        &self.note
+    }
+    pub fn note_focused(&self) -> bool {
+        self.note_focused
+    }
+    pub fn insert_note(&mut self, text: &str) {
+        if self.note_focused {
+            self.note.insert_str(self.note_cursor, text);
+            self.note_cursor += text.len();
+        }
+    }
+    pub fn backspace_note(&mut self) {
+        if self.note_focused && self.note_cursor > 0 {
+            let start = self.note[..self.note_cursor]
+                .char_indices()
+                .next_back()
+                .unwrap()
+                .0;
+            self.note.replace_range(start..self.note_cursor, "");
+            self.note_cursor = start;
+        }
+    }
+    fn note_field(&mut self, width: u32, metrics: &dyn TextMetrics) -> PlacedField<NativeAction> {
+        TextField {
+            id: NativeAction::Note,
+            bounds: Rect {
+                x: 36.0,
+                y: 44.0,
+                width: (width as f32 - 72.0).max(1.0),
+                height: 27.0,
+            },
+            label: self.note.clone(),
+            font_size: 15.0,
+            focused: self.note_focused,
+            cursor: Some(self.note_cursor),
+            insets: FieldInsets {
+                left: 7.0,
+                top: 6.0,
+                right: 7.0,
+                bottom: 3.0,
+            },
+            border_width: 1.0,
+            caret_width: 1.5,
+            background: Style::rgb(35, 40, 48),
+            border: Style::rgb(65, 74, 86),
+            focus_border: Style::rgb(45, 105, 150),
+            foreground: Style::rgb(230, 232, 236),
+        }
+        .place(metrics, &mut self.note_viewport)
     }
 
     fn button(
@@ -83,14 +147,14 @@ impl Dashboard {
     }
 
     pub fn click(&mut self, x: f32, y: f32, width: u32, metrics: &dyn TextMetrics) -> bool {
+        let note = self.note_field(width, metrics);
+        self.note_focused = note.bounds.contains(x, y);
         let button = self.button(width, metrics);
         if button.bounds.contains(x, y) {
-            match button.id {
-                NativeAction::Toggle => self.toggle(),
-            }
+            self.toggle();
             true
         } else {
-            false
+            self.note_focused
         }
     }
 
@@ -110,6 +174,7 @@ impl Dashboard {
             }],
         };
         scene.ops.extend(button.ops);
+        scene.ops.extend(self.note_field(width, metrics).ops);
         let mut text = |x, y, size, content: &str| {
             scene.ops.push(Op::Text {
                 x,
@@ -211,6 +276,20 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn local_note_editing_respects_focus_and_unicode_boundaries() {
+        let mut dashboard = Dashboard::default();
+        dashboard.insert_note("ignored");
+        assert_eq!(dashboard.note(), "");
+        assert!(dashboard.click(40.0, 50.0, 130, &Metrics));
+        dashboard.insert_note("aé");
+        dashboard.backspace_note();
+        assert_eq!(dashboard.note(), "a");
+        dashboard.click(0.0, 0.0, 130, &Metrics);
+        dashboard.backspace_note();
+        assert_eq!(dashboard.note(), "a");
+    }
+
     #[test]
     fn description_wraps_and_paints_inside_narrow_card() {
         let mut dashboard = Dashboard::default();

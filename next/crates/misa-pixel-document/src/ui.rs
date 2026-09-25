@@ -2,7 +2,7 @@
 //! this module until the person activates an action the session advertised.
 use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
-use misa_pixel_ui::{Op, Scene, TextMetrics, Viewport};
+use misa_pixel_ui::{FieldViewport, Op, Scene, TextMetrics, Viewport};
 use misa_proto::sync::{StreamUpdate, ViewOp};
 #[cfg(test)]
 use misa_proto::view::FieldKind;
@@ -68,11 +68,6 @@ pub enum Control {
     SaveCancel,
     Text(usize),
     LoadImage(misa_proto::view::BlobRef),
-}
-#[derive(Clone, Copy, Default)]
-struct FieldViewport {
-    x: f32,
-    line: usize,
 }
 pub struct DocumentUi {
     light: bool,

@@ -2,7 +2,7 @@
 //! Cached groups use the same coordinates for paint and hit testing; only this
 //! owner rebases their row indices when placing them in a frame.
 use super::{Control, text};
-use misa_pixel_ui::{LaidOutRow, Op, Scene};
+use misa_pixel_ui::{FieldViewport, LaidOutRow, Op, PlacedField, Scene};
 use misa_style::Style;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -190,6 +190,23 @@ impl InteractionMap {
     }
     pub(super) fn add_hit(&mut self, hit: Hit) {
         self.hits.push(hit);
+    }
+    /// Register precisely the bounds returned by the field painter; the caller
+    /// persists its scroll position alongside its editor or overlay state.
+    pub(super) fn place_field(
+        &mut self,
+        scene: &mut Scene,
+        field: PlacedField<Control>,
+    ) -> (Control, FieldViewport) {
+        self.add_hit(Hit {
+            x: field.bounds.x,
+            y: field.bounds.y,
+            width: field.bounds.width,
+            height: field.bounds.height,
+            control: field.id.clone(),
+        });
+        scene.ops.extend(field.ops);
+        (field.id, field.viewport)
     }
     pub(super) fn add_row(
         &mut self,

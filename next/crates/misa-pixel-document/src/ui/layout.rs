@@ -1,4 +1,4 @@
-use super::{Control, DocumentUi, FONT_SIZE, FieldViewport, Hit, PULSE_PERIOD, text};
+use super::{Control, DocumentUi, FONT_SIZE, FieldViewport, PULSE_PERIOD, text};
 use misa_pixel_ui::{Op, Scene};
 use misa_proto::view::{FieldKind, Node};
 use misa_render::Theme;
@@ -333,42 +333,21 @@ impl LayoutBuilder<'_> {
         control: Control,
     ) {
         let focused = self.interaction.focused(&control);
-        scene.ops.push(Op::Rect {
-            x: x - 1.0,
-            y: y - 1.0,
-            width: width + 2.0,
-            height: height + 2.0,
-            style: if focused {
-                self.colors.accent
-            } else {
-                self.colors.border
-            },
-        });
-        scene.ops.push(Op::Rect {
-            x,
-            y,
-            width,
-            height,
-            style: self.colors.field,
-        });
-        let line_height = self.line_height();
-        let paint_width = (width - 14.0).max(0.0);
-        let paint_height = (height - 9.0).max(0.0);
-        let visible_lines = (paint_height / line_height).floor().max(1.0) as usize;
+        // Semantic policy stops here: discrete values have no editor caret, and a
+        // secret editor's byte cursor maps to a scalar index in the masked run.
         let (cursor, mut viewport) = match &control {
             Control::Field { node, field } => {
-                let field_model = self.document.field(node, field);
+                let model = self.document.field(node, field);
                 let cursor = self
                     .drafts
                     .cursor(node, field)
                     .filter(|_| {
-                        !field_model.is_some_and(|value| {
+                        !model.is_some_and(|value| {
                             matches!(value.kind, FieldKind::Bool | FieldKind::Choice { .. })
                         })
                     })
                     .map(|at| {
-                        if field_model.is_some_and(|value| value.secret) {
-                            // The displayed run has one bullet per scalar, including any newline.
+                        if model.is_some_and(|value| value.secret) {
                             let column = self.drafts.text(node, field).unwrap_or("")[..at]
                                 .chars()
                                 .count();
@@ -391,75 +370,37 @@ impl LayoutBuilder<'_> {
             }
             _ => (None, FieldViewport::default()),
         };
-        let cursor_line = if focused {
-            cursor.map(|at| {
-                let before = &label[..at];
-                let line = before.bytes().filter(|byte| *byte == b'\n').count();
-                let column = before.rsplit('\n').next().unwrap_or("").chars().count();
-                (line, column)
-            })
-        } else {
-            None
-        };
-        let lines: Vec<_> = label.split('\n').collect();
-        let mut cursor_edge = None;
-        if let Some((line, column)) = cursor_line {
-            if line < viewport.line {
-                viewport.line = line;
-            } else if line >= viewport.line.saturating_add(visible_lines) {
-                viewport.line = line + 1 - visible_lines;
-            }
-            // Measure the same complete run that will be painted, not the unmasked draft
-            // or repeatedly measured character prefixes. Keep the cursor in the viewport.
-            let advances = self.metrics.advances(lines[line], FONT_SIZE);
-            let edge = advances[column];
-            cursor_edge = Some(edge);
-            viewport.x = viewport.x.min(edge);
-            viewport.x = viewport.x.max(edge - (paint_width - 1.5).max(0.0));
-            match &control {
-                Control::Field { node, field } => {
-                    self.drafts.set_viewport(node, field, viewport);
-                }
-                Control::SavePath => self.overlays.set_save_viewport(viewport),
-                _ => {}
-            }
+        let placed = misa_pixel_ui::TextField {
+            id: control,
+            bounds: misa_pixel_ui::Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            label: label.into(),
+            font_size: FONT_SIZE,
+            focused,
+            cursor,
+            insets: misa_pixel_ui::FieldInsets {
+                left: 7.0,
+                top: 6.0,
+                right: 7.0,
+                bottom: 3.0,
+            },
+            border_width: 1.0,
+            caret_width: 1.5,
+            background: self.colors.field,
+            border: self.colors.border,
+            focus_border: self.colors.accent,
+            foreground: self.colors.text,
         }
-        let mut painted = Vec::new();
-        for (line, value) in lines
-            .iter()
-            .enumerate()
-            .skip(viewport.line)
-            .take(visible_lines)
-        {
-            painted.push(text(
-                x + 7.0 - viewport.x,
-                y + 6.0 + (line - viewport.line) as f32 * line_height,
-                value,
-                self.colors.text,
-            ));
+        .place(self.metrics, &mut viewport);
+        let (control, viewport) = self.interaction.place_field(scene, placed);
+        match &control {
+            Control::Field { node, field } => self.drafts.set_viewport(node, field, viewport),
+            Control::SavePath => self.overlays.set_save_viewport(viewport),
+            _ => {}
         }
-        if let Some((line, _)) = cursor_line {
-            painted.push(Op::Rect {
-                x: x + 7.0 + cursor_edge.unwrap() - viewport.x,
-                y: y + 6.0 + (line - viewport.line) as f32 * line_height,
-                width: 1.5,
-                height: line_height,
-                style: self.colors.text,
-            });
-        }
-        scene.ops.push(Op::ClipRect {
-            x: x + 7.0,
-            y: y + 6.0,
-            width: paint_width,
-            height: paint_height,
-            ops: Arc::new(painted),
-        });
-        self.interaction.add_hit(Hit {
-            x,
-            y,
-            width,
-            height,
-            control,
-        });
     }
 }

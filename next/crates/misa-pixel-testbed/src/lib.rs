@@ -47,8 +47,14 @@ impl Headless {
     /// window adapter's representation of the Space key.
     pub fn input(&mut self, event: Event) {
         match event {
-            Event::Key(Key::Enter { .. }) => self.dashboard.toggle(),
-            Event::Text(text) if text == " " => self.dashboard.toggle(),
+            Event::Key(Key::Backspace) => self.dashboard.backspace_note(),
+            Event::Key(Key::Enter { .. }) if !self.dashboard.note_focused() => {
+                self.dashboard.toggle()
+            }
+            Event::Text(text) if !self.dashboard.note_focused() && text == " " => {
+                self.dashboard.toggle()
+            }
+            Event::Text(text) => self.dashboard.insert_note(&text),
             Event::Pointer {
                 x,
                 y,
@@ -129,6 +135,66 @@ mod tests {
     fn pixel(snapshot: &Snapshot, x: usize, y: usize) -> &[u8] {
         let offset = (y * snapshot.size.width as usize + x) * 4;
         &snapshot.pixels[offset..offset + 4]
+    }
+
+    #[test]
+    fn editable_note_uses_gpu_caret_clip_and_resize() {
+        let mut host = Headless::new(Size {
+            width: 130,
+            height: 300,
+        })
+        .expect("Vulkan ICD and GPU readback required; configure VK_ICD_FILENAMES");
+        let initial = host.frame().unwrap();
+        host.input(Event::Pointer {
+            x: 40.0,
+            y: 50.0,
+            dragging: false,
+        });
+        let focused = host.frame().unwrap();
+        assert_ne!(pixel(&initial, 35, 50), pixel(&focused, 35, 50));
+        host.input(Event::Text("éabcdefghijklmnop".into()));
+        let typed = host.frame().unwrap();
+        assert_eq!(host.dashboard.note(), "éabcdefghijklmnop");
+        assert_ne!(focused.pixels, typed.pixels);
+        // The text and scrolled caret are confined to the field's measured clip.
+        let clip = typed
+            .scene
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                misa_pixel_ui::Op::ClipRect {
+                    x: 43.0,
+                    y: 50.0,
+                    width,
+                    ops,
+                    ..
+                } if *width == 44.0 => Some(ops),
+                _ => None,
+            })
+            .expect("placed note clip");
+        assert!(
+            matches!(clip.last(), Some(misa_pixel_ui::Op::Rect { x, .. }) if *x >= 43.0 && *x < 87.0)
+        );
+        assert_eq!(pixel(&typed, 90, 56), pixel(&focused, 90, 56));
+        host.input(Event::Key(Key::Backspace));
+        let erased = host.frame().unwrap();
+        assert_eq!(host.dashboard.note(), "éabcdefghijklmno");
+        assert_ne!(typed.pixels, erased.pixels);
+        host.input(Event::Resize(Size {
+            width: 500,
+            height: 320,
+        }));
+        let wide = host.frame().unwrap();
+        assert_eq!(wide.pixels.len(), 500 * 320 * 4);
+        assert!((43..87).any(|x| (50..65).any(|y| pixel(&erased, x, y) != pixel(&wide, x, y))));
+        host.input(Event::Pointer {
+            x: 0.0,
+            y: 0.0,
+            dragging: false,
+        });
+        host.input(Event::Text("ignored".into()));
+        host.input(Event::Key(Key::Backspace));
+        assert_eq!(host.dashboard.note(), "éabcdefghijklmno");
     }
 
     #[test]
