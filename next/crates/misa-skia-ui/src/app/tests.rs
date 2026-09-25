@@ -212,7 +212,7 @@ fn frame_theme_changes_styles_without_changing_the_view() {
 fn message_card_and_rail_paint_beneath_its_text() {
     let mut app = App::new(scene_view(), test_metrics());
     app.frame_at(800, 600, Duration::ZERO);
-    let ops = &app.cache["msg.1"].ops;
+    let ops = &app.retained.cached("msg.1").ops;
     let surface = Theme::dark().surface("message.user").unwrap();
     let card = ops
         .iter()
@@ -296,9 +296,9 @@ fn elapsed_pulse_skips_wraps_and_preserves_unrelated_owners() {
     );
     let ms = Duration::from_millis;
     app.frame_at(640, 480, ms(0));
-    let status = app.cache["status"].ops.clone();
-    let root = app.cache["session"].ops.clone();
-    let message = app.cache["message"].ops.clone();
+    let status = app.retained.cached("status").ops.clone();
+    let root = app.retained.cached("session").ops.clone();
+    let message = app.retained.cached("message").ops.clone();
     let pulse = |ops: &[Op]| -> String {
         fn collect(ops: &[Op], result: &mut String) {
             for op in ops {
@@ -315,28 +315,28 @@ fn elapsed_pulse_skips_wraps_and_preserves_unrelated_owners() {
     };
     let first = pulse(&status);
     let scene = app.frame_at(640, 480, ms(159));
-    assert_eq!(app.tick, 0);
-    assert!(Arc::ptr_eq(&status, &app.cache["status"].ops));
-    assert_eq!(app.rendered_nodes, 0);
+    assert_eq!(app.retained.phase(), 0);
+    assert!(Arc::ptr_eq(&status, &app.retained.cached("status").ops));
+    assert_eq!(app.retained.rendered_nodes(), 0);
     assert!(scene.ops.iter().any(|op| matches!(op, Op::Group { .. })));
 
     app.frame_at(640, 480, ms(320)); // Skip phase 1.
-    assert_eq!(app.tick, 2);
-    assert!(!Arc::ptr_eq(&status, &app.cache["status"].ops));
-    assert!(!Arc::ptr_eq(&root, &app.cache["session"].ops));
-    assert_ne!(first, pulse(&app.cache["status"].ops));
-    assert!(Arc::ptr_eq(&message, &app.cache["message"].ops));
-    let phase_two = app.cache["status"].ops.clone();
+    assert_eq!(app.retained.phase(), 2);
+    assert!(!Arc::ptr_eq(&status, &app.retained.cached("status").ops));
+    assert!(!Arc::ptr_eq(&root, &app.retained.cached("session").ops));
+    assert_ne!(first, pulse(&app.retained.cached("status").ops));
+    assert!(Arc::ptr_eq(&message, &app.retained.cached("message").ops));
+    let phase_two = app.retained.cached("status").ops.clone();
     app.frame_at(640, 480, ms(960)); // Wrap to phase 2, no invalidation.
-    assert_eq!(app.tick, 2);
-    assert!(Arc::ptr_eq(&phase_two, &app.cache["status"].ops));
+    assert_eq!(app.retained.phase(), 2);
+    assert!(Arc::ptr_eq(&phase_two, &app.retained.cached("status").ops));
     app.frame_at(640, 480, ms(1120));
-    assert_eq!(app.tick, 3);
-    assert!(!Arc::ptr_eq(&phase_two, &app.cache["status"].ops));
-    assert!(Arc::ptr_eq(&message, &app.cache["message"].ops));
+    assert_eq!(app.retained.phase(), 3);
+    assert!(!Arc::ptr_eq(&phase_two, &app.retained.cached("status").ops));
+    assert!(Arc::ptr_eq(&message, &app.retained.cached("message").ops));
     app.frame_at(640, 480, ms(1280));
-    assert_eq!(app.tick, 0);
-    assert_eq!(first, pulse(&app.cache["status"].ops));
+    assert_eq!(app.retained.phase(), 0);
+    assert_eq!(first, pulse(&app.retained.cached("status").ops));
 }
 
 #[test]
@@ -370,17 +370,17 @@ fn hidden_cached_indicator_does_not_keep_the_window_awake() {
     app.invalidate("details");
     app.frame_at(640, 480, Duration::ZERO);
     assert!(app.animating());
-    let old = app.cache["status"].ops.clone();
+    let old = app.retained.cached("status").ops.clone();
     app.expanded.remove("details");
     app.invalidate("details");
     app.frame_at(640, 480, Duration::from_millis(160));
     assert!(!app.animating());
-    assert!(Arc::ptr_eq(&old, &app.cache["status"].ops));
+    assert!(Arc::ptr_eq(&old, &app.retained.cached("status").ops));
     app.expanded.insert("details".into());
     app.invalidate("details");
     app.frame_at(640, 480, Duration::from_millis(320));
     assert!(app.animating());
-    assert!(!Arc::ptr_eq(&old, &app.cache["status"].ops));
+    assert!(!Arc::ptr_eq(&old, &app.retained.cached("status").ops));
 }
 
 #[test]
@@ -424,10 +424,10 @@ fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
         height: 240,
     };
     app.frame_at(size.width, size.height, Duration::ZERO);
-    let status = app.cache["status"].ops.clone();
-    let before = app.cache["before.0"].ops.clone();
-    let after = app.cache["after.0"].ops.clone();
-    let bounds = app.cache["session"].indicators[0].clone();
+    let status = app.retained.cached("status").ops.clone();
+    let before = app.retained.cached("before.0").ops.clone();
+    let after = app.retained.cached("after.0").ops.clone();
+    let bounds = app.retained.indicators("session")[0].clone();
     assert_eq!(bounds.id, "status");
     assert!(bounds.top > size.height as f32);
     assert!(bounds.bottom < app.content_height - size.height as f32);
@@ -440,8 +440,8 @@ fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
             .deadline
             .is_none()
     );
-    assert_eq!(app.rendered_nodes, 0);
-    assert!(Arc::ptr_eq(&status, &app.cache["status"].ops));
+    assert_eq!(app.retained.rendered_nodes(), 0);
+    assert!(Arc::ptr_eq(&status, &app.retained.cached("status").ops));
 
     // Intersection uses the group's actual top and height, including nested groups.
     let below = 20.0 + bounds.top - size.height as f32;
@@ -467,10 +467,10 @@ fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
             .deadline
             .is_some()
     );
-    assert!(!Arc::ptr_eq(&status, &app.cache["status"].ops));
-    let visible = app.cache["status"].ops.clone();
-    assert!(Arc::ptr_eq(&before, &app.cache["before.0"].ops));
-    assert!(Arc::ptr_eq(&after, &app.cache["after.0"].ops));
+    assert!(!Arc::ptr_eq(&status, &app.retained.cached("status").ops));
+    let visible = app.retained.cached("status").ops.clone();
+    assert!(Arc::ptr_eq(&before, &app.retained.cached("before.0").ops));
+    assert!(Arc::ptr_eq(&after, &app.retained.cached("after.0").ops));
 
     app.scroll(100_000.0);
     assert!(!app.animating());
@@ -479,17 +479,17 @@ fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
             .deadline
             .is_none()
     );
-    assert_eq!(app.rendered_nodes, 0);
-    assert!(Arc::ptr_eq(&visible, &app.cache["status"].ops));
+    assert_eq!(app.retained.rendered_nodes(), 0);
+    assert!(Arc::ptr_eq(&visible, &app.retained.cached("status").ops));
     app.scroll(scroll_to_status - app.scroll);
     assert!(
         app.drive(Event::Redraw(size), Duration::from_millis(640))
             .deadline
             .is_some()
     );
-    assert!(!Arc::ptr_eq(&visible, &app.cache["status"].ops));
-    assert!(Arc::ptr_eq(&before, &app.cache["before.0"].ops));
-    assert!(Arc::ptr_eq(&after, &app.cache["after.0"].ops));
+    assert!(!Arc::ptr_eq(&visible, &app.retained.cached("status").ops));
+    assert!(Arc::ptr_eq(&before, &app.retained.cached("before.0").ops));
+    assert!(Arc::ptr_eq(&after, &app.retained.cached("after.0").ops));
 }
 
 #[test]
@@ -501,11 +501,31 @@ fn idle_repaints_never_invalidate_retained_owners() {
         test_metrics(),
     );
     app.frame_at(640, 480, Duration::ZERO);
-    let owner = app.cache["message"].ops.clone();
+    let owner = app.retained.cached("message").ops.clone();
     app.frame_at(640, 480, Duration::from_secs(10));
     assert!(!app.animating());
-    assert_eq!(app.rendered_nodes, 0);
-    assert!(Arc::ptr_eq(&owner, &app.cache["message"].ops));
+    assert_eq!(app.retained.rendered_nodes(), 0);
+    assert!(Arc::ptr_eq(&owner, &app.retained.cached("message").ops));
+}
+
+#[test]
+fn width_and_theme_invalidate_retained_geometry_but_idle_frames_do_not() {
+    let mut app = App::new(scene_view(), test_metrics());
+    app.frame_at(640, 480, Duration::ZERO);
+    let first = app.retained.cached("msg.1").ops.clone();
+    app.frame_at(640, 480, Duration::from_secs(1));
+    assert!(Arc::ptr_eq(&first, &app.retained.cached("msg.1").ops));
+    assert_eq!(app.retained.rendered_nodes(), 0);
+
+    app.frame_at(800, 480, Duration::from_secs(1));
+    let wide = app.retained.cached("msg.1").ops.clone();
+    assert!(!Arc::ptr_eq(&first, &wide));
+    assert_eq!(app.retained.cached("msg.1").width, 760.0);
+    app.set_light(true);
+    app.frame_at(800, 480, Duration::from_secs(1));
+    assert!(!Arc::ptr_eq(&wide, &app.retained.cached("msg.1").ops));
+    app.frame_at(800, 480, Duration::from_secs(1));
+    assert_eq!(app.retained.rendered_nodes(), 0);
 }
 
 #[test]
@@ -1461,7 +1481,7 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
         }));
     let mut app = App::new(view, Arc::new(Counted(calls.clone())));
     app.frame(400, 100);
-    let geometry = Arc::clone(&app.cache["child"].geometry.rows()[0].geometry);
+    let geometry = Arc::clone(&app.retained.cached("child").geometry.rows()[0].geometry);
     assert!(Arc::ptr_eq(&geometry, &app.interaction.rows()[0].geometry));
     let y = app.interaction.rows()[0].y;
     let scroll = app.scroll;
@@ -1474,7 +1494,7 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
     assert_eq!(calls.load(Ordering::Relaxed), measured);
     assert!(Arc::ptr_eq(
         &geometry,
-        &app.cache["child"].geometry.rows()[0].geometry
+        &app.retained.cached("child").geometry.rows()[0].geometry
     ));
     assert!(Arc::ptr_eq(&geometry, &app.interaction.rows()[0].geometry));
     assert_eq!(app.interaction.rows()[0].x, 20.0);
@@ -1493,10 +1513,10 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
     app.frame(400, 100);
     assert!(!Arc::ptr_eq(
         &geometry,
-        &app.cache["child"].geometry.rows()[0].geometry
+        &app.retained.cached("child").geometry.rows()[0].geometry
     ));
     assert!(Arc::ptr_eq(
-        &app.cache["child"].geometry.rows()[0].geometry,
+        &app.retained.cached("child").geometry.rows()[0].geometry,
         &app.interaction.rows()[0].geometry
     ));
     assert_eq!(app.interaction.rows()[0].geometry.text, "界ill updated");
@@ -1526,7 +1546,7 @@ fn deterministic_scene_and_unchanged_frames_do_no_layout() {
             }
         }
         app.frame(800, 600);
-        assert_eq!(app.rendered_nodes, 0);
+        assert_eq!(app.retained.rendered_nodes(), 0);
     }
 }
 #[test]
@@ -1545,7 +1565,7 @@ fn scoped_document_transaction_settles_live_text_without_rebuilding_history() {
         })
         .unwrap();
         app.frame(800, 600);
-        let retained = app.cache["message.0"].ops.clone();
+        let retained = app.retained.cached("message.0").ops.clone();
         let answer = Node::text("message.assistant", [Span::plain("é終")]).id("answer");
         let update = DocumentUpdate::Changed {
             tree: &[ViewOp::Insert {
@@ -1562,9 +1582,12 @@ fn scoped_document_transaction_settles_live_text_without_rebuilding_history() {
         assert!(app.document.streams_empty());
         assert!(app.document.contains("answer"));
         let scene = app.frame(800, 600);
-        assert!(Arc::ptr_eq(&retained, &app.cache["message.0"].ops));
+        assert!(Arc::ptr_eq(
+            &retained,
+            &app.retained.cached("message.0").ops
+        ));
         assert!(
-            app.rendered_nodes <= 3,
+            app.retained.rendered_nodes() <= 3,
             "only changed ancestors and final answer need layout"
         );
         let mut expected = view;
@@ -1633,7 +1656,7 @@ fn stream_append_and_subtree_replace_reuse_unchanged_owner_scenes() {
         let mut app = App::new(view, test_metrics());
         app.frame(800, 600);
         let retained: Vec<_> = (0..owners)
-            .map(|index| app.cache[&format!("message.{index}")].ops.clone())
+            .map(|index| app.retained.cached(&format!("message.{index}")).ops.clone())
             .collect();
         let mut stream = Stream {
             id: "live.text".into(),
@@ -1661,11 +1684,11 @@ fn stream_append_and_subtree_replace_reuse_unchanged_owner_scenes() {
         );
         stream.text.push_str(" world");
         app.frame(800, 600);
-        assert_eq!(app.rendered_nodes, 4);
+        assert_eq!(app.retained.rendered_nodes(), 4);
         for (index, ops) in retained.iter().enumerate() {
             assert!(Arc::ptr_eq(
                 ops,
-                &app.cache[&format!("message.{index}")].ops
+                &app.retained.cached(&format!("message.{index}")).ops
             ));
         }
         cold_scene(&mut app, &tree, &[stream.clone()]);
@@ -1676,11 +1699,11 @@ fn stream_append_and_subtree_replace_reuse_unchanged_owner_scenes() {
         tree.apply(&op).unwrap();
         observed_changes(&mut app, vec![op], vec![], false);
         app.frame(800, 600);
-        assert_eq!(app.rendered_nodes, 3);
+        assert_eq!(app.retained.rendered_nodes(), 3);
         for (index, ops) in retained.iter().enumerate().skip(1) {
             assert!(Arc::ptr_eq(
                 ops,
-                &app.cache[&format!("message.{index}")].ops
+                &app.retained.cached(&format!("message.{index}")).ops
             ));
         }
         cold_scene(&mut app, &tree, &[stream]);
@@ -1804,12 +1827,12 @@ fn editing_a_field_does_not_relayout_the_transcript() {
         .child(form("panel.input", FieldKind::Inline));
     let mut app = App::new(view, test_metrics());
     app.frame(800, 600);
-    let owner = app.cache["transcript"].ops.clone();
+    let owner = app.retained.cached("transcript").ops.clone();
     app.drive(Event::Text("draft".into()), Duration::ZERO)
         .commands;
     app.frame(800, 600);
-    assert_eq!(app.rendered_nodes, 2);
-    assert!(Arc::ptr_eq(&owner, &app.cache["transcript"].ops));
+    assert_eq!(app.retained.rendered_nodes(), 2);
+    assert!(Arc::ptr_eq(&owner, &app.retained.cached("transcript").ops));
     assert_eq!(app.field_text("panel.input", "value"), Some("draft"));
     let sent = app.key(Key::Enter { newline: false });
     assert!(
@@ -1836,14 +1859,14 @@ fn list_item_edits_survive_reset_and_replace_without_reallocating_the_owner() {
     assert_eq!(app.field_text("nested", "value"), Some(""));
     let editor = app.drafts.identity("nested", "value").unwrap();
     app.frame(400, 400);
-    assert!(app.cache.contains_key("list"));
+    assert!(app.retained.contains("list"));
     app.focus_control(Some(Control::Field {
         node: "nested".into(),
         field: "value".into(),
     }));
     app.drive(Event::Text("my edit".into()), Duration::ZERO);
     assert!(
-        !app.cache.contains_key("list"),
+        !app.retained.contains("list"),
         "embedded edits invalidate the indexed list owner"
     );
     app.set_view(view);
@@ -1890,12 +1913,12 @@ fn clearing_secret_erases_its_viewport_and_only_invalidates_its_owner() {
     app.drive(Event::Text("secret".repeat(30)), Duration::ZERO);
     app.frame(180, 400);
     assert!(app.drafts.viewport("private", "value").x > 0.0);
-    let unrelated = Arc::clone(&app.cache["other"]);
+    let unrelated = app.retained.cached("other").ops.clone();
     app.clear_secret_drafts();
     assert_eq!(app.field_text("private", "value"), Some(""));
     assert_eq!(app.drafts.viewport("private", "value").x, 0.0);
-    assert!(Arc::ptr_eq(&unrelated, &app.cache["other"]));
-    assert!(!app.cache.contains_key("private"));
+    assert!(Arc::ptr_eq(&unrelated, &app.retained.cached("other").ops));
+    assert!(!app.retained.contains("private"));
     app.frame(180, 400);
     assert_eq!(app.drafts.viewport("private", "value").x, 0.0);
 }

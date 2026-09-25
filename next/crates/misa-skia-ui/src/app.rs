@@ -13,7 +13,7 @@ use misa_style::Style;
 use misa_value::Value;
 pub use misa_window_core::Key;
 use misa_window_core::{Event, Output, Size};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,19 +23,15 @@ mod interaction;
 #[cfg(test)]
 mod interaction_tests;
 mod layout;
+mod retained;
 use interaction::Hit;
-use interaction::{GroupGeometry, InteractionMap, PointerResult};
+use interaction::{InteractionMap, PointerResult};
 #[cfg(test)]
 mod tests;
 mod text;
 
 /// Pulse cadence shared by the fake clock and the window scheduler.
 pub const PULSE_PERIOD: Duration = Duration::from_millis(160);
-
-fn pulse_phase(elapsed: Duration) -> u64 {
-    // The stock pulse has four frames; reduce before converting an arbitrary Duration.
-    ((elapsed.as_nanos() / PULSE_PERIOD.as_nanos()) % 4) as u64
-}
 
 /// A validated document transaction, independent of its delivery mechanism.
 /// Tree edits and live-stream retirement are applied together before painting.
@@ -76,35 +72,11 @@ struct FieldViewport {
     x: f32,
     line: usize,
 }
-#[derive(Clone)]
-struct IndicatorBounds {
-    id: String,
-    top: f32,
-    bottom: f32,
-}
-#[derive(Clone)]
-struct Cached {
-    width: f32,
-    height: f32,
-    ops: Arc<Vec<Op>>,
-    geometry: GroupGeometry,
-    /// Moving owner groups, relative to this cached group's origin.
-    indicators: Vec<IndicatorBounds>,
-    /// Pulse phase when this moving status owner's display list was built.
-    phase: Option<u64>,
-}
 pub struct App {
     light: bool,
     metrics: Arc<dyn TextMetrics>,
-    #[cfg(test)]
-    rendered_nodes: usize,
     document: document::DocumentStore,
-    cache: BTreeMap<String, Arc<Cached>>,
-    /// Painted status owners with a moving activity indicator (not document-wide turns).
-    moving_indicators: BTreeSet<String>,
-    /// Captures group positions only while building a dirty display list.
-    indicator_stack: Vec<Vec<IndicatorBounds>>,
-    cache_width: u32,
+    retained: retained::RetainedScenes,
     pub commands: Vec<misa_kit::intent::Command>,
     pub notice: String,
     interaction: InteractionMap,
@@ -120,8 +92,6 @@ pub struct App {
     follow: bool,
     content_height: f32,
     viewport_height: f32,
-    /// Current elapsed-time pulse phase, not a repaint count.
-    pub tick: u64,
     offline_elapsed: Duration,
 }
 struct Report {
@@ -169,13 +139,8 @@ impl Report {
 impl App {
     pub fn new(view: Node, metrics: Arc<dyn TextMetrics>) -> Self {
         let mut app = Self {
-            #[cfg(test)]
-            rendered_nodes: 0,
             document: document::DocumentStore::new(Node::section("session")),
-            cache: BTreeMap::new(),
-            moving_indicators: BTreeSet::new(),
-            indicator_stack: vec![],
-            cache_width: 0,
+            retained: retained::RetainedScenes::default(),
             light: false,
             metrics,
             commands: vec![],
@@ -193,7 +158,6 @@ impl App {
             follow: true,
             content_height: 0.0,
             viewport_height: 600.0,
-            tick: 0,
             offline_elapsed: Duration::ZERO,
         };
         app.set_view(view);
@@ -227,10 +191,12 @@ impl App {
             Event::Redraw(Size { width, height }) => {
                 if width != 0 && height != 0 {
                     output.frame = Some(self.frame_at(width, height, elapsed));
-                    if self.animating() {
-                        output.deadline =
-                            Some(misa_window_core::next_deadline(elapsed, PULSE_PERIOD));
-                    }
+                    output.deadline = self.retained.next_deadline(
+                        self.document.root(),
+                        self.scroll,
+                        self.viewport_height,
+                        elapsed,
+                    );
                 }
             }
         }
@@ -240,33 +206,17 @@ impl App {
     pub fn set_light(&mut self, light: bool) {
         if self.light != light {
             self.light = light;
-            self.cache.clear();
-            self.moving_indicators.clear();
+            self.retained.clear();
         }
     }
     fn colors(&self) -> crate::appearance::Palette {
         crate::appearance::Palette::new(self.light)
     }
 
-    /// Only groups actually placed in the viewport by the last layout need a pulse.
-    /// The root's bounds come from nested scene groups, so collapsed owners are absent.
+    /// Only painted moving groups intersecting the viewport need a pulse.
     pub fn animating(&self) -> bool {
-        self.visible_indicators().next().is_some()
-    }
-
-    fn visible_indicators(&self) -> impl Iterator<Item = &str> {
-        let top = 20.0 - self.scroll;
-        self.cache
-            .get(self.document.root())
-            .into_iter()
-            .flat_map(|cached| cached.indicators.iter())
-            .filter(move |bounds| {
-                top + bounds.top < self.viewport_height
-                    && top + bounds.bottom > 0.0
-                    && self.moving_indicators.contains(&bounds.id)
-                    && self.cache.contains_key(&bounds.id)
-            })
-            .map(|bounds| bounds.id.as_str())
+        self.retained
+            .animating(self.document.root(), self.scroll, self.viewport_height)
     }
     pub fn report(&mut self, title: String, value: Value) {
         let mut entries = Vec::new();
@@ -300,8 +250,6 @@ impl App {
     }
     fn set_view_with_streams(&mut self, mut view: Node, streams: &[misa_proto::sync::Stream]) {
         misa_proto::sync::address(&mut view);
-        self.cache.clear();
-        self.moving_indicators.clear();
         let keys = self.drafts.reset(&view);
         if self.save.is_some() {
             // A live update cannot steal focus from a local destination dialog.
@@ -324,12 +272,7 @@ impl App {
     }
 
     fn invalidate(&mut self, id: &str) {
-        let mut cursor = Some(self.document.cache_owner(id).to_string());
-        while let Some(id) = cursor {
-            self.cache.remove(&id);
-            self.moving_indicators.remove(&id);
-            cursor = self.document.parent(&id).map(str::to_owned);
-        }
+        self.retained.invalidate(id, &self.document);
     }
     fn invalidate_focus(&mut self) {
         let id = match self.interaction.focus() {
@@ -361,14 +304,7 @@ impl App {
         }
     }
     fn invalidate_document(&mut self, changes: document::Changes) {
-        if changes.full {
-            self.cache.clear();
-            self.moving_indicators.clear();
-            return;
-        }
-        for id in changes.ids {
-            self.invalidate(&id);
-        }
+        self.retained.invalidate_document(changes, &self.document);
     }
     /// One already-validated replica transaction. The window paints only after
     /// canonical changes and live retirement have both reached its derived cache.

@@ -1,7 +1,5 @@
-use super::{
-    App, Cached, Control, FONT_SIZE, FieldViewport, Hit, IndicatorBounds, PULSE_PERIOD,
-    pulse_phase, text,
-};
+use super::retained::indicator_value;
+use super::{App, Control, FONT_SIZE, FieldViewport, Hit, PULSE_PERIOD, text};
 use misa_pixel_ui::{Button, Op, Rect, Scene};
 use misa_proto::view::{FieldKind, Kind, Node};
 use misa_render::Theme;
@@ -19,9 +17,8 @@ impl App {
         theme: &Theme,
         scene: &mut Scene,
     ) {
-        let cached = if let Some(cached) = self.cache.get(id).filter(|cached| cached.width == width)
-        {
-            cached.clone()
+        let cached = if let Some(cached) = self.retained.get(id, width) {
+            cached
         } else {
             let node = if id == "streams" {
                 Node::section("streams").id("streams")
@@ -33,35 +30,19 @@ impl App {
             let outer = self.interaction.take_group();
             let mut local = Scene::default();
             let mut height = 0.0;
-            self.indicator_stack.push(Vec::new());
+            self.retained.begin_group();
             self.node_uncached(&node, 0.0, &mut height, width, theme, &mut local);
-            let mut indicators = self.indicator_stack.pop().unwrap();
-            if node.role == "status.indicators" && self.moving_indicators.contains(id) {
-                indicators.push(IndicatorBounds {
-                    id: id.to_string(),
-                    top: 0.0,
-                    bottom: height,
-                });
-            }
-            let cached = Arc::new(Cached {
+            let geometry = self.interaction.restore_group(outer);
+            self.retained.finish_group(
+                id,
                 width,
                 height,
-                ops: Arc::new(local.ops),
-                geometry: self.interaction.restore_group(outer),
-                indicators,
-                phase: (node.role == "status.indicators" && self.moving_indicators.contains(id))
-                    .then_some(self.tick),
-            });
-            self.cache.insert(id.to_string(), cached.clone());
-            cached
+                local.ops,
+                geometry,
+                node.role == "status.indicators",
+            )
         };
-        if let Some(parent) = self.indicator_stack.last_mut() {
-            parent.extend(cached.indicators.iter().map(|bounds| IndicatorBounds {
-                id: bounds.id.clone(),
-                top: bounds.top + *y,
-                bottom: bounds.bottom + *y,
-            }));
-        }
+        self.retained.place(&cached, *y);
         scene.ops.push(Op::Group {
             x,
             y: *y,
@@ -79,16 +60,7 @@ impl App {
     /// Render at a caller-provided elapsed time. Repaints within a phase retain the
     /// same display lists; only the animated indicator's owner and ancestors change.
     pub fn frame_at(&mut self, width: u32, height: u32, elapsed: Duration) -> Scene {
-        self.tick = pulse_phase(elapsed);
-        if self.cache_width != width {
-            self.cache.clear();
-            self.moving_indicators.clear();
-            self.cache_width = width;
-        }
-        #[cfg(test)]
-        {
-            self.rendered_nodes = 0;
-        }
+        self.retained.begin_frame(width, elapsed);
         self.viewport_height = height as f32;
         let mut scene = self.layout(width, height);
         let max = (self.content_height - height as f32 + 40.0).max(0.0);
@@ -103,15 +75,10 @@ impl App {
         }
         // Lay out first: the final scroll and collapsed groups determine visibility.
         // An idle frame reuses its display lists and checks only moving owner bounds.
-        let stale: Vec<_> = self
-            .visible_indicators()
-            .filter(|id| self.cache[*id].phase != Some(self.tick))
-            .map(str::to_owned)
-            .collect();
-        if !stale.is_empty() {
-            for id in stale {
-                self.invalidate(&id);
-            }
+        if self
+            .retained
+            .invalidate_stale_visible(&self.document, self.scroll, self.viewport_height)
+        {
             scene = self.layout(width, height);
         }
         let colors = self.colors();
@@ -473,8 +440,11 @@ impl App {
             if child.role == "indicator.activity" {
                 let value = indicator_value(child);
                 if value != "ready"
-                    && let Some(frame) =
-                        misa_render::animations::Registry::stock().frame("pulse", true, self.tick)
+                    && let Some(frame) = misa_render::animations::Registry::stock().frame(
+                        "pulse",
+                        true,
+                        self.retained.phase(),
+                    )
                 {
                     spans.push((theme.role("indicator.activity"), frame.to_string()));
                     continue;
@@ -608,13 +578,7 @@ impl App {
                 .subtree(&node.id)
                 .unwrap_or_else(|| node.clone());
             if node.role == "status.indicators" {
-                if model.children.iter().any(|child| {
-                    child.role == "indicator.activity" && indicator_value(child) != "ready"
-                }) {
-                    self.moving_indicators.insert(node.id.clone());
-                } else {
-                    self.moving_indicators.remove(&node.id);
-                }
+                self.retained.observe_status(&model);
             }
             match node.role.as_str() {
                 "status.indicators" => self.indicators(&model, x, y, width, theme, scene),
@@ -625,7 +589,7 @@ impl App {
         }
         #[cfg(test)]
         {
-            self.rendered_nodes += 1;
+            self.retained.node_rendered();
         }
         // A railed block is a card: remember where its ops begin so the surface and
         // the full-height rail can be painted behind them once its extent is known.
@@ -1072,25 +1036,5 @@ impl App {
                 );
             }
         }
-    }
-}
-/// The text of an indicator fact, recursing through wrapper sections.
-fn indicator_value(node: &Node) -> String {
-    match &node.kind {
-        Kind::Fact { value } => misa_render::fact::format(&node.role, value),
-        Kind::Meter { value, max, .. } => format!(
-            "{}/{}",
-            misa_render::fact::count(Some(*value as i64), ""),
-            misa_render::fact::count(Some(*max as i64), "")
-        ),
-        Kind::Status { text } => text.clone(),
-        Kind::Text { spans } => spans.iter().map(|span| span.text.as_str()).collect(),
-        _ => node
-            .children
-            .iter()
-            .map(indicator_value)
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>()
-            .join(" "),
     }
 }
