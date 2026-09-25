@@ -75,26 +75,18 @@ impl App {
         ) {
             scene = self.layout(width, height).0;
         }
-        let colors = self.colors();
-        if let Some(mut report) = self.report.take() {
+        if self.overlays.report_mut().is_some() {
             self.interaction.clear_hits();
+            let colors = self.colors();
+            let report = self.overlays.report_mut().unwrap();
             let budget = (width as f32 - 96.0).max(1.0);
-            if report.width != budget {
-                report.lines.clear();
-                for entry in &report.entries {
-                    let runs = self.wrap_runs(vec![(colors.text, entry.clone())], budget);
-                    report.lines.extend(
-                        runs.into_iter()
-                            .map(|line| line.into_iter().map(|(_, text)| text).collect()),
-                    );
-                }
-                report.width = budget;
-            }
-            let spacing = self.line_height() + 3.0;
-            let visible = ((height as f32 - 140.0).max(spacing) / spacing).floor() as usize;
-            report.offset = report
-                .offset
-                .min(report.lines.len().saturating_sub(visible));
+            let visible = report.reflow(
+                width as f32,
+                height as f32,
+                self.metrics.as_ref(),
+                colors.text,
+            );
+            let spacing = self.metrics.line_metrics(FONT_SIZE).line_height + 3.0;
             scene.ops.push(Op::Rect {
                 x: 24.0,
                 y: 24.0,
@@ -105,7 +97,9 @@ impl App {
             scene.ops.push(text(
                 42.0,
                 40.0,
-                &self.clip(&report.title, budget),
+                &misa_pixel_ui::TextFlow::new(self.metrics.as_ref(), FONT_SIZE)
+                    .clip(&report.title, budget)
+                    .0,
                 colors.text,
             ));
             for (index, line) in report
@@ -125,7 +119,6 @@ impl App {
                 "↑↓ scroll · Escape close",
                 colors.muted,
             ));
-            self.report = Some(report);
         }
         scene
     }
@@ -155,7 +148,7 @@ impl App {
         self.interaction.finish_frame();
         self.interaction
             .paint_selection(&mut scene, self.line_height(), self.colors().selection);
-        if !self.notice.is_empty() {
+        if !self.notice_text().is_empty() {
             scene.ops.push(Op::Rect {
                 x: 0.0,
                 y: height as f32 - 26.0,
@@ -166,12 +159,12 @@ impl App {
             scene.ops.push(text(
                 12.0,
                 height as f32 - 23.0,
-                &self.clip(&self.notice, (width as f32 - 24.0).max(1.0)),
+                &self.clip(self.notice_text(), (width as f32 - 24.0).max(1.0)),
                 self.colors().text,
             ));
         }
-        if let Some((_, edit)) = &self.save {
-            let path = edit.text().to_string();
+        if let Some(path) = self.overlays.save_text() {
+            let path = path.to_string();
             let x = 30.0;
             let y = (height as f32 / 2.0 - 70.0).max(20.0);
             let w = (width as f32 - 60.0).max(80.0);
@@ -217,7 +210,7 @@ impl App {
                 Control::SaveCancel,
             );
         }
-        if let Some(picker) = &self.picker {
+        if let Some(picker) = self.overlays.picker() {
             self.interaction.clear_hits();
             let y = 35.0;
             scene.ops.push(Op::Rect {
@@ -333,10 +326,13 @@ impl App {
                     });
                 (cursor, self.drafts.viewport(node, field))
             }
-            Control::SavePath => (
-                self.save.as_ref().map(|(_, edit)| edit.cursor()),
-                self.save_viewport,
-            ),
+            Control::SavePath => {
+                let state = self.overlays.save_cursor_viewport();
+                (
+                    state.map(|(cursor, _)| cursor),
+                    state.map_or(FieldViewport::default(), |(_, viewport)| viewport),
+                )
+            }
             _ => (None, FieldViewport::default()),
         };
         let cursor_line = if focused {
@@ -368,7 +364,7 @@ impl App {
                 Control::Field { node, field } => {
                     self.drafts.set_viewport(node, field, viewport);
                 }
-                Control::SavePath => self.save_viewport = viewport,
+                Control::SavePath => self.overlays.set_save_viewport(viewport),
                 _ => {}
             }
         }

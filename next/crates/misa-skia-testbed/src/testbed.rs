@@ -167,7 +167,7 @@ impl Fixtures {
     fn semantic_input(&mut self, event: Event, elapsed: Duration) {
         if !self.semantic.drive(event, elapsed).commands.is_empty() {
             // Commands are intentionally never dispatched to a client or transport.
-            self.semantic.notice = "Fixture action only (not sent)".into();
+            self.semantic.notice("Fixture action only (not sent)");
         }
     }
 }
@@ -304,7 +304,10 @@ mod tests {
         );
         assert!(has_text(&fixtures.frame(500, 320).ops, "Local draft!"));
         fixtures.key(Key::Enter { newline: false });
-        assert_eq!(fixtures.semantic.notice, "Fixture action only (not sent)");
+        assert_eq!(
+            fixtures.semantic.notice_text(),
+            "Fixture action only (not sent)"
+        );
         fixtures.select("1");
         assert!(has_text(&fixtures.frame(500, 320).ops, "Selected"));
     }

@@ -475,7 +475,7 @@ impl Local {
     }
     pub fn notice(&mut self, notice: &str) {
         if let Some(app) = self.app() {
-            app.notice = notice.into();
+            app.notice(&notice);
         }
     }
     pub fn form(&mut self, form: misa_client::form::Form) {
@@ -931,7 +931,7 @@ impl Local {
                             input,
                         }),
                         Err(fault) => {
-                            app.notice = fault.message;
+                            app.notice(&fault.message);
                             None
                         }
                     }
@@ -956,7 +956,7 @@ impl Local {
                                 Some(Action::InvokeInstalled { command, input })
                             }
                             Err(fault) => {
-                                app.notice = fault.message;
+                                app.notice(&fault.message);
                                 None
                             }
                         }

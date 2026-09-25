@@ -23,9 +23,11 @@ mod interaction;
 #[cfg(test)]
 mod interaction_tests;
 mod layout;
+mod overlays;
 mod retained;
 use interaction::Hit;
 use interaction::{InteractionMap, PointerResult};
+use overlays::{Decision, LocalOverlays, OverlayAction};
 #[cfg(test)]
 mod tests;
 mod text;
@@ -77,61 +79,14 @@ pub struct App {
     metrics: Arc<dyn TextMetrics>,
     document: document::DocumentStore,
     retained: retained::RetainedScenes,
-    pub commands: Vec<misa_kit::intent::Command>,
-    pub notice: String,
+    overlays: LocalOverlays,
     interaction: InteractionMap,
     pub expanded: BTreeSet<String>,
     drafts: drafts::Drafts,
-    save_viewport: FieldViewport,
-    save: Option<(String, Editor)>,
-    picker: Option<misa_kit::picker::Picker>,
-    report: Option<Report>,
     prefixes: Vec<(Style, String)>,
     replace_selection: bool,
     viewport: Viewport,
     offline_elapsed: Duration,
-}
-struct Report {
-    title: String,
-    entries: Vec<String>,
-    offset: usize,
-    width: f32,
-    lines: Vec<String>,
-}
-impl Report {
-    fn collect(value: &Value, path: &str, entries: &mut Vec<String>) {
-        match value {
-            Value::Map(fields) if !fields.is_empty() => {
-                for (key, value) in fields.iter() {
-                    let label = key.replace('_', " ");
-                    let path = if path.is_empty() {
-                        label
-                    } else {
-                        format!("{path} / {label}")
-                    };
-                    Self::collect(value, &path, entries);
-                }
-            }
-            Value::List(values) if !values.is_empty() => {
-                for (index, value) in values.iter().enumerate() {
-                    Self::collect(value, &format!("{path} / {}", index + 1), entries);
-                }
-            }
-            _ => {
-                let content = match value {
-                    Value::Null => "Unavailable".into(),
-                    Value::Map(_) | Value::List(_) => "None".into(),
-                    Value::Bytes(bytes) => format!("{} bytes", bytes.len()),
-                    _ => misa_render::fact::format("value.text", value),
-                };
-                entries.push(if path.is_empty() {
-                    content
-                } else {
-                    format!("{path}: {content}")
-                });
-            }
-        }
-    }
 }
 impl App {
     pub fn new(view: Node, metrics: Arc<dyn TextMetrics>) -> Self {
@@ -140,15 +95,10 @@ impl App {
             retained: retained::RetainedScenes::default(),
             light: false,
             metrics,
-            commands: vec![],
-            notice: String::new(),
+            overlays: LocalOverlays::default(),
             interaction: InteractionMap::default(),
             expanded: BTreeSet::new(),
             drafts: drafts::Drafts::default(),
-            save_viewport: FieldViewport::default(),
-            save: None,
-            picker: None,
-            report: None,
             prefixes: vec![],
             replace_selection: false,
             viewport: Viewport::new(0.0, 600.0),
@@ -216,16 +166,39 @@ impl App {
         )
     }
     pub fn report(&mut self, title: String, value: Value) {
-        let mut entries = Vec::new();
-        Report::collect(&value, "", &mut entries);
-        self.picker = None;
-        self.report = Some(Report {
-            title,
-            entries,
-            offset: 0,
-            width: 0.0,
-            lines: vec![],
-        });
+        self.overlays.report(title, value);
+    }
+    pub fn notice(&mut self, text: &str) {
+        self.overlays.notice(text);
+    }
+    pub fn notice_text(&self) -> &str {
+        self.overlays.notice_text()
+    }
+    pub fn declare_commands(&mut self, commands: Vec<misa_kit::intent::Command>) {
+        self.overlays.declare_commands(commands);
+    }
+    fn overlay_decision(&mut self, decision: Decision) -> Option<Vec<Command>> {
+        let Decision::Consumed {
+            command,
+            focus,
+            action,
+        } = decision
+        else {
+            return None;
+        };
+        if let Some(focus) = focus {
+            self.interaction.set_focus(focus);
+        }
+        if let Some(OverlayAction::InsertCommand(value)) = action {
+            let target = self.drafts.insert_command(&value);
+            self.overlays.inserted(target.is_some());
+            if let Some((node, field)) = target {
+                self.invalidate(&node);
+                self.interaction
+                    .set_focus(Some(Control::Field { node, field }));
+            }
+        }
+        Some(command.into_iter().collect())
     }
     pub fn clear_secret_drafts(&mut self) {
         for node in self.drafts.clear_secrets(&self.document) {
@@ -240,7 +213,7 @@ impl App {
             // even if the original composer was removed by a scope update.
             self.report("Unsent prompt · Copy to recover".into(), Value::str(text));
         }
-        self.notice = reason;
+        self.notice(&reason);
     }
     pub fn set_view(&mut self, view: Node) {
         self.set_view_with_streams(view, &[]);
@@ -248,7 +221,7 @@ impl App {
     fn set_view_with_streams(&mut self, mut view: Node, streams: &[misa_proto::sync::Stream]) {
         misa_proto::sync::address(&mut view);
         let keys = self.drafts.reset(&view);
-        if self.save.is_some() {
+        if self.overlays.saving() {
             // A live update cannot steal focus from a local destination dialog.
         } else if let Some((node, field)) = keys.iter().find(|(node, _)| node == "panel.input" && self.document.node(node).is_none()) {
             if !matches!(self.interaction.focus(), Some(Control::Field { node: focused, .. }) if focused == node) {
@@ -284,7 +257,7 @@ impl App {
     }
     fn refresh_tree_fields(&mut self, operations: &[ViewOp]) {
         let panel_input = self.drafts.changed(operations, &self.document);
-        if let Some((node, field)) = panel_input.filter(|_| self.save.is_none()) {
+        if let Some((node, field)) = panel_input.filter(|_| !self.overlays.saving()) {
             self.interaction
                 .set_focus(Some(Control::Field { node, field }));
         }
@@ -292,7 +265,7 @@ impl App {
         {
             self.interaction.set_focus(None);
         }
-        if self.interaction.focus().is_none() && self.save.is_none() {
+        if self.interaction.focus().is_none() && !self.overlays.saving() {
             self.interaction.set_focus(
                 self.drafts
                     .last()
@@ -317,7 +290,7 @@ impl App {
                 }
                 self.invalidate_document(changes);
             }
-            DocumentUpdate::Notice(message) => self.notice = message.to_string(),
+            DocumentUpdate::Notice(message) => self.notice(message),
         }
         Ok(())
     }
@@ -325,9 +298,7 @@ impl App {
     pub fn image(&mut self, hash: String, image: Arc<image::RgbaImage>) {
         match self.document.image(hash, image) {
             document::ImageChange::Ignored => {}
-            document::ImageChange::TooLarge => {
-                self.notice = "Image exceeds the decoded cache limit".into()
-            }
+            document::ImageChange::TooLarge => self.notice("Image exceeds the decoded cache limit"),
             document::ImageChange::Loaded(changes) => self.invalidate_document(changes),
         }
     }
@@ -348,16 +319,13 @@ impl App {
         self.viewport.pin_to_top();
     }
     pub fn scroll(&mut self, delta: f32) {
-        if let Some(report) = &mut self.report {
-            report.offset = report
-                .offset
-                .saturating_add_signed((delta / 24.0).round() as isize);
+        if self.overlays.scroll(delta) {
             return;
         }
         self.viewport.scroll(delta);
     }
     pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
-        if self.picker.is_some() || self.report.is_some() {
+        if self.overlays.pointer_blocked() {
             return vec![];
         }
         self.invalidate_focus();
@@ -394,29 +362,13 @@ impl App {
                 self.drafts.cycle(&node, &field, &self.document);
             }
             Control::Action { node, action } if action == "attachment.save" => {
-                self.save = Some((node, Editor::new()));
-                self.save_viewport = FieldViewport::default();
-                self.interaction.set_focus(Some(Control::SavePath));
+                let decision = self.overlays.open_save(node);
+                return self.overlay_decision(decision).unwrap_or_default();
             }
             Control::Action { node, action } => return self.submit(&node, &action),
-            Control::SaveConfirm => {
-                if let Some((node, path)) = &self.save {
-                    if path.text().trim().is_empty() {
-                        self.notice = "Enter a local destination path".into();
-                    } else {
-                        let command = Command::Save {
-                            node: node.clone(),
-                            destination: path.text().to_string(),
-                        };
-                        self.save = None;
-                        self.interaction.set_focus(None);
-                        return vec![command];
-                    }
-                }
-            }
-            Control::SaveCancel => {
-                self.save = None;
-                self.interaction.set_focus(None);
+            Control::SaveConfirm | Control::SaveCancel => {
+                let decision = self.overlays.activate(&control);
+                return self.overlay_decision(decision).unwrap_or_default();
             }
             _ => {}
         }
@@ -440,10 +392,7 @@ impl App {
                 .find(|field| field.id == "prompt")
                 .map(|field| field.value.as_str())
                 .unwrap_or("");
-            let commands = self.commands.as_slice();
-            let parsed = misa_kit::intent::parse(text, commands);
-            let Some(intent) = misa_kit::intent::intent(&parsed) else {
-                self.notice = format!("Cannot submit: {parsed:?}");
+            let Some(intent) = self.overlays.parse(text) else {
                 return vec![];
             };
             intent
@@ -465,7 +414,6 @@ impl App {
     }
     fn editor(&mut self) -> Option<&mut Editor> {
         match self.interaction.focus() {
-            Some(Control::SavePath) => self.save.as_mut().map(|(_, edit)| edit),
             Some(Control::Field { node, field }) => self.drafts.editor_mut(node, field),
             _ => None,
         }
@@ -484,14 +432,9 @@ impl App {
         commands
     }
     fn text_inner(&mut self, text: &str) -> Vec<Command> {
-        if self.report.is_some() {
-            return vec![];
-        }
-        if let Some(picker) = &mut self.picker {
-            for character in text.chars() {
-                picker.type_char(character);
-            }
-            return vec![];
+        let decision = self.overlays.text(text, self.interaction.focus());
+        if let Some(commands) = self.overlay_decision(decision) {
+            return commands;
         }
         if let Some(control @ Control::Field { .. }) = self.interaction.focus().cloned() {
             let discrete = match &control {
@@ -515,62 +458,9 @@ impl App {
         vec![]
     }
     fn key_inner(&mut self, key: Key) -> Vec<Command> {
-        if let Some(report) = &mut self.report {
-            match key {
-                Key::Escape | Key::Enter { .. } => self.report = None,
-                Key::Up => report.offset = report.offset.saturating_sub(1),
-                Key::Down => report.offset = report.offset.saturating_add(1),
-                Key::Home => report.offset = 0,
-                Key::Copy => return vec![Command::Copy(report.entries.join("\n"))],
-                _ => {}
-            }
-            return vec![];
-        }
-        if matches!(key, Key::Commands) && self.save.is_none() {
-            let mut picker =
-                misa_kit::picker::Picker::new("Commands", misa_kit::picker::Accept::Run);
-            picker.set_items(
-                self.commands
-                    .iter()
-                    .map(|command| misa_proto::view::Choice {
-                        value: command.id.clone(),
-                        label: command.label.clone(),
-                        detail: Some(command.description.clone()),
-                        metadata: None,
-                    })
-                    .collect(),
-                false,
-            );
-            self.picker = Some(picker);
-            return vec![];
-        }
-        if let Some(picker) = &mut self.picker {
-            match key {
-                Key::Escape => {
-                    self.picker = None;
-                }
-                Key::Up | Key::Tab { backward: true } => picker.move_selection(-1),
-                Key::Down | Key::Tab { backward: false } => picker.move_selection(1),
-                Key::Backspace => {
-                    picker.backspace();
-                }
-                Key::Enter { .. } => {
-                    if let Some(candidate) = picker.selected().cloned() {
-                        if let Some((node, field)) = self.drafts.insert_command(&candidate.value) {
-                            self.invalidate(&node);
-                            self.interaction
-                                .set_focus(Some(Control::Field { node, field }));
-                            self.picker = None;
-                            self.notice =
-                                "Command inserted · add arguments, then Enter to send".into();
-                        } else {
-                            self.notice = "This view has no prompt field".into();
-                        }
-                    }
-                }
-                _ => {}
-            }
-            return vec![];
+        let decision = self.overlays.key(key.clone(), self.interaction.focus());
+        if let Some(commands) = self.overlay_decision(decision) {
+            return commands;
         }
         if matches!(key, Key::Copy) {
             let text = if let Some(edit) = self.editor() {
@@ -597,17 +487,10 @@ impl App {
             return vec![];
         }
         if matches!(key, Key::Escape) {
-            if self.save.take().is_some() {
-                self.interaction.set_focus(None);
-            } else {
-                self.interaction.clear_selection();
-            }
+            self.interaction.clear_selection();
             return vec![];
         }
         if let Key::Enter { newline } = key {
-            if self.interaction.focused(&Control::SavePath) {
-                return self.activate(Control::SaveConfirm);
-            }
             if let Some(Control::Field { node, field }) = self.interaction.focus().cloned() {
                 if newline {
                     if let Some(edit) = self.editor() {

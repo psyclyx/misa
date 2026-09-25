@@ -590,27 +590,27 @@ fn command_picker_filters_navigates_and_inserts_without_sending() {
         fields[0].id = "prompt".into();
     }
     let mut app = App::new(view, test_metrics());
-    app.commands = serde_json::from_value(
+    app.declare_commands(serde_json::from_value(
         serde_json::json!([{ "id":"model", "label":"Model" }, { "id":"clear", "label":"Clear" }]),
     )
-    .unwrap();
+    .unwrap());
     app.key(Key::Commands);
     app.key(Key::Down);
     assert_eq!(
-        app.picker.as_ref().unwrap().selected().unwrap().value,
+        app.overlays.picker().unwrap().selected().unwrap().value,
         "clear"
     );
     app.drive(Event::Text("mod".into()), Duration::ZERO)
         .commands;
-    assert_eq!(app.picker.as_ref().unwrap().matches().len(), 1);
+    assert_eq!(app.overlays.picker().unwrap().matches().len(), 1);
     assert!(app.key(Key::Enter { newline: false }).is_empty());
     assert_eq!(app.field_text("compose", "prompt"), Some("/model "));
-    assert!(app.picker.is_none());
+    assert!(app.overlays.picker().is_none());
     app.key(Key::Commands);
     app.drive(Event::Text("zzzz".into()), Duration::ZERO)
         .commands;
     assert!(app.key(Key::Enter { newline: false }).is_empty());
-    assert!(app.picker.is_some());
+    assert!(app.overlays.picker().is_some());
     app.key(Key::Escape);
     assert_eq!(app.field_text("compose", "prompt"), Some("/model "));
 }
@@ -629,7 +629,7 @@ fn empty_picker_and_modal_input_preserve_draft() {
         |op| matches!(op,Op::Text{text,..} if text == "No matching commands")
     ));
     app.key(Key::Escape);
-    assert!(app.picker.is_none());
+    assert!(app.overlays.picker().is_none());
 }
 fn any_op(ops: &[Op], predicate: impl Fn(&Op) -> bool + Copy) -> bool {
     ops.iter().any(|op| {
@@ -1079,8 +1079,41 @@ fn save_destination_is_an_explicit_local_command() {
             destination: "/tmp/my photo.png".into()
         }]
     );
-    assert!(app.save.is_none());
+    assert!(!app.overlays.saving());
 }
+#[test]
+fn save_modal_confirms_only_nonblank_paths_and_cancels_without_effects() {
+    let mut app = App::new(Node::section("root"), test_metrics());
+    app.activate(Control::Action {
+        node: "attachment".into(),
+        action: "attachment.save".into(),
+    });
+    assert!(app.key(Key::Enter { newline: false }).is_empty());
+    assert_eq!(app.notice_text(), "Enter a local destination path");
+    assert!(app.overlays.saving());
+    app.drive(Event::Text("/tmp/secret path".into()), Duration::ZERO);
+    assert_eq!(
+        app.key(Key::Copy),
+        vec![Command::Copy("/tmp/secret path".into())]
+    );
+    app.key(Key::SelectAll);
+    app.drive(Event::Text("/tmp/new path".into()), Duration::ZERO);
+    assert_eq!(
+        app.activate(Control::SaveConfirm),
+        vec![Command::Save {
+            node: "attachment".into(),
+            destination: "/tmp/new path".into()
+        }]
+    );
+    app.activate(Control::Action {
+        node: "attachment".into(),
+        action: "attachment.save".into(),
+    });
+    app.drive(Event::Text("/tmp/cancelled".into()), Duration::ZERO);
+    assert!(app.activate(Control::SaveCancel).is_empty());
+    assert!(!app.overlays.saving());
+}
+
 #[test]
 fn rich_shapes_draw_wrapped_table_meter_and_bitmap() {
     let view = Node::section("root")
@@ -1481,12 +1514,15 @@ fn report_reflows_at_measured_pixel_width() {
     let mut app = App::new(Node::section("root"), test_metrics());
     app.report("Report".into(), Value::str("WWWWiiii界界"));
     app.frame(132, 280);
-    let lines = &app.report.as_ref().unwrap().lines;
+    let lines = app.overlays.report_mut().unwrap().lines.clone();
     assert!(lines.len() > 2);
     assert_eq!(lines.concat(), "WWWWiiii界界");
     assert!(lines.iter().all(|line| app.measure(line) <= 36.0));
     app.frame(300, 280);
-    assert_eq!(app.report.as_ref().unwrap().lines, vec!["WWWWiiii界界"]);
+    assert_eq!(
+        app.overlays.report_mut().unwrap().lines,
+        vec!["WWWWiiii界界"]
+    );
 }
 
 #[test]

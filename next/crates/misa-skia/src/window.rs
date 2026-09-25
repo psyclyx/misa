@@ -223,7 +223,7 @@ impl Host {
                         .notice("Appearance storage is busy; choice was not saved");
                 }
             } else if let Action::Ui(Command::Copy(text)) = command {
-                self.app.notice = match self
+                self.app.notice(&match self
                     .clipboard
                     .as_mut()
                     .ok_or_else(|| "No clipboard is available".to_string())
@@ -232,7 +232,7 @@ impl Host {
                     }) {
                     Ok(()) => "Copied selection".into(),
                     Err(error) => error,
-                };
+                });
             } else if let Some(outgoing) = &self.outgoing {
                 if let Err(error) = outgoing.try_send(command) {
                     let reason = "The session is busy or disconnected".to_string();
@@ -241,11 +241,11 @@ impl Host {
                             misa_kit::intent::Intent::Prompt { text, .. }
                             | misa_kit::intent::Intent::Interrupt { text, .. },
                         )) => self.app.reject_prompt(text, reason),
-                        _ => self.app.notice = reason,
+                        _ => self.app.notice(&reason),
                     }
                 }
             } else {
-                self.app.notice = "Connect to a session to use this action".into();
+                self.app.notice("Connect to a session to use this action");
             }
         }
         self.redraw();
@@ -821,10 +821,10 @@ fn apply_update(
         } => {
             local.request(id, generation, model);
             if local.pending_requests() > 0 {
-                app.notice = format!(
+                app.notice(&format!(
                     "{} pending request(s) · Ctrl+R opens locally",
                     local.pending_requests()
-                );
+                ));
             }
         }
         Update::Documents(deliveries) => {
@@ -845,11 +845,11 @@ fn apply_update(
                 if let Some(update) = document_update(&update)
                     && let Err(error) = app.observed(&update)
                 {
-                    app.notice = error;
+                    app.notice(&error);
                 }
             }
         }
-        Update::Shortcuts(commands) => app.commands = commands,
+        Update::Shortcuts(commands) => app.declare_commands(commands),
         Update::Image { hash, image, .. } => {
             app.image(hash.clone(), image.clone());
             for panel in panels.values_mut() {
@@ -860,7 +860,7 @@ fn apply_update(
         Update::RejectedDraft { text, reason } => app.reject_prompt(text, reason),
         Update::Notice(notice) => {
             local.notice(&notice);
-            app.notice = notice;
+            app.notice(&notice);
         }
         Update::Session { .. }
         | Update::Selected { .. }
