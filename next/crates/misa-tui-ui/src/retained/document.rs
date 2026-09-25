@@ -11,7 +11,7 @@ use std::collections::HashMap;
 /// image use more of the viewport; otherwise it stays a compact thumbnail so a
 /// single screenshot cannot push the whole conversation off screen.
 pub(super) fn image_max_rows(screen: &Screen) -> u16 {
-    if screen.prefs.is_open("*") {
+    if screen.is_open("*") {
         misa_terminal_ui::graphics::VERBOSE_ROWS
     } else {
         misa_terminal_ui::graphics::COMPACT_ROWS
@@ -187,8 +187,8 @@ impl DocumentIndex {
             panel: None,
             width: screen.width,
             theme: screen.theme.name.clone(),
-            opened: screen.prefs.opened.clone(),
-            components: screen.prefs.components.clone(),
+            opened: screen.opened().to_vec(),
+            components: screen.component_settings().clone(),
         };
         let mut work = Work::default();
         out.order = out.build(view, 0, 0, screen, &mut work);
@@ -251,7 +251,7 @@ impl DocumentIndex {
         let context = misa_lines::components::Context {
             theme: &screen.theme,
             columns: screen.width as usize,
-            settings: &screen.prefs.components,
+            settings: screen.component_settings(),
             values: &screen.values,
         };
         let component = screen
@@ -259,7 +259,7 @@ impl DocumentIndex {
             .render(&screen.local_presentation.model(&node, screen), &context);
         let footer = screen
             .components
-            .placement(&node.role, &screen.prefs.components)
+            .placement(&node.role, screen.component_settings())
             == misa_lines::components::Placement::Footer;
         // A section is a structural layout boundary. A message or collapsible,
         // however, is a complete semantic unit: keeping its children together
@@ -501,8 +501,8 @@ impl DocumentIndex {
 
     pub(super) fn current(&mut self, stream: Stream, screen: &Screen) {
         let id = stream.id.clone();
-        let tail = (thinking_stream(&stream.role) && !screen.prefs.is_open(&id))
-            .then_some(THINKING_TAIL_LINES);
+        let tail =
+            (thinking_stream(&stream.role) && !screen.is_open(&id)).then_some(THINKING_TAIL_LINES);
         let paint = Paint::of(&screen.theme, screen.width, &stream.role);
         let mut live = Live::of(
             Stream {
@@ -620,8 +620,8 @@ impl DocumentIndex {
         let mut rebuilt = false;
         if self.width != screen.width
             || self.theme != screen.theme.name
-            || self.opened != screen.prefs.opened
-            || self.components != screen.prefs.components
+            || self.opened != screen.opened()
+            || self.components != *screen.component_settings()
         {
             let streams: Vec<_> = self.live.values().map(|live| live.stream.clone()).collect();
             let (new, built) = Self::new(self.tree.snapshot(), screen);
@@ -717,7 +717,7 @@ impl DocumentIndex {
                 )
             })
             .collect::<Vec<_>>();
-        let mut footer = crate::buttons::footer(&screen.theme, &screen.prefs.dialogs, actions);
+        let mut footer = crate::buttons::footer(&screen.theme, screen.dialog_settings(), actions);
         footer.surface = screen.theme.surface("dialog");
         lines.push(footer);
         lines

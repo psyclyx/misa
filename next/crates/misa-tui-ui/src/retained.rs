@@ -212,9 +212,11 @@ impl Retained {
             top.truncate(screen.height as usize);
             let available = (screen.height as usize).saturating_sub(top.len() + status.len());
             let overlay = if screen.dialogs.modal() {
-                screen
-                    .dialogs
-                    .lines(&screen.theme, screen.width as usize, &screen.prefs.dialogs)
+                screen.dialogs.lines(
+                    &screen.theme,
+                    screen.width as usize,
+                    screen.dialog_settings(),
+                )
             } else {
                 self.document.surface_lines(screen)
             };
@@ -1073,7 +1075,7 @@ mod tests {
         let tail = all(&collapsed);
 
         let mut opened = Screen::new(40, 20);
-        opened.prefs.opened = vec!["msg1.thinking".into()];
+        opened.set_opened(vec!["msg1.thinking".into()]);
         let mut expanded = Retained::new(Node::section("session").id("session"), &opened);
         expanded.current(stream(), &opened);
 
@@ -1121,7 +1123,7 @@ mod tests {
         assert_eq!(narrow.len(), THINKING_TAIL_LINES);
 
         let mut opened = Screen::new(24, 20);
-        opened.prefs.opened = vec!["msg1.thinking".into()];
+        opened.set_opened(vec!["msg1.thinking".into()]);
         let mut expanded = Retained::new(Node::section("session").id("session"), &opened);
         expanded.current(stream(), &opened);
 
@@ -1195,7 +1197,7 @@ mod tests {
     #[test]
     fn an_opened_thinking_stream_keeps_every_line() {
         let mut screen = Screen::new(40, 12);
-        screen.prefs.opened = vec!["msg1.thinking".into()];
+        screen.set_opened(vec!["msg1.thinking".into()]);
         let mut retained = Retained::new(Node::section("session").id("session"), &screen);
         retained.current(
             Stream {
@@ -1213,7 +1215,7 @@ mod tests {
     #[test]
     fn an_opened_thinking_block_keeps_one_rail_not_the_parents() {
         let mut screen = Screen::new(60, 16);
-        screen.prefs.opened = vec!["msg.1.thinking".into()];
+        screen.set_opened(vec!["msg.1.thinking".into()]);
         let view = Node::section("session").id("session").child(
             Node::section("transcript").id("transcript").child(
                 Node::section("message.assistant").id("msg.1").child(
@@ -1524,7 +1526,7 @@ mod review_tests {
             )
             .unwrap();
 
-        screen.prefs.open_all();
+        screen.open_all();
         retained.local(&screen);
         let expected = misa_lines::render(
             &screen.resolve(&retained.document.snapshot()),

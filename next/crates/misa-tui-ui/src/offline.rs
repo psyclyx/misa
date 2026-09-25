@@ -106,8 +106,7 @@ pub async fn drive<C: Controller>(
                     Control::Consumed => {}
                     Control::Update(update) => apply(update, &mut retained, screen)?,
                     Control::Pass => {
-                        let Some(key) =
-                            crate::translate(key.code, key.modifiers, &screen.prefs.keymap)
+                        let Some(key) = crate::translate(key.code, key.modifiers, screen.keymap())
                         else {
                             continue;
                         };

@@ -33,7 +33,8 @@ pub mod terminal_loop;
 #[cfg(test)]
 thread_local! { static RESOLVE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
-use crate::prefs::Prefs;
+pub use crate::prefs::PreferencePersistence;
+use crate::prefs::{PreferenceState, Prefs};
 use crate::retained::Retained;
 use catalog::ComposerCatalog;
 pub use misa_kit::editor as ed;
@@ -229,12 +230,6 @@ impl DialogSurface {
     }
 }
 
-/// A frontend's durable preference effect. Implementations merge changes from a
-/// screen's last saved snapshot into the latest document, not over a stale copy.
-pub trait PreferencePersistence {
-    fn update(&self, base: &Prefs, next: &Prefs) -> Result<(), String>;
-}
-
 pub struct Screen {
     pub dialogs: DialogSurface,
     pub local_presentation: presentation::Local,
@@ -244,17 +239,11 @@ pub struct Screen {
     history_search: Option<HistorySearch>,
     pub theme: Theme,
     pub editor: ed::Editor,
-    pub draft_scope: Option<String>,
-    saved_prefs: Prefs,
-    persistence: Option<Box<dyn PreferencePersistence>>,
+    preferences: PreferenceState,
     /// The picker in front of the editor, when one is open.
     pub picker: Option<Picker>,
     /// Which command an accepted argument belongs to.
     pub pending_command: Option<String>,
-    /// What this client remembers between runs: the theme, the nodes somebody opened, the
-    /// draft, and which choices they reach for. Presentation state, all of it, and the reason
-    /// a restart no longer forgets where somebody was.
-    pub prefs: Prefs,
     pub notice: Option<String>,
     /// The reader's selection, when one is open. It is over the rendered body, so
     /// moving it needs the view — which is why `selection_key` takes one.
@@ -280,9 +269,7 @@ pub struct Screen {
 impl Screen {
     pub fn new(width: u16, height: u16) -> Screen {
         Screen {
-            draft_scope: None,
-            saved_prefs: Prefs::default(),
-            persistence: None,
+            preferences: PreferenceState::default(),
             local_presentation: presentation::stock(),
             components: Default::default(),
             values: Default::default(),
@@ -292,7 +279,6 @@ impl Screen {
             editor: ed::Editor::new(),
             picker: None,
             pending_command: None,
-            prefs: Prefs::default(),
             notice: None,
             dialogs: Default::default(),
             selection: None,
@@ -312,28 +298,57 @@ impl Screen {
     /// Neither construction nor saving chooses a filesystem path in the UI.
     pub fn remembering(prefs: Prefs, persistence: Box<dyn PreferencePersistence>) -> Screen {
         let mut screen = Screen::new(100, 40);
-        screen.theme = theme_named(&prefs.theme, &prefs.theme_overrides);
-        screen.editor.set_text(prefs.draft.clone());
-        screen.saved_prefs = prefs.clone();
-        screen.prefs = prefs;
-        screen.persistence = Some(persistence);
+        screen.preferences = PreferenceState::remembering(prefs, persistence);
+        screen.theme = screen.preferences.theme();
+        screen.editor.set_text(screen.preferences.initial_draft());
         screen
     }
 
     pub fn remember_draft(&mut self) {
-        if let Some(scope) = &self.draft_scope {
-            self.prefs
-                .drafts
-                .insert(scope.clone(), self.editor.text().into());
-        } else {
-            self.prefs.draft = self.editor.text().into();
-        }
+        self.preferences.remember_draft(self.editor.text());
     }
     pub fn enter_draft_scope(&mut self, scope: String) {
-        self.remember_draft();
-        self.editor
-            .set_text(self.prefs.drafts.get(&scope).cloned().unwrap_or_default());
-        self.draft_scope = Some(scope);
+        let draft = self.preferences.enter_scope(scope, self.editor.text());
+        self.editor.set_text(draft);
+    }
+    /// Activate a parked editor without overwriting its text with the saved draft.
+    pub fn activate_draft_scope(&mut self, scope: String) {
+        self.preferences.activate_scope(scope);
+    }
+    /// A newly visited scope has no parked editor; restore only its durable draft.
+    pub fn restore_draft_scope(&mut self, scope: String) {
+        let draft = self.preferences.restore_scope(scope);
+        self.editor.set_text(draft);
+    }
+    pub fn set_draft_for(&mut self, scope: String, text: String) {
+        self.preferences.set_draft_for(scope, text);
+    }
+    pub fn keymap(&self) -> &prefs::KeymapSettings {
+        self.preferences.keymap()
+    }
+    pub fn dialog_settings(&self) -> &prefs::DialogSettings {
+        self.preferences.dialogs()
+    }
+    pub fn component_settings(&self) -> &misa_lines::components::Settings {
+        self.preferences.components()
+    }
+    pub fn picker_settings(&self) -> &prefs::PickerSettings {
+        self.preferences.picker()
+    }
+    pub fn is_open(&self, id: &str) -> bool {
+        self.preferences.is_open(id)
+    }
+    pub fn any_open(&self) -> bool {
+        self.preferences.any_open()
+    }
+    pub fn opened(&self) -> &[String] {
+        self.preferences.opened()
+    }
+    pub fn set_opened(&mut self, opened: Vec<String>) {
+        self.preferences.set_opened(opened);
+    }
+    pub fn open_all(&mut self) {
+        self.preferences.open_all();
     }
 
     /// Write what this client knows, and say so when it cannot.
@@ -342,14 +357,8 @@ impl Screen {
     /// keystroke: a write per character is a write per character. The draft is the one thing
     /// that waits for somebody to stop typing, which is the price of this being a file.
     pub fn save(&mut self) {
-        if self.persistence.is_none() {
-            return;
-        }
-        self.remember_draft();
-        let persistence = self.persistence.as_ref().expect("checked above");
-        match persistence.update(&self.saved_prefs, &self.prefs) {
-            Ok(()) => self.saved_prefs = self.prefs.clone(),
-            Err(error) => self.notice = Some(error),
+        if let Err(error) = self.preferences.save(self.editor.text()) {
+            self.notice = Some(error);
         }
     }
 
@@ -394,12 +403,11 @@ impl Screen {
         self.picker = Some(
             Picker::inline(source, format!("/{command} {argument}"), accept)
                 .with_views(
-                    self.prefs
-                        .picker
+                    self.picker_settings()
                         .picker_views(source, misa_kit::picker::PickerPlacement::Inline),
                 )
-                .with_frecency(self.prefs.frecency())
-                .with_favorites(self.prefs.favorites()),
+                .with_frecency(self.preferences.frecency())
+                .with_favorites(self.preferences.favorites()),
         );
         if let Some((items, truncated)) = self.catalog.held(source) {
             self.picker
@@ -546,7 +554,7 @@ impl Screen {
             });
         }
         if let Some(action) = panel.actions.iter().find(|action| {
-            action.on == ActionOn::Click && self.prefs.dialogs.matches(&action.id, key)
+            action.on == ActionOn::Click && self.dialog_settings().matches(&action.id, key)
         }) {
             self.panel = None;
             self.notice = None;
@@ -562,7 +570,7 @@ impl Screen {
             .iter()
             .flat_map(|child| child.actions.iter())
             .any(|action| {
-                action.on == ActionOn::Submit && self.prefs.dialogs.matches(&action.id, key)
+                action.on == ActionOn::Submit && self.dialog_settings().matches(&action.id, key)
             })
         {
             return Some(self.submit_panel(panel));
@@ -577,7 +585,7 @@ impl Screen {
                 KeyOut::Quit
             }
             Key::Escape => self.dismiss_panel(panel),
-            Key::Submit if self.prefs.dialogs.matches("panel.submit", key) => {
+            Key::Submit if self.dialog_settings().matches("panel.submit", key) => {
                 self.submit_panel(panel)
             }
             Key::Backspace | Key::Delete => {
@@ -601,8 +609,7 @@ impl Screen {
         let close = panel.actions.iter().find(|action| {
             action.on == ActionOn::Click
                 && self
-                    .prefs
-                    .dialogs
+                    .dialog_settings()
                     .key(&action.id)
                     .is_some_and(|key| key == "escape")
         });
@@ -1103,9 +1110,9 @@ impl Screen {
         picker.set_items(self.command_candidates(), false);
         self.picker = Some(
             picker
-                .with_views(self.prefs.picker.picker_views("commands", placement))
-                .with_frecency(self.prefs.frecency())
-                .with_favorites(self.prefs.favorites()),
+                .with_views(self.picker_settings().picker_views("commands", placement))
+                .with_frecency(self.preferences.frecency())
+                .with_favorites(self.preferences.favorites()),
         );
         KeyOut::Local
     }
@@ -1115,12 +1122,11 @@ impl Screen {
         self.editor.set_text(":");
         let mut picker = Picker::over("actions", "Actions", Accept::Run)
             .with_views(
-                self.prefs
-                    .picker
+                self.picker_settings()
                     .picker_views("actions", misa_kit::picker::PickerPlacement::Overlay),
             )
-            .with_frecency(self.prefs.frecency())
-            .with_favorites(self.prefs.favorites());
+            .with_frecency(self.preferences.frecency())
+            .with_favorites(self.preferences.favorites());
         picker.set_items(
             Action::ALL
                 .iter()
@@ -1129,7 +1135,7 @@ impl Screen {
                     None => true,
                 })
                 .map(|action| {
-                    let keys = action.keys(&self.prefs.keymap);
+                    let keys = action.keys(self.keymap());
                     Choice {
                         value: action.id().to_string(),
                         label: action.label().to_string(),
@@ -1356,10 +1362,10 @@ impl Screen {
                 // the picker before it is dropped, because that is where the counts are.
                 if let Some(picker) = &self.picker {
                     let frecency = picker.frecency().clone();
-                    self.prefs.remember_frecency(&frecency);
+                    self.preferences.remember_frecency(&frecency);
                 }
                 self.picker = None;
-                self.prefs.remembered(&accepted.value);
+                self.preferences.remembered(&accepted.value);
                 self.pending_command = None;
                 self.save();
                 // An accepted argument completes the line rather than sending it, so
@@ -1404,11 +1410,7 @@ impl Screen {
                 }
             }
             PickerEffect::Favorited { value, favorite } => {
-                if favorite {
-                    self.prefs.favorites.insert(value.clone());
-                } else {
-                    self.prefs.favorites.remove(&value);
-                }
+                self.preferences.set_favorite(&value, favorite);
                 self.notice = Some(if favorite {
                     format!("favorite: {value}")
                 } else {
@@ -1423,10 +1425,10 @@ impl Screen {
     fn action(&mut self, action: Action) -> KeyOut {
         match action {
             Action::ToggleVerbose => {
-                if self.prefs.any_open() {
-                    self.prefs.close_all();
+                if self.any_open() {
+                    self.preferences.close_all();
                 } else {
-                    self.prefs.open_all();
+                    self.open_all();
                 }
                 self.save();
                 KeyOut::Local
@@ -1457,20 +1459,17 @@ impl Screen {
             Action::OpenModel => self.open_model_picker(),
             Action::OpenActionPalette => self.open_action_palette(),
             Action::ThemeDark => {
-                self.theme = theme_named("dark", &self.prefs.theme_overrides);
-                self.prefs.theme = "dark".into();
+                self.theme = self.preferences.select_theme("dark");
                 self.save();
                 KeyOut::Local
             }
             Action::ThemeLight => {
-                self.theme = theme_named("light", &self.prefs.theme_overrides);
-                self.prefs.theme = "light".into();
+                self.theme = self.preferences.select_theme("light");
                 self.save();
                 KeyOut::Local
             }
             Action::ThemePlain => {
-                self.theme = theme_named("plain", &self.prefs.theme_overrides);
-                self.prefs.theme = "plain".into();
+                self.theme = self.preferences.select_theme("plain");
                 self.save();
                 KeyOut::Local
             }
@@ -1504,12 +1503,11 @@ impl Screen {
             },
         )
         .with_views(
-            self.prefs
-                .picker
+            self.picker_settings()
                 .picker_views(source, misa_kit::picker::PickerPlacement::Overlay),
         )
-        .with_frecency(self.prefs.frecency())
-        .with_favorites(self.prefs.favorites());
+        .with_frecency(self.preferences.frecency())
+        .with_favorites(self.preferences.favorites());
         if let Some((items, truncated)) = self.catalog.held(source) {
             picker.set_items(items.clone(), *truncated);
         }
@@ -1554,7 +1552,7 @@ impl Screen {
             field.value = state.text.clone();
         }
         if let Kind::Collapsible { summary } = &node.kind {
-            let open = self.prefs.is_open(&node.id);
+            let open = self.is_open(&node.id);
             if open {
                 node.kind = Kind::Section;
             } else if node.label.is_none() && self.theme.rail(&node.role).is_some() {
@@ -1756,7 +1754,7 @@ fn format_money(micros: i64) -> String {
 
 fn picker_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
     let theme = &screen.theme;
-    let settings = &screen.prefs.picker;
+    let settings = screen.picker_settings();
     let width = screen.width as usize;
     let padding = settings.padding.min(width.saturating_sub(1));
     let content_width = width.saturating_sub(padding * 2).max(1);
@@ -2075,11 +2073,11 @@ pub(crate) fn completion_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
         let selected = index == picker.selected_index();
         let mut spans = vec![(
             screen.theme.role("plain"),
-            screen.prefs.picker.row.inline_prefix.clone(),
+            screen.picker_settings().row.inline_prefix.clone(),
         )];
         spans.extend(choice_spans(
             &screen.theme,
-            &screen.prefs.picker.row,
+            &screen.picker_settings().row,
             candidate,
             index,
             selected,
@@ -2104,25 +2102,25 @@ pub(crate) fn completion_lines(screen: &Screen, picker: &Picker) -> Vec<Line> {
         }
     }
     if picker.is_truncated() {
-        let hints = picker_hints(&screen.prefs.picker, picker, true);
+        let hints = picker_hints(screen.picker_settings(), picker, true);
         let mut spans = vec![(
             screen.theme.role("plain"),
-            screen.prefs.picker.row.inline_prefix.clone(),
+            screen.picker_settings().row.inline_prefix.clone(),
         )];
         spans.extend(crate::buttons::key_reference(
             &screen.theme,
-            &screen.prefs.picker.hint_separator,
+            &screen.picker_settings().hint_separator,
             hints
                 .iter()
                 .map(|hint| (hint.key.as_str(), hint.label.as_str())),
         ));
         spans.push((
             screen.theme.role("plain"),
-            screen.prefs.picker.hint_separator.clone(),
+            screen.picker_settings().hint_separator.clone(),
         ));
         spans.push((
             screen.theme.role("choice.hint"),
-            screen.prefs.picker.more_label.clone(),
+            screen.picker_settings().more_label.clone(),
         ));
         lines.push(Line {
             surface: None,
@@ -2522,16 +2520,12 @@ mod tests {
     fn panel_actions_use_configured_keys_for_both_close_and_submit() {
         let asking = panel_view(true);
         let mut screen = screen();
-        screen
-            .prefs
-            .dialogs
-            .action_keys
-            .insert("panel.close".into(), "q".into());
-        screen
-            .prefs
-            .dialogs
-            .action_keys
-            .insert("panel.submit".into(), "s".into());
+        screen.preferences.configure_dialogs(|dialogs| {
+            dialogs.action_keys.insert("panel.close".into(), "q".into());
+            dialogs
+                .action_keys
+                .insert("panel.submit".into(), "s".into());
+        });
 
         for character in "abc".chars() {
             assert_eq!(
@@ -3151,7 +3145,7 @@ mod tests {
             picker.move_selection(1);
         }
         assert_eq!(screen.key(Key::Submit), KeyOut::Local);
-        assert!(screen.prefs.any_open());
+        assert!(screen.any_open());
         assert!(screen.picker.is_none());
     }
 
@@ -3193,18 +3187,20 @@ mod tests {
     #[test]
     fn picker_copy_and_row_grammar_are_client_composition() {
         let mut screen = screen();
-        screen.prefs.picker.hints = vec![crate::prefs::PickerHint {
-            id: "accept".into(),
-            key: "enter".into(),
-            label: "choose it".into(),
-            only_with_views: false,
-            inline: true,
-            overlay: true,
-        }];
-        screen.prefs.picker.row.selected_marker = "[x]".into();
-        screen.prefs.picker.row.marker = "[ ]".into();
-        screen.prefs.picker.row.marker_separator = "|".into();
-        screen.prefs.picker.row.detail_separator = " :: ".into();
+        screen.preferences.configure_picker(|picker| {
+            picker.hints = vec![crate::prefs::PickerHint {
+                id: "accept".into(),
+                key: "enter".into(),
+                label: "choose it".into(),
+                only_with_views: false,
+                inline: true,
+                overlay: true,
+            }];
+            picker.row.selected_marker = "[x]".into();
+            picker.row.marker = "[ ]".into();
+            picker.row.marker_separator = "|".into();
+            picker.row.detail_separator = " :: ".into();
+        });
         screen.key(Key::Char('/'));
         let candidates = screen.command_candidates();
         screen

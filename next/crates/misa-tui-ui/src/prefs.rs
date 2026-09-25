@@ -35,6 +35,164 @@ use serde::{Deserialize, Serialize};
 
 use misa_kit::picker::Frecency;
 
+/// Durable preference effect supplied by the frontend. The adapter atomically merges
+/// changes from `base` to `next` against its latest document.
+pub trait PreferencePersistence {
+    fn update(&self, base: &Prefs, next: &Prefs) -> Result<(), String>;
+}
+
+/// The terminal's preference transaction and its active draft scope. The saved snapshot
+/// is advanced only after a successful update, so a failed write can be retried.
+pub struct PreferenceState {
+    current: Prefs,
+    saved: Prefs,
+    persistence: Option<Box<dyn PreferencePersistence>>,
+    draft_scope: Option<String>,
+}
+
+impl Default for PreferenceState {
+    fn default() -> Self {
+        Self {
+            current: Prefs::default(),
+            saved: Prefs::default(),
+            persistence: None,
+            draft_scope: None,
+        }
+    }
+}
+
+impl PreferenceState {
+    pub fn remembering(current: Prefs, persistence: Box<dyn PreferencePersistence>) -> Self {
+        Self {
+            saved: current.clone(),
+            current,
+            persistence: Some(persistence),
+            draft_scope: None,
+        }
+    }
+
+    pub fn theme(&self) -> misa_render::Theme {
+        crate::theme_named(&self.current.theme, &self.current.theme_overrides)
+    }
+
+    pub fn select_theme(&mut self, name: &str) -> misa_render::Theme {
+        self.current.theme = name.into();
+        self.theme()
+    }
+
+    pub fn keymap(&self) -> &KeymapSettings {
+        &self.current.keymap
+    }
+    pub fn dialogs(&self) -> &DialogSettings {
+        &self.current.dialogs
+    }
+    pub fn components(&self) -> &misa_lines::components::Settings {
+        &self.current.components
+    }
+    pub fn picker(&self) -> &PickerSettings {
+        &self.current.picker
+    }
+    pub fn is_open(&self, id: &str) -> bool {
+        self.current.is_open(id)
+    }
+    pub fn any_open(&self) -> bool {
+        self.current.any_open()
+    }
+    pub fn opened(&self) -> &[String] {
+        &self.current.opened
+    }
+    pub fn set_opened(&mut self, opened: Vec<String>) {
+        self.current.opened = opened;
+    }
+    pub fn toggle_open(&mut self, id: &str) {
+        self.current.toggle(id);
+    }
+    pub fn open_all(&mut self) {
+        self.current.open_all();
+    }
+    pub fn close_all(&mut self) {
+        self.current.close_all();
+    }
+    pub fn frecency(&self) -> Frecency {
+        self.current.frecency()
+    }
+    pub fn favorites(&self) -> impl Iterator<Item = String> + '_ {
+        self.current.favorites()
+    }
+    pub fn remember_frecency(&mut self, frecency: &Frecency) {
+        self.current.remember_frecency(frecency);
+    }
+    pub fn remembered(&mut self, value: &str) {
+        self.current.remembered(value);
+    }
+    pub fn set_favorite(&mut self, value: &str, favorite: bool) {
+        if favorite {
+            self.current.favorites.insert(value.into());
+        } else {
+            self.current.favorites.remove(value);
+        }
+    }
+
+    pub fn remember_draft(&mut self, text: &str) {
+        if let Some(scope) = &self.draft_scope {
+            self.current.drafts.insert(scope.clone(), text.into());
+        } else {
+            self.current.draft = text.into();
+        }
+    }
+
+    pub fn initial_draft(&self) -> &str {
+        &self.current.draft
+    }
+    pub fn draft_for(&self, scope: &str) -> &str {
+        self.current
+            .drafts
+            .get(scope)
+            .map(String::as_str)
+            .unwrap_or_default()
+    }
+    pub fn set_draft_for(&mut self, scope: String, text: String) {
+        self.current.drafts.insert(scope, text);
+    }
+    pub fn activate_scope(&mut self, scope: String) {
+        self.draft_scope = Some(scope);
+    }
+    pub fn enter_scope(&mut self, scope: String, text: &str) -> String {
+        self.remember_draft(text);
+        self.restore_scope(scope)
+    }
+
+    pub fn restore_scope(&mut self, scope: String) -> String {
+        let draft = self.draft_for(&scope).to_owned();
+        self.activate_scope(scope);
+        draft
+    }
+
+    /// No offline writes. On failure keep the original baseline for a later retry;
+    /// the frontend adapter owns atomic merge/conflict handling against the latest file.
+    pub fn save(&mut self, draft: &str) -> Result<(), String> {
+        if self.persistence.is_none() {
+            return Ok(());
+        }
+        self.remember_draft(draft);
+        self.persistence
+            .as_ref()
+            .expect("checked above")
+            .update(&self.saved, &self.current)?;
+        self.saved = self.current.clone();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configure_dialogs(&mut self, f: impl FnOnce(&mut DialogSettings)) {
+        f(&mut self.current.dialogs);
+    }
+    #[cfg(test)]
+    pub(crate) fn configure_picker(&mut self, f: impl FnOnce(&mut PickerSettings)) {
+        f(&mut self.current.picker);
+    }
+}
+
 /// Terminal bindings are named by semantic action. The translator consumes
 /// this table, and the action palette displays the same table, so changing a
 /// binding cannot leave a decorative key reference behind.
@@ -541,6 +699,41 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct Attempts(std::cell::RefCell<Vec<(Prefs, Prefs)>>);
+    impl PreferencePersistence for std::rc::Rc<Attempts> {
+        fn update(&self, base: &Prefs, next: &Prefs) -> Result<(), String> {
+            let mut attempts = self.0.borrow_mut();
+            attempts.push((base.clone(), next.clone()));
+            if attempts.len() == 1 {
+                Err("read-only preferences".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn failed_save_retries_from_the_original_snapshot_without_writing_offline() {
+        let mut offline = PreferenceState::default();
+        offline.select_theme("plain");
+        offline.save("offline draft").unwrap();
+        assert_eq!(offline.current.draft, "");
+
+        let attempts = std::rc::Rc::new(Attempts::default());
+        let mut state = PreferenceState::remembering(Prefs::default(), Box::new(attempts.clone()));
+        state.select_theme("light");
+        assert_eq!(state.save("first"), Err("read-only preferences".into()));
+        state.save("second").unwrap();
+        state.save("third").unwrap();
+        let calls = attempts.0.borrow();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].0, Prefs::default());
+        assert_eq!(calls[1].0, Prefs::default());
+        assert_eq!(calls[1].1.draft, "second");
+        assert_eq!(calls[2].0, calls[1].1);
+    }
 
     #[derive(Default)]
     struct Memory(std::cell::RefCell<Option<String>>);

@@ -75,7 +75,7 @@ impl Screen {
             content: self.dialogs.lines(
                 &self.ui.theme,
                 self.ui.width as usize,
-                &self.ui.prefs.dialogs,
+                self.ui.dialog_settings(),
             ),
         };
     }

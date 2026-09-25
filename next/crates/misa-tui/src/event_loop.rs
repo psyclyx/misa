@@ -175,7 +175,7 @@ async fn drive_with_clipboard(
                 .find(|line| line.node.as_deref() == Some("indicators"))
             {
                 let selected =
-                    misa_lines::components::animation_for(&screen.prefs.components, "activity")
+                    misa_lines::components::animation_for(screen.component_settings(), "activity")
                         .as_deref()
                         .and_then(|id| animations.frame(id, true, frame as u64));
                 if let Some(selected) = selected
@@ -219,9 +219,8 @@ async fn drive_with_clipboard(
                             );
                             if !scope.is_empty() { parked.insert(scope,old); }
                             if let Some((r,c,d,e,p,command,panel,selection,scroll,follow,attachments,upload_count,epoch))=parked.remove(&next) {
-                                retained=r;contributions=c;screen.dialogs=d;screen.editor=e;screen.picker=p;screen.pending_command=command;screen.panel=panel;screen.selection=selection;screen.scroll=scroll;screen.follow=follow;pending=attachments;uploads=upload_count;generation=epoch;
-                            } else { let draft = screen.prefs.drafts.get(&next).cloned().unwrap_or_default(); screen.editor.set_text(draft);screen.scroll=0;screen.follow=true;uploads=0;generation=generation.wrapping_add(1); }
-                            screen.draft_scope=Some(next.clone());
+                                retained=r;contributions=c;screen.dialogs=d;screen.editor=e;screen.picker=p;screen.pending_command=command;screen.panel=panel;screen.selection=selection;screen.scroll=scroll;screen.follow=follow;pending=attachments;uploads=upload_count;generation=epoch;screen.activate_draft_scope(next.clone());
+                            } else { screen.restore_draft_scope(next.clone());screen.scroll=0;screen.follow=true;uploads=0;generation=generation.wrapping_add(1); }
                             scope=next;
                         }
                     },
@@ -433,7 +432,7 @@ async fn drive_with_clipboard(
                         })
                     }
                 } else {
-                    let Some(key) = crate::translate(key.code, key.modifiers, &screen.prefs.keymap)
+                    let Some(key) = crate::translate(key.code, key.modifiers, screen.keymap())
                     else {
                         continue;
                     };
@@ -466,7 +465,7 @@ async fn drive_with_clipboard(
                             fields: vec![],
                         })
                     } else {
-                        let dialog_keys = screen.prefs.dialogs.clone();
+                        let dialog_keys = screen.dialog_settings().clone();
                         match screen.dialogs.key(&key, &dialog_keys) {
                             Some(crate::dialogs::DialogOut::Ui(out)) => out,
                             Some(crate::dialogs::DialogOut::DaemonInvoke {
@@ -1207,7 +1206,7 @@ mod scope_tests {
             changed,
         };
         let mut screen = Screen::new(80, 24);
-        screen.prefs.drafts.insert("A".into(), "draft A".into());
+        screen.set_draft_for("A".into(), "draft A".into());
         screen.dialogs.update(
             "secret".into(),
             1,
@@ -1228,10 +1227,10 @@ mod scope_tests {
         screen.dialogs.open();
         screen
             .dialogs
-            .key(&crate::Key::Char('s'), &screen.prefs.dialogs.clone());
+            .key(&crate::Key::Char('s'), &screen.dialog_settings().clone());
         screen
             .dialogs
-            .key(&crate::Key::Escape, &screen.prefs.dialogs.clone());
+            .key(&crate::Key::Escape, &screen.dialog_settings().clone());
         let (keys, events) = mpsc::channel(8);
         let script = async move {
             for scope in ["A", "B"] {
@@ -1269,11 +1268,11 @@ mod scope_tests {
         screen.dialogs.open();
         screen
             .dialogs
-            .key(&crate::Key::Char('t'), &screen.prefs.dialogs.clone());
+            .key(&crate::Key::Char('t'), &screen.dialog_settings().clone());
         let text = misa_lines::to_plain(&screen.dialogs.lines(
             &screen.theme,
             80,
-            &screen.prefs.dialogs,
+            screen.dialog_settings(),
         ));
         assert!(text.contains("••"), "hidden secret draft was lost: {text}");
     }

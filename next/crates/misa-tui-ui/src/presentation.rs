@@ -46,7 +46,7 @@ pub fn stock() -> Local {
                         .child(Node::new(
                             "value.text",
                             Kind::Fact {
-                                value: Value::str(if screen.prefs.any_open() {
+                                value: Value::str(if screen.any_open() {
                                     "verbose"
                                 } else {
                                     "summary"
