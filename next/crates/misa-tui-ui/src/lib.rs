@@ -21,8 +21,10 @@
 
 mod catalog;
 mod composer;
+mod reader;
 pub use catalog::Catalog;
 pub use composer::{Composer, ParkedInput};
+pub use reader::Reader;
 
 pub mod buttons;
 pub mod chrome;
@@ -237,19 +239,10 @@ pub struct Screen {
     #[cfg(test)]
     composer_settings_refreshes: usize,
     pub notice: Option<String>,
-    /// The reader's selection, when one is open. It is over the rendered body, so
-    /// moving it needs the view — which is why `selection_key` takes one.
-    pub selection: Option<select::Selection>,
+    reader: Reader,
     /// What has been typed into an open panel, and which panel it is for.
     pub panel: Option<PanelInput>,
     pub location: String,
-    pub scroll: usize,
-    /// Whether the viewport follows new output. Scrolling away stops it, which is
-    /// what lets somebody read while a model is still writing.
-    pub follow: bool,
-    /// A monotonic count of explicit scroll commands, so the retained viewport can
-    /// tell a reader's scroll from a layout shift under the same row number.
-    pub scroll_intent: u64,
     pub width: u16,
     pub height: u16,
     /// The kitty graphics cache and planner. Terminal-specific, so it lives on the
@@ -271,12 +264,9 @@ impl Screen {
             composer: Composer::default(),
             notice: None,
             dialogs: Default::default(),
-            selection: None,
+            reader: Reader::new(),
             panel: None,
             location: String::new(),
-            scroll: 0,
-            follow: true,
-            scroll_intent: 0,
             width,
             height,
             graphics: graphics::Kitty::new(false, graphics::CellSize::default()),
@@ -392,26 +382,51 @@ impl Screen {
         }
         self.selection_in(&self.body(view), key)
     }
-    fn reading_key(&self, key: &Key) -> bool {
-        self.selection.is_some() || self.composer.reader_key(key)
+    pub(crate) fn reading_key(&self, key: &Key) -> bool {
+        self.reader.accepts(self.composer.reader_key(key))
     }
-    fn selection_in(&mut self, body: &select::Body, key: &Key) -> Option<KeyOut> {
-        if self.selection.is_some() {
-            return Some(self.selecting(body, key));
-        }
-        // `v` and `y` belong to a reader, but only where a vim reader expects them: in
-        // normal mode, so typing into the composer is never stolen.
-        if self.composer.mode() != ed::Mode::Normal {
-            return None;
-        }
-        match key {
-            Key::StartSelection | Key::Char('v') => {
-                self.begin_selection(body);
-                Some(KeyOut::Local)
-            }
-            Key::Char('y') if self.composer.is_empty() => Some(self.copy_body(body)),
-            _ => None,
-        }
+    pub(crate) fn selection_in(&mut self, body: &select::Body, key: &Key) -> Option<KeyOut> {
+        self.reader.key(
+            body,
+            key,
+            self.composer.mode(),
+            self.composer.is_empty(),
+            &mut self.notice,
+        )
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.reader.has_selection()
+    }
+    pub fn clear_selection(&mut self) {
+        self.reader.clear_selection();
+    }
+    /// Requested position and selection head for Retained's viewport resolution.
+    pub fn viewport_request(
+        &self,
+        room: usize,
+    ) -> misa_terminal_ui::viewport::Request<select::Spot> {
+        self.reader.request(room)
+    }
+    pub fn viewport_following(&self) -> bool {
+        self.reader.following()
+    }
+    /// Read back Retained's physical position after a frame, without a new intent.
+    pub fn viewport_resolved(&mut self, scroll: usize, follow: bool) {
+        self.reader.resolved(scroll, follow);
+    }
+    pub fn reset_reader_viewport(&mut self) {
+        self.reader.reset_viewport();
+    }
+    /// Swap the entire reader state at a scope boundary, including its intent epoch.
+    pub fn park_reader(&mut self) -> Reader {
+        std::mem::replace(&mut self.reader, Reader::new())
+    }
+    pub fn restore_reader(&mut self, reader: Reader) {
+        self.reader = reader;
+    }
+    pub fn selected_row(&self, body: &select::Body, row: usize) -> Option<(usize, usize)> {
+        self.reader.selected_row(body, row)
     }
 
     /// A key that concerns an open panel, if one is open.
@@ -575,73 +590,6 @@ impl Screen {
         })
     }
 
-    /// Start a selection at the bottom, which is where somebody following the tail is
-    /// already looking.
-    fn begin_selection(&mut self, body: &select::Body) {
-        let row = body.len().saturating_sub(1);
-        self.selection = Some(select::Selection::caret(select::Spot::new(row, 0)));
-        self.notice = Some("copying — y takes it, esc stops".to_string());
-    }
-
-    /// Copy the whole body, for a reader who did not bother to select anything.
-    fn copy_body(&mut self, body: &select::Body) -> KeyOut {
-        let mut everything = select::Selection::caret(select::Spot::new(0, 0));
-        everything.document_end(&body);
-        let text = everything.text(&body);
-        self.notice = Some(format!("copied {} bytes", text.len()));
-        KeyOut::Copy(text)
-    }
-
-    fn selecting(&mut self, body: &select::Body, key: &Key) -> KeyOut {
-        let Some(mut selection) = self.selection.take() else {
-            return KeyOut::Local;
-        };
-        match key {
-            Key::Escape | Key::Char('q') | Key::Interrupt | Key::Eof => {
-                self.notice = None;
-                return KeyOut::Local;
-            }
-            Key::Char('y') => {
-                let text = selection.text(&body);
-                self.notice = Some(format!("copied {} bytes", text.len()));
-                return KeyOut::Copy(text);
-            }
-            // `o` drops the anchor where the caret is; `v` cycles what the range means.
-            Key::Char('o') => selection.restart(),
-            Key::Char('v') => selection.set_kind(selection.kind().next()),
-            Key::Char('a') => selection.select_node(&body),
-            Key::Char('j') => selection.down(&body),
-            Key::Char('k') => selection.up(&body),
-            Key::Char('g') => selection.document_start(&body),
-            Key::Char('G') => selection.document_end(&body),
-            Key::Char('h') => selection.left(&body),
-            Key::Char('l') => selection.right(&body),
-            Key::Char('J') | Key::Submit | Key::Newline => selection.select_node(&body),
-            Key::Char('K') | Key::Backspace => selection.node_back(&body),
-            Key::Char('w') => selection.word_right(&body),
-            Key::Char('b') => selection.word_left(&body),
-            Key::Char('n') => selection.node_forward(&body),
-            Key::Char('p') => selection.node_back(&body),
-            Key::Motion(ed::Motion::Left) => selection.left(&body),
-            Key::Motion(ed::Motion::Right) => selection.right(&body),
-            Key::Motion(ed::Motion::Up) => selection.up(&body),
-            Key::Motion(ed::Motion::Down) => selection.down(&body),
-            Key::Motion(ed::Motion::LineStart) => selection.line_start(&body),
-            Key::Motion(ed::Motion::LineEnd) => selection.line_end(&body),
-            Key::Motion(ed::Motion::WordNext) => selection.word_right(&body),
-            Key::Motion(ed::Motion::WordPrevious) => selection.word_left(&body),
-            Key::Motion(ed::Motion::First) => selection.document_start(&body),
-            Key::Motion(ed::Motion::Last) => selection.document_end(&body),
-            Key::Extend(ed::Motion::Left) => selection.left(&body),
-            Key::Extend(ed::Motion::Right) => selection.right(&body),
-            Key::Extend(ed::Motion::Up) => selection.up(&body),
-            Key::Extend(ed::Motion::Down) => selection.down(&body),
-            _ => {}
-        }
-        self.selection = Some(selection);
-        KeyOut::Local
-    }
-
     fn composer_settings(&self) -> composer::Settings {
         composer::Settings {
             picker: self.preferences.picker().clone(),
@@ -689,11 +637,10 @@ impl Screen {
         if !self.composer.has_picker() {
             match key {
                 Key::ScrollPage(delta) => {
-                    if self.composer.searching() {
+                    if self.reader.page(delta, self.composer.searching()) {
                         self.composer.cancel_history_search();
                         self.notice = None;
                     }
-                    self.scroll_by(delta);
                     return KeyOut::Local;
                 }
                 Key::Action(action) if !self.composer.searching() => return self.action(action),
@@ -721,6 +668,9 @@ impl Screen {
     }
 
     fn action(&mut self, action: Action) -> KeyOut {
+        if self.reader.action(action) {
+            return KeyOut::Local;
+        }
         match action {
             Action::ToggleVerbose => {
                 if self.any_open() {
@@ -735,24 +685,8 @@ impl Screen {
                 command: "session.effort.cycle".into(),
                 input: misa_value::Value::map([]),
             },
-            Action::ScrollUp => {
-                self.scroll_by(-10);
-                KeyOut::Local
-            }
-            Action::ScrollDown => {
-                self.scroll_by(10);
-                KeyOut::Local
-            }
-            Action::ScrollTop => {
-                self.follow = false;
-                self.scroll = 0;
-                self.scroll_intent = self.scroll_intent.wrapping_add(1);
-                KeyOut::Local
-            }
-            Action::ScrollBottom => {
-                self.follow = true;
-                self.scroll_intent = self.scroll_intent.wrapping_add(1);
-                KeyOut::Local
+            Action::ScrollUp | Action::ScrollDown | Action::ScrollTop | Action::ScrollBottom => {
+                unreachable!()
             }
             Action::OpenModel => self.composer_decision(true, Composer::open_model_picker),
             Action::OpenActionPalette => {
@@ -785,13 +719,6 @@ impl Screen {
             }),
             Action::Quit => KeyOut::Quit,
         }
-    }
-
-    fn scroll_by(&mut self, delta: isize) {
-        let next = self.scroll as isize + delta;
-        self.scroll = next.max(0) as usize;
-        self.follow = false;
-        self.scroll_intent = self.scroll_intent.wrapping_add(1);
     }
 
     /// Apply the client's own decisions to the tree the session sent.
@@ -2500,35 +2427,60 @@ mod tests {
     #[test]
     fn scrolling_away_stops_following_the_tail() {
         let mut screen = screen();
-        assert!(screen.follow);
+        assert!(screen.viewport_following());
         screen.key(Key::ScrollPage(-5));
-        assert!(!screen.follow, "the viewport kept following after a scroll");
+        assert!(
+            !screen.viewport_following(),
+            "the viewport kept following after a scroll"
+        );
         screen.key(Key::Action(Action::ScrollBottom));
-        assert!(screen.follow);
+        assert!(screen.viewport_following());
     }
 
     #[test]
     fn reverse_search_scroll_cancels_search_and_moves_the_reader_but_picker_owns_scroll() {
         let mut screen = screen();
         screen.composer.set_text("draft");
-        screen.scroll = 20;
+        screen.reader.fixture(20, true, 0);
         assert_eq!(screen.key(Key::HistorySearch), KeyOut::Local);
         assert!(screen.composer.searching());
         assert_eq!(screen.key(Key::ScrollPage(-3)), KeyOut::Local);
         assert!(!screen.composer.searching());
-        assert_eq!(screen.scroll, 17);
-        assert!(!screen.follow);
-        assert_eq!(screen.scroll_intent, 1);
+        assert_eq!(screen.viewport_request(0).scroll, 17);
+        assert!(!screen.viewport_following());
+        assert_eq!(screen.viewport_request(0).intent, 1);
         assert_eq!(screen.notice, None);
         assert_eq!(screen.composer.text(), "draft");
 
         screen.key(Key::Action(Action::OpenCommands));
         assert!(screen.composer.has_picker());
-        screen.follow = true;
+        screen.viewport_resolved(17, true);
         assert_eq!(screen.key(Key::ScrollPage(-3)), KeyOut::Local);
-        assert_eq!(screen.scroll, 17);
-        assert!(screen.follow);
-        assert_eq!(screen.scroll_intent, 1);
+        assert_eq!(screen.viewport_request(0).scroll, 17);
+        assert!(screen.viewport_following());
+        assert_eq!(screen.viewport_request(0).intent, 1);
+    }
+
+    #[test]
+    fn parked_reader_keeps_selection_and_viewport_intent_per_scope() {
+        let mut screen = screen();
+        screen.composer.set_mode(ed::Mode::Normal);
+        screen.key(Key::ScrollPage(-3));
+        screen.selection_key(&view(), &Key::Char('v'));
+        let parked = screen.park_reader();
+        assert!(!screen.has_selection());
+        assert!(screen.viewport_following());
+        assert_eq!(screen.viewport_request(4).intent, 0);
+
+        screen.key(Key::ScrollPage(2));
+        screen.restore_reader(parked);
+        assert!(screen.has_selection());
+        assert_eq!(screen.viewport_request(4).scroll, 0);
+        assert!(!screen.viewport_following());
+        assert_eq!(screen.viewport_request(4).intent, 1);
+        screen.viewport_resolved(7, false);
+        assert_eq!(screen.viewport_request(4).scroll, 7);
+        assert_eq!(screen.viewport_request(4).intent, 1);
     }
 
     #[test]
@@ -2701,7 +2653,7 @@ mod tests {
             screen.selection_key(&view, &Key::Char('v')),
             Some(KeyOut::Local)
         );
-        assert!(screen.selection.is_some(), "v opened no selection");
+        assert!(screen.has_selection(), "v opened no selection");
         screen.selection_key(&view, &Key::Motion(ed::Motion::First));
         match screen.selection_key(&view, &Key::Char('y')) {
             Some(KeyOut::Copy(text)) => {
@@ -2713,10 +2665,7 @@ mod tests {
             }
             other => panic!("expected a copy, got {other:?}"),
         }
-        assert!(
-            screen.selection.is_none(),
-            "the selection outlived the copy"
-        );
+        assert!(!screen.has_selection(), "the selection outlived the copy");
     }
 
     #[test]
@@ -2729,7 +2678,7 @@ mod tests {
             screen.selection_key(&view, &Key::Escape),
             Some(KeyOut::Local)
         );
-        assert!(screen.selection.is_none());
+        assert!(!screen.has_selection());
         assert!(screen.notice.is_none(), "the notice outlived the selection");
         assert_eq!(screen.composer.text(), "", "escape reached the composer");
     }

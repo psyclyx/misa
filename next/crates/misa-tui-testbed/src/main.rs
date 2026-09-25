@@ -216,8 +216,7 @@ impl Controller for Testbed {
             _ => false,
         };
         if changed {
-            screen.scroll = 0;
-            screen.follow = true;
+            screen.reset_reader_viewport();
             self.label(screen);
             Control::Update(Update::Reset(fixture(Scene::ALL[self.scene])))
         } else {

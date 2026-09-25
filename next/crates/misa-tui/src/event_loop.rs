@@ -163,8 +163,7 @@ async fn drive_with_clipboard(
         // The viewport resolved a physical first row from the semantic anchor; keep
         // `scroll` at that row so the next reader delta is relative to what was shown,
         // and mirror back whether a scroll reached the tail and resumed following.
-        screen.scroll = retained.resolved_scroll();
-        screen.follow = retained.following();
+        screen.viewport_resolved(retained.resolved_scroll(), retained.following());
         let mut rendered = rendered;
         let lines = &mut rendered.lines;
         if retained.has_turn() {
@@ -192,7 +191,7 @@ async fn drive_with_clipboard(
                 match update {
                     Some(Update::View(crate::Presentation::Forget(id)))=>{
                         parked.remove(&id);
-                        if scope==id {scope.clear();screen.composer.set_text("");screen.composer.clear_picker();screen.dialogs=Default::default();screen.panel=None;screen.selection=None;contributions.clear();pending.clear();uploads=0;}
+                        if scope==id {scope.clear();screen.composer.set_text("");screen.composer.clear_picker();screen.dialogs=Default::default();screen.panel=None;screen.clear_selection();contributions.clear();pending.clear();uploads=0;}
                     },
                     Some(Update::View(crate::Presentation::Documents(documents))) => {
                         for (id,update) in documents {
@@ -213,13 +212,13 @@ async fn drive_with_clipboard(
                                 std::mem::replace(&mut retained, crate::retained::Retained::new(misa_proto::Node::section("session").id("session"), screen)),
                                 std::mem::take(&mut contributions), std::mem::take(&mut screen.dialogs),
                                 screen.composer.park(), screen.panel.take(),
-                                screen.selection.take(), screen.scroll, screen.follow,
+                                screen.park_reader(),
                                 std::mem::take(&mut pending), uploads, generation,
                             );
                             if !scope.is_empty() { parked.insert(scope,old); }
-                            if let Some((r,c,d,composer,panel,selection,scroll,follow,attachments,upload_count,epoch))=parked.remove(&next) {
-                                retained=r;contributions=c;screen.dialogs=d;screen.composer.restore(composer);screen.panel=panel;screen.selection=selection;screen.scroll=scroll;screen.follow=follow;pending=attachments;uploads=upload_count;generation=epoch;screen.activate_draft_scope(next.clone());
-                            } else { screen.restore_draft_scope(next.clone());screen.scroll=0;screen.follow=true;uploads=0;generation=generation.wrapping_add(1); }
+                            if let Some((r,c,d,composer,panel,reader,attachments,upload_count,epoch))=parked.remove(&next) {
+                                retained=r;contributions=c;screen.dialogs=d;screen.composer.restore(composer);screen.panel=panel;screen.restore_reader(reader);pending=attachments;uploads=upload_count;generation=epoch;screen.activate_draft_scope(next.clone());
+                            } else { screen.restore_draft_scope(next.clone());screen.reset_reader_viewport();uploads=0;generation=generation.wrapping_add(1); }
                             scope=next;
                         }
                     },
@@ -443,7 +442,7 @@ async fn drive_with_clipboard(
                         && !screen.composer.has_picker()
                         && !screen.dialogs.focused()
                         && screen.panel.is_none()
-                        && screen.selection.is_none()
+                        && !screen.has_selection()
                         && !has_action(&view, "turn.cancel")
                     {
                         screen.composer.set_text("");

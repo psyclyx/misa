@@ -6,7 +6,7 @@ use document::{DocumentIndex, Mutation};
 use misa_lines::Line;
 use misa_proto::Node;
 use misa_proto::sync::{Stream, StreamUpdate, ViewOp};
-use misa_terminal_ui::viewport::{Head, Request, Viewport};
+use misa_terminal_ui::viewport::Viewport;
 use std::ops::AddAssign;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +36,7 @@ impl Retained {
         Self {
             document,
             selection_body: None,
-            viewport: Viewport::new(screen.follow),
+            viewport: Viewport::new(screen.viewport_following()),
             work,
         }
     }
@@ -103,19 +103,7 @@ impl Retained {
         }
     }
     fn viewport_start(&mut self, screen: &Screen, room: usize) -> usize {
-        let request = Request {
-            scroll: screen.scroll,
-            follow: screen.follow,
-            intent: screen.scroll_intent,
-            room,
-            head: screen.selection.as_ref().map(|selection| {
-                let identity = selection.head();
-                Head {
-                    identity,
-                    row: identity.row,
-                }
-            }),
-        };
+        let request = screen.viewport_request(room);
         let document = &self.document;
         self.viewport.resolve(
             request,
@@ -161,13 +149,13 @@ impl Retained {
         let mutation = self.document.reset(tree, streams, screen);
         self.work = mutation.work;
         self.selection_body = None;
-        self.viewport = Viewport::new(screen.follow);
+        self.viewport = Viewport::new(screen.viewport_following());
         self.viewport.layout_changed();
     }
     pub fn local(&mut self, screen: &Screen) {
         let mutation = self.document.local(screen);
         if mutation.rebuilt {
-            self.viewport = Viewport::new(screen.follow);
+            self.viewport = Viewport::new(screen.viewport_following());
         }
         self.apply_mutation(mutation);
         self.selection_body = None;
@@ -357,7 +345,7 @@ impl Retained {
         let (mut lines, steps) = self.document.visible_rows(start, room);
         self.work.index_steps += steps;
         self.work.copied_rows += lines.len();
-        if let Some(selection) = &screen.selection {
+        if screen.has_selection() {
             // Selection is explicit local work. It uses cached rows, never tree formatting.
             if self.selection_body.is_none() {
                 let all = self.document.selection_lines();
@@ -365,7 +353,7 @@ impl Retained {
             }
             for (i, line) in lines.iter_mut().enumerate() {
                 if let Some((from, to)) =
-                    selection.on_row(self.selection_body.as_ref().unwrap(), start + i)
+                    screen.selected_row(self.selection_body.as_ref().unwrap(), start + i)
                 {
                     crate::select_highlight(line, from, to, &screen.theme);
                 }
@@ -588,9 +576,7 @@ mod tests {
             root
         };
         let mut retained = Retained::new(document(12), &screen);
-        screen.follow = false;
-        screen.scroll = 3;
-        screen.scroll_intent = 1;
+        screen.reader.fixture(3, false, 1);
         let start = retained.viewport_start(&screen, 5);
         assert_eq!(start, 3);
         assert_eq!(
@@ -651,9 +637,7 @@ mod tests {
                 .as_deref(),
             Some("wrapped")
         );
-        screen.follow = false;
-        screen.scroll = first + 1;
-        screen.scroll_intent = 1;
+        screen.reader.fixture(first + 1, false, 1);
         assert_eq!(retained.viewport_start(&screen, 2), first + 1);
         retained
             .apply_ops(
@@ -677,9 +661,7 @@ mod tests {
     fn a_plain_repaint_does_not_rewalk_the_document_and_a_user_scroll_reanchors() {
         let mut screen = Screen::new(40, 12);
         let mut retained = Retained::new(document(6), &screen);
-        screen.follow = false;
-        screen.scroll = 2;
-        screen.scroll_intent = 1;
+        screen.reader.fixture(2, false, 1);
         let first = retained.viewport_start(&screen, 3);
         assert_eq!(first, 2);
         // No new intent and no layout change: the resolution is reused.
@@ -688,8 +670,7 @@ mod tests {
         assert_eq!(again, 2);
         assert_eq!(retained.work, Work::default());
         // A reader delta re-anchors against the row they asked for.
-        screen.scroll = 4;
-        screen.scroll_intent = 2;
+        screen.reader.fixture(4, false, 2);
         let scrolled = retained.viewport_start(&screen, 3);
         assert_eq!(scrolled, 4);
         assert_eq!(
@@ -705,25 +686,26 @@ mod tests {
     fn moving_the_selection_reveals_it_once_without_fighting_a_later_scroll() {
         let mut screen = Screen::new(40, 12);
         let mut retained = Retained::new(document(20), &screen);
-        screen.follow = false;
-        screen.scroll = 0;
-        screen.scroll_intent = 1;
+        screen.reader.fixture(0, false, 1);
         assert_eq!(retained.viewport_start(&screen, 4), 0);
         // The caret moves below the viewport; the frame scrolls it into view.
-        screen.selection = Some(crate::select::Selection::caret(crate::select::Spot::new(
-            10, 0,
-        )));
+        screen
+            .reader
+            .fixture_selection(crate::select::Selection::caret(crate::select::Spot::new(
+                10, 0,
+            )));
         assert_eq!(retained.viewport_start(&screen, 4), 7);
         // The same selection on the next repaint does not move the viewport again.
         assert_eq!(retained.viewport_start(&screen, 4), 7);
         // A reader's scroll is respected; the unchanged caret does not pull back.
-        screen.scroll = 2;
-        screen.scroll_intent = 2;
+        screen.reader.fixture(2, false, 2);
         assert_eq!(retained.viewport_start(&screen, 4), 2);
         // Moving the caret again reveals the new position.
-        screen.selection = Some(crate::select::Selection::caret(crate::select::Spot::new(
-            2, 0,
-        )));
+        screen
+            .reader
+            .fixture_selection(crate::select::Selection::caret(crate::select::Spot::new(
+                2, 0,
+            )));
         assert_eq!(retained.viewport_start(&screen, 4), 2);
     }
 
@@ -732,7 +714,7 @@ mod tests {
         let screen = Screen::new(40, 12);
         let mut retained = Retained::new(document(6), &screen);
         let total = retained.document.total_rows();
-        assert!(screen.follow);
+        assert!(screen.viewport_following());
         assert_eq!(retained.viewport_start(&screen, 3), total.saturating_sub(3));
         assert!(retained.following());
     }
@@ -744,11 +726,10 @@ mod tests {
         let room = 4;
         let total = retained.document.total_rows();
         let bottom = total.saturating_sub(room);
-        screen.follow = false;
+        screen.reader.fixture(0, false, 0);
         // A scroll well past the end lands on the last full page, never on
         // `total - 1` with a nearly empty viewport.
-        screen.scroll = total + 5;
-        screen.scroll_intent = 1;
+        screen.reader.fixture(total + 5, false, 1);
         assert_eq!(retained.viewport_start(&screen, room), bottom);
         assert!(
             retained.following(),
@@ -782,7 +763,7 @@ mod tests {
         let room = 4;
         let total = retained.document.total_rows();
         let bottom = total.saturating_sub(room);
-        screen.follow = false;
+        screen.reader.fixture(0, false, 0);
         // A wheel-up at the top cannot scroll past row zero.
         screen.key(crate::Key::ScrollPage(-30));
         assert_eq!(retained.viewport_start(&screen, room), 0);
@@ -791,7 +772,7 @@ mod tests {
         loop {
             screen.key(crate::Key::ScrollPage(3));
             let start = retained.viewport_start(&screen, room);
-            screen.scroll = start;
+            screen.viewport_resolved(start, retained.following());
             if start == bottom {
                 break;
             }
@@ -817,12 +798,11 @@ mod tests {
         let following = composer_row(&retained.frame(&screen, None));
         // Scrolling up and then back to the tail must not move the composer: it
         // is reserved at the bottom before the transcript gets its room.
-        screen.follow = false;
-        screen.scroll = 4;
-        screen.scroll_intent = 1;
+        screen.reader.fixture(4, false, 1);
         assert_eq!(composer_row(&retained.frame(&screen, None)), following);
-        screen.scroll = retained.document.total_rows();
-        screen.scroll_intent = 2;
+        screen
+            .reader
+            .fixture(retained.document.total_rows(), false, 2);
         assert_eq!(composer_row(&retained.frame(&screen, None)), following);
     }
 

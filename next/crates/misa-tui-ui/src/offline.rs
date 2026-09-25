@@ -63,8 +63,7 @@ pub async fn drive<C: Controller>(
     let mut output = misa_terminal_ui::output::Output::default();
     loop {
         let frame = retained.frame_with(screen, None, &[], &[]);
-        screen.scroll = retained.resolved_scroll();
-        screen.follow = retained.following();
+        screen.viewport_resolved(retained.resolved_scroll(), retained.following());
         crate::terminal_loop::paint(writer, &mut output, screen, frame)?;
         let event = tokio::select! {
             biased;
