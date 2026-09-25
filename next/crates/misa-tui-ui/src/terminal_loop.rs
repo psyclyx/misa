@@ -103,7 +103,7 @@ pub fn route_key(
 
 pub fn paint(
     writer: &mut impl Write,
-    output: &mut crate::output::Output,
+    output: &mut misa_terminal_ui::output::Output,
     screen: &crate::Screen,
     frame: crate::chrome::Frame,
 ) -> Result<(), String> {

@@ -22,14 +22,10 @@
 pub mod buttons;
 pub mod chrome;
 pub mod offline;
-pub mod terminal_loop;
-pub use misa_linear::graphics;
-pub mod output;
 pub mod prefs;
 pub mod presentation;
 pub mod retained;
-mod terminal_style;
-pub use terminal_style::sgr;
+pub mod terminal_loop;
 
 #[cfg(test)]
 thread_local! { static RESOLVE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
@@ -48,6 +44,7 @@ use misa_lines::select;
 use misa_proto::preparation::SourceKind;
 use misa_proto::view::{ActionOn, Choice, Field, Kind, Node};
 use misa_render::{Theme, ThemeOverrides};
+use misa_terminal_ui::graphics;
 
 /// Client-side catalog for the composer, independent of any session connection.
 #[derive(Clone, Debug, Default, PartialEq)]

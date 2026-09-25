@@ -23,6 +23,7 @@ misa-tui-ui = { path = "../misa-tui-ui" }
 misa-proto.workspace = true
 misa-render.workspace = true
 misa-lines.workspace = true
+misa-terminal-ui.workspace = true
 misa-value.workspace = true
 tokio.workspace = true
 serde_json.workspace = true

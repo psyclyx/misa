@@ -60,7 +60,7 @@ pub async fn drive<C: Controller>(
     writer: &mut impl Write,
 ) -> Result<(), String> {
     let mut retained = Retained::new(initial, screen);
-    let mut output = crate::output::Output::default();
+    let mut output = misa_terminal_ui::output::Output::default();
     loop {
         let frame = retained.frame_with(screen, None, &[], &[]);
         screen.scroll = retained.resolved_scroll();

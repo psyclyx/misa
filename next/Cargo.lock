@@ -2776,8 +2776,6 @@ dependencies = [
 name = "misa-linear"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
- "image",
  "misa-lines",
  "misa-markdown",
  "misa-proto",
@@ -2794,6 +2792,7 @@ dependencies = [
  "misa-render",
  "misa-style",
  "misa-syntax",
+ "misa-terminal-ui",
  "misa-value",
  "serde",
 ]
@@ -3026,6 +3025,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "misa-terminal-ui"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "image",
+ "misa-style",
+ "unicode-width",
+]
+
+[[package]]
 name = "misa-transport"
 version = "0.1.0"
 dependencies = [
@@ -3065,6 +3074,7 @@ dependencies = [
  "misa-protocol",
  "misa-render",
  "misa-session",
+ "misa-terminal-ui",
  "misa-transport",
  "misa-tui-ui",
  "misa-value",
@@ -3100,6 +3110,7 @@ dependencies = [
  "misa-proto",
  "misa-render",
  "misa-style",
+ "misa-terminal-ui",
  "misa-value",
  "serde",
  "serde_json",

@@ -56,9 +56,9 @@ pub async fn run(session: &mut dyn Session) -> Result<(), String> {
     // Kitty support is advertised, never probed synchronously. A terminal that
     // reports its pixel geometry also tells us how big a cell is; otherwise the
     // default ratio is used.
-    screen.graphics = crate::graphics::Kitty::detect();
+    screen.graphics = misa_terminal_ui::graphics::Kitty::detect();
     if let Ok(size) = crossterm::terminal::window_size()
-        && let Some(cell) = crate::graphics::CellSize::from_window(
+        && let Some(cell) = misa_terminal_ui::graphics::CellSize::from_window(
             screen.width,
             screen.height,
             size.width,
@@ -116,7 +116,7 @@ async fn drive_with_clipboard(
     let (updates, mut incoming) = mpsc::unbounded_channel();
     let driver = requests_loop(session, requests, updates);
     tokio::pin!(driver);
-    let mut output = crate::output::Output::default();
+    let mut output = misa_terminal_ui::output::Output::default();
     let animations = misa_render::animations::Registry::stock();
     let mut animation = tokio::time::interval(Duration::from_millis(90));
     animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

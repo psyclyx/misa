@@ -38,6 +38,18 @@ pub struct Line {
     pub node: Option<String>,
 }
 
+impl misa_terminal_ui::PhysicalRow for Line {
+    fn indent(&self) -> u8 {
+        self.indent
+    }
+    fn spans(&self) -> &[(Style, String)] {
+        &self.spans
+    }
+    fn surface(&self) -> Option<Style> {
+        self.surface
+    }
+}
+
 impl Line {
     pub fn text(&self) -> String {
         let mut out = " ".repeat(self.indent as usize);

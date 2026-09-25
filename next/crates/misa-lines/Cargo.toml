@@ -11,6 +11,7 @@ misa-proto.workspace = true
 misa-value.workspace = true
 misa-render.workspace = true
 misa-style.workspace = true
+misa-terminal-ui.workspace = true
 misa-syntax.workspace = true
 serde.workspace = true
 

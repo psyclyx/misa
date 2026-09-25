@@ -1,0 +1,13 @@
+[package]
+name = "misa-terminal-ui"
+description = "Physical terminal rows, ANSI painting, and Kitty graphics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+misa-style.workspace = true
+unicode-width.workspace = true
+image.workspace = true
+base64.workspace = true

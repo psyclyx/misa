@@ -7,7 +7,7 @@ pub struct Frame {
     pub cursor_column: usize,
     /// Kitty placements anchored to rows of `lines`. Empty when graphics are
     /// unsupported or no decoded image is on screen.
-    pub images: Vec<crate::graphics::Placement>,
+    pub images: Vec<misa_terminal_ui::graphics::Placement>,
 }
 fn row(screen: &Screen, first: bool) -> Line {
     let (mode, role) = match screen.editor.mode() {

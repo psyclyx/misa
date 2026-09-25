@@ -15,6 +15,7 @@ misa-value = { path = "crates/misa-value" }
 misa-reframe = { path = "crates/misa-reframe" }
 misa-render = { path = "crates/misa-render" }
 misa-style = { path = "crates/misa-style" }
+misa-terminal-ui = { path = "crates/misa-terminal-ui" }
 misa-lines = { path = "crates/misa-lines" }
 misa-syntax = { path = "crates/misa-syntax" }
 misa-markdown = { path = "crates/misa-markdown" }

@@ -14,9 +14,9 @@ use std::collections::HashMap;
 /// single screenshot cannot push the whole conversation off screen.
 fn image_max_rows(screen: &Screen) -> u16 {
     if screen.prefs.is_open("*") {
-        crate::graphics::VERBOSE_ROWS
+        misa_terminal_ui::graphics::VERBOSE_ROWS
     } else {
-        crate::graphics::COMPACT_ROWS
+        misa_terminal_ui::graphics::COMPACT_ROWS
     }
 }
 
@@ -293,7 +293,11 @@ impl Retained {
     /// Only the first reserved row of an image anchors it, so a placement is
     /// emitted once per image however many rows it covers. Rows outside the frame
     /// produce no placement, which is how a scrolled-away image is deleted.
-    fn image_placements(&self, screen: &Screen, lines: &[Line]) -> Vec<crate::graphics::Placement> {
+    fn image_placements(
+        &self,
+        screen: &Screen,
+        lines: &[Line],
+    ) -> Vec<misa_terminal_ui::graphics::Placement> {
         if !screen.graphics.enabled() {
             return Vec::new();
         }
@@ -1282,9 +1286,9 @@ mod tests {
     #[test]
     fn a_supported_image_reserves_its_placement_rows() {
         let mut screen = Screen::new(80, 24);
-        screen.graphics = crate::graphics::Kitty::new(
+        screen.graphics = misa_terminal_ui::graphics::Kitty::new(
             true,
-            crate::graphics::CellSize {
+            misa_terminal_ui::graphics::CellSize {
                 width: 10,
                 height: 20,
             },

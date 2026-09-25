@@ -138,7 +138,11 @@ Nix frontend wrappers default it to the packaged daemon. No daemon flags are ass
 external binaries. Without `--start-local`, neither frontend launches a daemon.
 
 The terminal screen in `misa-tui-ui` and document presenter in `misa-skia-ui`
-are **Misa-specific application UI**, not reusable toolkits. Pixel input/clock
+are **Misa-specific application UI**, not reusable toolkits. Physical ANSI row
+painting, SGR and Kitty graphics live in `misa-terminal-ui`, which depends only
+on `misa-style`, `unicode-width`, `image` and `base64`; `misa-lines` supplies
+a `PhysicalRow` implementation for semantic lines, while the core also accepts
+owned `StyledRow` values without a semantic document. Pixel input/clock
 lives in the zero-dependency `misa-window-core`; protocol-free scene, font
 measurement and button primitives live in `misa-pixel-ui`. Skia canvas
 painting and font resolution live in `misa-skia-paint`; `misa-skia-vulkan`

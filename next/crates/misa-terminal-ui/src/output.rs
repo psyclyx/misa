@@ -1,16 +1,19 @@
 //! Retained terminal rows: unchanged rows produce no terminal bytes.
-use misa_lines::Line;
+use crate::graphics::{self, Placement};
+use crate::terminal_style::sgr;
+use crate::{PhysicalRow, StyledRow};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Default)]
 pub struct Output {
-    previous: Vec<Line>,
+    previous: Vec<StyledRow>,
     initialized: bool,
     width: usize,
     /// The kitty placements drawn by the last frame, so this frame can delete the
     /// ones that moved or went away.
-    placements: Vec<crate::graphics::Placement>,
+    placements: Vec<Placement>,
 }
 
 impl Output {
@@ -20,12 +23,12 @@ impl Output {
 
     /// Paint a frame. Text rows keep the retained-row diff; image rows are treated
     /// as opaque and are re-emitted only when their placement changes.
-    pub fn paint(
+    pub fn paint<R: PhysicalRow>(
         &mut self,
         writer: &mut impl Write,
-        lines: &[Line],
+        lines: &[R],
         width: usize,
-        images: &[crate::graphics::Placement],
+        images: &[Placement],
     ) -> std::io::Result<()> {
         let width = width.max(1);
         if self.width != width {
@@ -36,17 +39,13 @@ impl Output {
             // Erasing the screen does not erase kitty graphics, so delete the
             // placements explicitly before clearing the text.
             for placement in &self.placements {
-                write!(
-                    writer,
-                    "{}",
-                    crate::graphics::encode_delete(placement.image_id)
-                )?;
+                write!(writer, "{}", graphics::encode_delete(placement.image_id))?;
             }
             write!(writer, "\x1b[2J")?;
             self.previous.clear();
             self.placements.clear();
         }
-        let current: HashMap<u32, &crate::graphics::Placement> = images
+        let current: HashMap<u32, &Placement> = images
             .iter()
             .map(|placement| (placement.image_id, placement))
             .collect();
@@ -72,7 +71,7 @@ impl Output {
                 new.row == old.row && new.col == old.col && new.escape == old.escape
             });
             if !unchanged {
-                write!(writer, "{}", crate::graphics::encode_delete(old.image_id))?;
+                write!(writer, "{}", graphics::encode_delete(old.image_id))?;
             }
         }
         for (row, line) in lines.iter().enumerate() {
@@ -82,7 +81,7 @@ impl Output {
             }
             let old = self.previous.get(row);
             let was_image = previous_image_rows.contains(&row);
-            if !was_image && old == Some(line) {
+            if !was_image && old.is_some_and(|old| old.matches(line)) {
                 continue;
             }
             // A growing final span can be sent as its suffix. Styled prefixes and
@@ -98,38 +97,33 @@ impl Output {
                     "\x1b[{};{}H{}{}\x1b[0m",
                     row + 1,
                     column + 1,
-                    crate::sgr(&style),
+                    sgr(&style),
                     text
                 )?;
             } else {
                 write!(writer, "\x1b[{};1H\x1b[2K", row + 1)?;
-                if let Some(surface) = line.surface {
-                    write!(writer, "{}", crate::sgr(&surface))?;
+                if let Some(surface) = line.surface() {
+                    write!(writer, "{}", sgr(&surface))?;
                 }
-                write!(writer, "{}", " ".repeat(line.indent as usize))?;
-                for (style, text) in &line.spans {
+                write!(writer, "{}", " ".repeat(line.indent() as usize))?;
+                for (style, text) in line.spans() {
                     write!(
                         writer,
                         "{}{}\x1b[0m",
-                        crate::sgr(&style.over(line.surface.unwrap_or(misa_style::Style::PLAIN))),
+                        sgr(&style.over(line.surface().unwrap_or(misa_style::Style::PLAIN))),
                         text
                     )?;
                 }
-                if let Some(surface) = line.surface {
-                    let used = line.indent as usize
+                if let Some(surface) = line.surface() {
+                    let used = line.indent() as usize
                         + line
-                            .spans
+                            .spans()
                             .iter()
-                            .map(|(_, text)| misa_render::width(text))
+                            .map(|(_, text)| UnicodeWidthStr::width(text.as_str()))
                             .sum::<usize>();
                     let fill = width.saturating_sub(used);
                     if fill > 0 {
-                        write!(
-                            writer,
-                            "{}{}\x1b[0m",
-                            crate::sgr(&surface),
-                            " ".repeat(fill)
-                        )?;
+                        write!(writer, "{}{}\x1b[0m", sgr(&surface), " ".repeat(fill))?;
                     }
                 }
             }
@@ -157,20 +151,34 @@ impl Output {
             write!(writer, "\x1b[{};1H\x1b[J", lines.len() + 1)?;
         }
         writer.flush()?;
-        self.previous = lines.to_vec();
+        // Retain only physical content. Unchanged rows keep their allocation;
+        // changing a node id in a semantic caller cannot dirty a row.
+        self.previous.truncate(lines.len());
+        for (index, line) in lines.iter().enumerate() {
+            match self.previous.get_mut(index) {
+                Some(old) if !old.matches(line) => *old = StyledRow::from_row(line),
+                None => self.previous.push(StyledRow::from_row(line)),
+                _ => {}
+            }
+        }
         self.placements = images.to_vec();
         self.initialized = true;
         Ok(())
     }
 }
 
-fn append_suffix<'a>(old: &Line, new: &'a Line) -> Option<(usize, misa_style::Style, &'a str)> {
-    if old.indent != new.indent || old.surface != new.surface || old.spans.len() != new.spans.len()
+fn append_suffix<'a>(
+    old: &StyledRow,
+    new: &'a impl PhysicalRow,
+) -> Option<(usize, misa_style::Style, &'a str)> {
+    if old.indent != new.indent()
+        || old.surface != new.surface()
+        || old.spans.len() != new.spans().len()
     {
         return None;
     }
     let (old_last, old_prefix) = old.spans.split_last()?;
-    let (new_last, new_prefix) = new.spans.split_last()?;
+    let (new_last, new_prefix) = new.spans().split_last()?;
     if old_prefix != new_prefix || old_last.0 != new_last.0 {
         return None;
     }
@@ -182,13 +190,13 @@ fn append_suffix<'a>(old: &Line, new: &'a Line) -> Option<(usize, misa_style::St
         + old
             .spans
             .iter()
-            .map(|(_, text)| misa_render::width(text))
+            .map(|(_, text)| UnicodeWidthStr::width(text.as_str()))
             .sum::<usize>();
     Some((
         column,
         new_last
             .0
-            .over(new.surface.unwrap_or(misa_style::Style::PLAIN)),
+            .over(new.surface().unwrap_or(misa_style::Style::PLAIN)),
         suffix,
     ))
 }
@@ -196,10 +204,10 @@ fn append_suffix<'a>(old: &Line, new: &'a Line) -> Option<(usize, misa_style::St
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn line(text: &str) -> Line {
-        Line {
-            spans: vec![(misa_render::Theme::plain().role("text"), text.into())],
-            ..Line::default()
+    fn line(text: &str) -> StyledRow {
+        StyledRow {
+            spans: vec![(misa_style::Style::PLAIN, text.into())],
+            ..StyledRow::default()
         }
     }
     #[test]
@@ -223,6 +231,25 @@ mod tests {
         assert!(!text.contains("history") && !text.contains("é") && !text.contains("[2J"));
     }
     #[test]
+    fn changing_only_a_surface_repaints_and_unchanged_rows_keep_their_spans() {
+        let mut output = Output::default();
+        let mut bytes = Vec::new();
+        let row = line("é🙂");
+        output.paint(&mut bytes, &[row.clone()], 8, &[]).unwrap();
+        let span_ptr = output.previous[0].spans[0].1.as_ptr();
+        bytes.clear();
+        output.paint(&mut bytes, &[row.clone()], 8, &[]).unwrap();
+        assert!(bytes.is_empty());
+        assert_eq!(span_ptr, output.previous[0].spans[0].1.as_ptr());
+        let painted = StyledRow {
+            surface: Some(misa_style::Style::PLAIN.bold()),
+            ..row
+        };
+        output.paint(&mut bytes, &[painted], 8, &[]).unwrap();
+        assert!(String::from_utf8(bytes).unwrap().contains("\u{1b}[1m"));
+    }
+
+    #[test]
     fn a_shorter_frame_erases_stale_rows_without_clearing_the_screen() {
         let mut output = Output::default();
         let mut bytes = Vec::new();
@@ -235,7 +262,7 @@ mod tests {
     }
     #[test]
     fn a_moved_image_is_deleted_and_redrawn_once() {
-        let placement = |row: u16| crate::graphics::Placement {
+        let placement = |row: u16| Placement {
             image_id: 5,
             placement_id: 5,
             row,
