@@ -57,9 +57,14 @@ still pays font discovery. These historical CPU measurements are **not Vulkan fr
 measurements** and say nothing about end-to-end window latency or font changes after the first
 successful resolution. Native windows and headless UI tests now paint with the same Ganesh
 Vulkan backend; screenshots use explicit GPU readback. Skia still repaints the full scene and
-image ops still copy/upload pixels each frame. Pixel-width text layout remains to be addressed.
+image ops still copy/upload pixels each frame. Text rows, wrapping, caret positions,
+selection and hits now share measured glyph advances from the same cached typeface the
+painter uses; narrow rows are clipped on both raster and Vulkan canvases.
 
 ## Headless Vulkan baseline
+
+The following baseline predates measured text layout; it is retained to show the
+cost of the correctness cutover, not as an equivalent-scene speed comparison.
 
 `misa-skia-testbed --bench-gpu` drives the same backend-neutral App and Ganesh painter used
 by the native window, but renders to an offscreen Vulkan target and synchronously reads back
@@ -77,7 +82,22 @@ network delivery are excluded; the GPU column **includes synchronization and rea
 |  1,000 | unchanged     |    0.042 / 0.041 |            2.022 / 1.935 |
 |  1,000 | replace owner |    2.156 / 2.026 |            2.057 / 1.921 |
 
-The offscreen GPU results do **not** establish a native-window latency or a speedup over the
-CPU reference: readback and swapchain presentation have different costs, and these values
-are measured on a software Vulkan driver. Measure the native frame-to-present path before
+With measured text and shared retained row geometry, a subsequent release run of
+`--bench-gpu` on the same lavapipe device at 800×600 (median/best ms, 12 samples
+per phase) yielded:
+
+| Owners | Phase         | App frame/layout | Vulkan render + readback |
+| -----: | ------------- | ---------------: | -----------------------: |
+|     10 | cold          |    0.077 / 0.074 |            0.845 / 0.798 |
+|     10 | unchanged     |    0.017 / 0.016 |            1.041 / 0.956 |
+|     10 | replace owner |    0.080 / 0.076 |            1.111 / 1.014 |
+|  1,000 | cold          |    4.993 / 4.833 |            2.257 / 2.126 |
+|  1,000 | unchanged     |    0.035 / 0.033 |            2.226 / 2.077 |
+|  1,000 | replace owner |    5.277 / 5.038 |            2.307 / 2.115 |
+
+Measured cold/changed layout costs more than the previous guessed-width layout;
+unchanged frames still reuse display lists and row geometry. Different layout
+and scene content, single-session samples and software Vulkan do not establish
+an A/B performance win or native-window latency. Readback and swapchain
+presentation have different costs. Measure native frame-to-present before
 claiming a user-visible win.

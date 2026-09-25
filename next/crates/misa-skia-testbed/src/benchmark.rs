@@ -60,9 +60,15 @@ fn changed_owner(index: usize) -> Node {
         )
 }
 
+fn new_app(view: Node) -> Result<App, String> {
+    let metrics =
+        paint::text_metrics().map_err(|error| format!("Cannot load Skia text metrics: {error}"))?;
+    Ok(App::new(view, metrics))
+}
+
 fn frame(app: &mut App) -> (Scene, Duration) {
     let start = Instant::now();
-    let scene = app.frame(WIDTH, HEIGHT);
+    let scene = app.frame_at(WIDTH, HEIGHT, GPU_CLOCK);
     (black_box(scene), start.elapsed())
 }
 
@@ -102,7 +108,7 @@ fn replace_last(app: &mut App, owners: usize) -> Result<(), String> {
 // Correctness is outside the timed region. Check six consecutive unchanged
 // frames, not just scenes or hashes; also ensure the edit is actually visible.
 fn verify(owners: usize) -> Result<(image::RgbaImage, image::RgbaImage), String> {
-    let mut app = App::new(fixture(owners));
+    let mut app = new_app(fixture(owners))?;
     let (first, _) = frame(&mut app);
     // Pre-cache per-frame resolution is the pixel reference, not another
     // invocation of the optimized path.
@@ -193,9 +199,9 @@ fn measure(owners: usize, iterations: usize) -> Result<Samples, String> {
     let mut samples = Samples::default();
     for sample in 0..iterations {
         // Build the same tree/App outside the timed region for each cold-cache
-        // sample. Cold means first App::frame after App::new, not cold OS/font
+        // sample. Cold means first App::frame_at after App::new, not cold OS/font
         // caches. Raster always creates a fresh surface via paint::raster_profiled.
-        let mut app = App::new(fixture(owners));
+        let mut app = new_app(fixture(owners))?;
         let (scene, elapsed) = frame(&mut app);
         samples.cold_frame.push(elapsed);
         let (pixels, elapsed, phases) = raster_profiled(&scene, true)?;
@@ -270,8 +276,8 @@ fn gpu_fixture(owners: usize) -> Node {
         }))
 }
 
-fn gpu_app(owners: usize) -> App {
-    let mut app = App::new(gpu_fixture(owners));
+fn gpu_app(owners: usize) -> Result<App, String> {
+    let mut app = new_app(gpu_fixture(owners))?;
     app.images.insert(
         GPU_IMAGE_HASH.into(),
         Arc::new(image::RgbaImage::from_pixel(
@@ -280,7 +286,7 @@ fn gpu_app(owners: usize) -> App {
             image::Rgba([240, 100, 40, 255]),
         )),
     );
-    app
+    Ok(app)
 }
 
 fn gpu_replace_last(app: &mut App, owners: usize) -> Result<(), String> {
@@ -314,7 +320,7 @@ fn gpu_frame(
 fn has_image(ops: &[crate::Op]) -> bool {
     ops.iter().any(|op| {
         matches!(op, crate::Op::Image { .. })
-            || matches!(op, crate::Op::Group { ops, .. } if has_image(ops))
+            || matches!(op, crate::Op::Group { ops, .. } | crate::Op::ClipRect { ops, .. } if has_image(ops))
     })
 }
 
@@ -324,7 +330,7 @@ fn gpu_verify(
     owners: usize,
     renderer: &mut Renderer,
 ) -> Result<(image::RgbaImage, image::RgbaImage), String> {
-    let mut app = gpu_app(owners);
+    let mut app = gpu_app(owners)?;
     // Guard the image-bearing sample against silently becoming an alt-text-only scene.
     if !has_image(&app.frame_at(WIDTH, HEIGHT, GPU_CLOCK).ops) {
         return Err(format!(
@@ -332,7 +338,7 @@ fn gpu_verify(
         ));
     }
     // Use a new App for the cold correctness frame; the probe above is untimed.
-    let mut app = gpu_app(owners);
+    let mut app = gpu_app(owners)?;
     let mut expected = None;
     for index in 0..6 {
         let (pixels, _, _) = gpu_frame(&mut app, renderer)?;
@@ -407,7 +413,7 @@ pub fn run_gpu() -> Result<(), String> {
         let mut warm = GpuPhase::default();
         let mut replaced = GpuPhase::default();
         for sample in 0..ITERATIONS {
-            let mut app = gpu_app(owners);
+            let mut app = gpu_app(owners)?;
             let (pixels, frame, render) = gpu_frame(&mut app, &mut renderer)?;
             if pixels != expected {
                 return Err(format!(
@@ -467,7 +473,7 @@ pub fn run_ab() -> Result<(), String> {
     );
     for owners in [10, 1000] {
         let (expected, _) = verify(owners)?;
-        let mut app = App::new(fixture(owners));
+        let mut app = new_app(fixture(owners))?;
         let _ = frame(&mut app);
         let (scene, _) = frame(&mut app);
         let mut cached = RasterSamples::default();
@@ -543,7 +549,9 @@ mod tests {
     #[test]
     fn deterministic_fixture_and_offline_pipeline_smoke() {
         assert_eq!(fixture(10), fixture(10));
-        let scene = App::new(fixture(10)).frame(WIDTH, HEIGHT);
+        let scene = new_app(fixture(10))
+            .expect("Skia text metrics for benchmark test")
+            .frame_at(WIDTH, HEIGHT, GPU_CLOCK);
         assert_eq!(
             paint::raster(&scene, BACKGROUND).unwrap(),
             paint::raster_profiled(&scene, BACKGROUND).unwrap().0,
@@ -560,7 +568,9 @@ mod tests {
 
     #[test]
     fn concurrent_rasters_share_the_cached_typeface() {
-        let scene = App::new(fixture(10)).frame(WIDTH, HEIGHT);
+        let scene = new_app(fixture(10))
+            .expect("Skia text metrics for benchmark test")
+            .frame_at(WIDTH, HEIGHT, GPU_CLOCK);
         let reference = paint::raster_uncached_profiled(&scene, BACKGROUND)
             .unwrap()
             .0;

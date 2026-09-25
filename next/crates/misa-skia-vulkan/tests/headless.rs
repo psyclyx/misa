@@ -1,6 +1,6 @@
 use misa_proto::view::{Node, Span};
-use misa_render::{Color, Theme};
-use misa_skia_ui::{Layout, Op, Scene, app::App};
+use misa_render::Color;
+use misa_skia_ui::{Op, Scene, app::App};
 use misa_skia_vulkan::Renderer;
 use std::{sync::Arc, time::Duration};
 
@@ -66,11 +66,44 @@ fn ganesh_draws_scene_ops_and_reads_rgba() {
 }
 
 #[test]
+fn measured_text_clip_reaches_the_headless_gpu_painter() {
+    let mut renderer = Renderer::new().expect("headless Vulkan device");
+    let scene = Scene {
+        width: 120.0,
+        height: 50.0,
+        ops: vec![Op::ClipRect {
+            x: 10.0,
+            y: 5.0,
+            width: 20.0,
+            height: 30.0,
+            ops: Arc::new(vec![Op::Text {
+                x: 10.0,
+                y: 5.0,
+                size: 24.0,
+                style: misa_render::Style::rgb(255, 255, 255),
+                text: "WWWWWWWW".into(),
+            }]),
+        }],
+    };
+    let pixels = renderer.render(&scene, BG).expect("GPU readback");
+    let bg = [20, 22, 26, 255];
+    assert!(
+        (10..30).any(|x| (5..35).any(|y| pixels.get_pixel(x, y).0 != bg)),
+        "some measured glyph ink must remain in the viewport"
+    );
+    assert!(
+        (31..120).all(|x| (0..50).all(|y| pixels.get_pixel(x, y).0 == bg)),
+        "the GPU must not paint the overflowing glyphs beyond the clip"
+    );
+}
+
+#[test]
 fn app_drives_two_deterministic_gpu_frames() {
     let tree = Node::section("session")
         .id("session")
         .child(Node::text("message.user", [Span::plain("A real Skia canvas")]).id("message"));
-    let mut app = App::new(tree.clone());
+    let metrics = misa_skia_paint::text_metrics().expect("Skia text metrics for GPU test");
+    let mut app = App::new(tree.clone(), metrics.clone());
     let mut renderer = Renderer::new().expect("Vulkan/Ganesh device required (lavapipe is fine)");
     let a = renderer
         .frame_at(&mut app, 320, 160, Duration::ZERO, BG)
@@ -81,8 +114,8 @@ fn app_drives_two_deterministic_gpu_frames() {
     assert_eq!(a, b);
     assert_eq!(a.dimensions(), (320, 160));
     assert!(a.pixels().any(|p| p.0 != [20, 22, 26, 255]));
-    // Independently constructed semantic tree -> scene also renders on this context.
-    let scene = misa_skia_ui::scene(&tree, &Theme::dark(), 24, 6, Layout::default());
+    // Independently constructed App layout also renders on this context.
+    let scene = App::new(tree, metrics).frame_at(320, 160, Duration::ZERO);
     assert!(!scene.ops.is_empty());
     assert!(renderer.render(&scene, BG).is_ok());
 }

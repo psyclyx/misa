@@ -23,14 +23,17 @@ pub fn run(
         .map_err(|error| error.to_string())?;
     let show_chooser = live && ticket.is_none();
     let outgoing = live.then(|| connection::start(ticket, events.create_proxy()));
-    let mut local = crate::workspace::Local::default();
+    let metrics = misa_skia_paint::text_metrics()
+        .map_err(|error| format!("Cannot load Skia text metrics: {error}"))?;
+    let mut local = crate::workspace::Local::new(metrics.clone());
     if show_chooser {
         local.open_chooser();
     }
     let mut host = Host {
         appearance: crate::preferences::appearance(),
         appearance_writer: crate::preferences::appearance_writer(events.create_proxy()),
-        app: App::new(view),
+        app: App::new(view, metrics.clone()),
+        metrics,
         local,
         directories: vec![],
         generation: 0,
@@ -61,6 +64,7 @@ pub fn run(
     host.error.take().map_or(Ok(()), Err)
 }
 struct Host {
+    metrics: Arc<dyn misa_skia_ui::TextMetrics>,
     appearance: crate::appearance::Choice,
     appearance_writer: std::sync::mpsc::SyncSender<crate::appearance::Choice>,
     app: App,
@@ -391,14 +395,20 @@ impl ApplicationHandler<Update> for Host {
         match update {
             Update::Session { generation, update } => {
                 if generation == self.generation {
-                    apply_update(&mut self.app, &mut self.local, &mut self.panels, *update);
+                    apply_update(
+                        &mut self.app,
+                        &mut self.local,
+                        &mut self.panels,
+                        *update,
+                        &self.metrics,
+                    );
                     self.redraw();
                 } else if let Some((app, local, panels, _)) = self
                     .parked
                     .values_mut()
                     .find(|(_, _, _, id)| *id == generation)
                 {
-                    apply_update(app, local, panels, *update);
+                    apply_update(app, local, panels, *update, &self.metrics);
                 }
                 return;
             }
@@ -413,10 +423,16 @@ impl ApplicationHandler<Update> for Host {
                 }
                 let old_app = std::mem::replace(
                     &mut self.app,
-                    App::new(misa_proto::Node::section("connecting")),
+                    App::new(
+                        misa_proto::Node::section("connecting"),
+                        self.metrics.clone(),
+                    ),
                 );
                 self.local.deactivate();
-                let old_local = std::mem::take(&mut self.local);
+                let old_local = std::mem::replace(
+                    &mut self.local,
+                    crate::workspace::Local::new(self.metrics.clone()),
+                );
                 if let Some(old) = self.active.take() {
                     self.parked.insert(
                         old,
@@ -456,14 +472,20 @@ impl ApplicationHandler<Update> for Host {
                 if self.active.as_ref() == Some(&key) {
                     self.active = None;
                     self.generation = 0;
-                    self.app = App::new(misa_proto::Node::section("session"));
+                    self.app = App::new(misa_proto::Node::section("session"), self.metrics.clone());
                     self.panels.clear();
-                    self.local = crate::workspace::Local::default();
+                    self.local = crate::workspace::Local::new(self.metrics.clone());
                     self.local.directory(self.directories.clone());
                     self.local.open_chooser();
                 }
             }
-            update => apply_update(&mut self.app, &mut self.local, &mut self.panels, update),
+            update => apply_update(
+                &mut self.app,
+                &mut self.local,
+                &mut self.panels,
+                update,
+                &self.metrics,
+            ),
         }
         self.redraw();
     }
@@ -772,6 +794,7 @@ fn apply_update(
     local: &mut crate::workspace::Local,
     panels: &mut std::collections::BTreeMap<String, App>,
     update: Update,
+    metrics: &Arc<dyn misa_skia_ui::TextMetrics>,
 ) {
     match update {
         Update::DaemonForm {
@@ -813,7 +836,8 @@ fn apply_update(
                     &mut *app
                 } else {
                     panels.entry(slot).or_insert_with(|| {
-                        let mut app = App::new(misa_proto::Node::section("presentation"));
+                        let mut app =
+                            App::new(misa_proto::Node::section("presentation"), metrics.clone());
                         app.scroll(-f32::MAX);
                         app
                     })

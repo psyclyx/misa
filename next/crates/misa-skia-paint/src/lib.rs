@@ -1,9 +1,10 @@
 //! Shared Skia canvas painting for raster exports and Ganesh targets.
 use misa_render::Color;
-use misa_skia_ui::{Op, Scene};
+use misa_skia_ui::{LineMetrics, Op, Scene, TextMetrics};
 use skia_safe::{Canvas, Font, FontMgr, FontStyle, Paint as SkPaint, PaintStyle, Rect, surfaces};
 use std::{
-    sync::{Mutex, OnceLock},
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -11,6 +12,9 @@ use std::{
 // system's installed fonts change; the lock serializes first-use resolution.
 static TYPEFACE: OnceLock<skia_safe::Typeface> = OnceLock::new();
 static TYPEFACE_INIT: Mutex<()> = Mutex::new(());
+// The size key is exact: measuring a run and painting it must use the same
+// Skia Font, not independently configured fonts at approximately equal sizes.
+static FONTS: OnceLock<Mutex<HashMap<u32, Font>>> = OnceLock::new();
 
 fn resolve_typeface(fonts: &FontMgr) -> Result<skia_safe::Typeface, String> {
     fonts
@@ -37,6 +41,113 @@ fn cached_typeface() -> Result<&'static skia_safe::Typeface, String> {
             .expect("typeface initialized under lock");
     }
     Ok(TYPEFACE.get().expect("typeface initialized under lock"))
+}
+
+fn cached_font(typeface: &skia_safe::Typeface, size: f32) -> Font {
+    let mut fonts = FONTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    fonts
+        .entry(size.to_bits())
+        .or_insert_with(|| Font::from_typeface(typeface.clone(), size))
+        .clone()
+}
+
+/// Skia measurements backed by the painter's cached typeface and sized fonts.
+pub struct SkiaTextMetrics {
+    typeface: skia_safe::Typeface,
+}
+
+/// Resolve the paint font now, rather than deferring a missing-font failure to
+/// a layout or draw call. No substitute measurement is used in production.
+pub fn text_metrics() -> Result<Arc<dyn TextMetrics>, String> {
+    Ok(Arc::new(SkiaTextMetrics {
+        typeface: cached_typeface()?.clone(),
+    }))
+}
+
+impl TextMetrics for SkiaTextMetrics {
+    fn measure(&self, text: &str, size: f32) -> f32 {
+        cached_font(&self.typeface, size).measure_str(text, None).0
+    }
+
+    fn advances(&self, text: &str, size: f32) -> Vec<f32> {
+        let font = cached_font(&self.typeface, size);
+        // draw_str and measure_str both convert UTF-8 to glyph IDs without
+        // shaping; get_widths uses the same glyph advance as measure_str.
+        let glyphs = font.text_to_glyphs_vec(text);
+        let mut widths = vec![0.0; glyphs.len()];
+        font.get_widths(&glyphs, &mut widths);
+        let mut advances = Vec::with_capacity(widths.len() + 1);
+        advances.push(0.0);
+        let mut x = 0.0;
+        for width in widths {
+            x += width;
+            advances.push(x);
+        }
+        debug_assert_eq!(advances.len(), text.chars().count() + 1);
+        advances
+    }
+
+    fn line_metrics(&self, size: f32) -> LineMetrics {
+        let (line_height, metrics) = cached_font(&self.typeface, size).metrics();
+        LineMetrics {
+            ascent: metrics.ascent,
+            descent: metrics.descent,
+            leading: metrics.leading,
+            line_height,
+        }
+    }
+}
+
+#[cfg(test)]
+mod metrics_tests {
+    use super::*;
+
+    #[test]
+    fn glyph_advances_match_every_prefix_and_styled_run_width() {
+        let metrics = text_metrics().unwrap();
+        let long = "WWiiii界🙂e\u{301}".repeat(30);
+        for size in [11.0, 15.0, 17.5, 32.0] {
+            for text in [
+                "",
+                "Hello world!",
+                "ill MW",
+                "界你好λ🙂",
+                "e\u{301} cafe\u{301}",
+                "👩‍💻🇺🇳",
+                "\u{0301}\u{0308}a",
+                "a\t b\n",
+                "ﬁÆ—─▏•",
+                long.as_str(),
+            ] {
+                let advances = metrics.advances(text, size);
+                assert_eq!(advances.len(), text.chars().count() + 1);
+                for (index, (start, ch)) in text.char_indices().enumerate() {
+                    let end = start + ch.len_utf8();
+                    let expected = metrics.measure(&text[..end], size);
+                    assert_eq!(
+                        advances[index + 1],
+                        expected,
+                        "{text:?} at {end}, size {size}"
+                    );
+                }
+                assert_eq!(*advances.last().unwrap(), metrics.measure(text, size));
+            }
+            for runs in [
+                &["Hello ", "界e\u{301}", "🙂 world"][..],
+                &["e", "\u{301}", "ﬁ", "👩‍💻", " ill MW"][..],
+            ] {
+                for run in runs {
+                    assert_eq!(
+                        *metrics.advances(run, size).last().unwrap(),
+                        metrics.measure(run, size)
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Non-overlapping wall-clock phases of a fresh raster. PNG encoding is excluded.
@@ -118,7 +229,7 @@ fn raster_impl<const PROFILE: bool, const CACHE: bool>(
     let start = if PROFILE { Some(Instant::now()) } else { None };
     let mut fill = SkPaint::default();
     fill.set_anti_alias(true);
-    draw_ops(canvas, &scene.ops, &typeface, &mut fill);
+    draw_ops(canvas, &scene.ops, &typeface, CACHE, &mut fill);
     if PROFILE {
         phases.draw_ops = start.expect("profile clock").elapsed();
     }
@@ -145,19 +256,37 @@ pub fn draw_scene(canvas: &Canvas, scene: &Scene, background: Color) -> Result<(
     canvas.clear(skia_safe::Color::from(skia_color(background, 0xff14_161a)));
     let mut fill = SkPaint::default();
     fill.set_anti_alias(true);
-    draw_ops(canvas, &scene.ops, cached_typeface()?, &mut fill);
+    draw_ops(canvas, &scene.ops, cached_typeface()?, true, &mut fill);
     Ok(())
 }
 
 /// Paint the retained operations onto any Skia canvas (raster or Ganesh).
 /// The caller owns the surface, clear, and readback; paint order is identical.
-fn draw_ops(canvas: &Canvas, ops: &[Op], typeface: &skia_safe::Typeface, fill: &mut SkPaint) {
+fn draw_ops(
+    canvas: &Canvas,
+    ops: &[Op],
+    typeface: &skia_safe::Typeface,
+    cache_fonts: bool,
+    fill: &mut SkPaint,
+) {
     for op in ops {
         match op {
             Op::Group { x, y, ops } => {
                 canvas.save();
                 canvas.translate((*x, *y));
-                draw_ops(canvas, ops, typeface, fill);
+                draw_ops(canvas, ops, typeface, cache_fonts, fill);
+                canvas.restore();
+            }
+            Op::ClipRect {
+                x,
+                y,
+                width,
+                height,
+                ops,
+            } => {
+                canvas.save();
+                canvas.clip_rect(Rect::from_xywh(*x, *y, *width, *height), None, true);
+                draw_ops(canvas, ops, typeface, cache_fonts, fill);
                 canvas.restore();
             }
             Op::Image {
@@ -203,11 +332,16 @@ fn draw_ops(canvas: &Canvas, ops: &[Op], typeface: &skia_safe::Typeface, fill: &
                 style,
                 text,
             } => {
-                let font = Font::from_typeface(typeface.clone(), *size);
+                let font = if cache_fonts {
+                    cached_font(typeface, *size)
+                } else {
+                    Font::from_typeface(typeface.clone(), *size)
+                };
                 fill.set_style(PaintStyle::Fill);
                 fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xffe9_ebee)));
-                // The scene positions a baseline; a line's y is its top.
-                canvas.draw_str(text, (*x, *y + size * 0.85), &font, fill);
+                // The scene's y is the line top; use the measured ascent to
+                // locate the baseline, just as measured layout will.
+                canvas.draw_str(text, (*x, *y - font.metrics().1.ascent), &font, fill);
             }
         }
     }

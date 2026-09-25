@@ -39,7 +39,7 @@ impl Headless {
             return Err("headless size must be nonzero".into());
         }
         Ok(Self {
-            fixtures: Fixtures::new(),
+            fixtures: Fixtures::new()?,
             renderer: Renderer::new()?,
             size,
             clock: FakeClock::default(),

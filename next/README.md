@@ -142,7 +142,9 @@ The connected hosts (`misa-tui`, `misa-skia`) and standalone fixture apps
 (`misa-tui-testbed`, `misa-skia-testbed`) depend on these crates independently.
 Neither UI crate nor fixture app depends on `misa-client` or `misa-transport`.
 The pixel fixture drives the same input and GPU painter as production without a window;
-both fixtures include native component and semantic `misa-proto` views.
+both fixtures include native component and semantic `misa-proto` views. All semantic
+pixel views, including PNG exports, use the same `App` layout; its text positions,
+wrapping, caret and selection use measurements from the font used for painting.
 
 The window supports typed fields, disclosure toggles, tables, meters, images, text selection and
 clipboard copy. Alt-/ opens the declared command picker: type to filter, use arrows to select,

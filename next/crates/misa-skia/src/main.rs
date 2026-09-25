@@ -91,10 +91,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let out = out.expect("PNG output selected");
+    let metrics = misa_skia_paint::text_metrics()
+        .map_err(|error| format!("Cannot load Skia text metrics: {error}"))?;
     let mut renderer = misa_skia_vulkan::Renderer::new()?;
 
     if let Some(text) = first.take() {
-        write_frame(&mut renderer, &text, columns, rows, &out)?;
+        write_frame(&mut renderer, &text, columns, rows, &out, metrics.clone())?;
         println!("wrote {out}");
         if every_ms.is_none() {
             return Ok(());
@@ -192,7 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .ok_or("Presentation observation closed")??;
         if let Some((sequence, view)) = frame {
-            write_frame(&mut renderer, &view, columns, rows, &out)?;
+            write_frame(&mut renderer, &view, columns, rows, &out, metrics.clone())?;
             painted = Some(sequence);
             println!("wrote {out}");
             if every_ms.is_none() {
@@ -231,18 +233,70 @@ fn write_frame(
     columns: u32,
     rows: u32,
     out: &str,
+    metrics: std::sync::Arc<dyn misa_skia_ui::TextMetrics>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let theme = misa_render::Theme::dark();
-    let scene = misa_skia::scene(
-        view,
-        &theme,
-        columns as usize,
-        rows as usize,
-        misa_skia::Layout::default(),
-    );
+    let scene = snapshot_scene(view, columns, rows, metrics);
     let pixels = renderer.render(&scene, misa_render::Color::Rgb(20, 22, 26))?;
     let mut png = std::io::Cursor::new(Vec::new());
     pixels.write_to(&mut png, image::ImageFormat::Png)?;
     std::fs::write(out, png.into_inner())?;
     Ok(())
+}
+
+fn snapshot_scene(
+    view: &Node,
+    columns: u32,
+    rows: u32,
+    metrics: std::sync::Arc<dyn misa_skia_ui::TextMetrics>,
+) -> misa_skia_ui::Scene {
+    // Size the offline frame using the resolved paint typeface's measurements.
+    let font_size = 15.0;
+    let margin = 24.0;
+    let width = (margin * 2.0 + columns as f32 * metrics.measure("M", font_size)).ceil() as u32;
+    let height =
+        (margin * 2.0 + rows as f32 * metrics.line_metrics(font_size).line_height).ceil() as u32;
+    let mut app = misa_skia::app::App::new(view.clone(), metrics);
+    app.pin_to_top();
+    app.frame_at(width, height, Duration::ZERO)
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use misa_proto::view::Span;
+    use misa_skia_ui::Op;
+
+    #[test]
+    fn snapshot_keeps_first_glyphs_visible_at_one_and_multiple_rows() {
+        let metrics = misa_skia_paint::text_metrics().expect("Skia typeface");
+        let line_height = metrics.line_metrics(15.0).line_height;
+        let mut renderer =
+            misa_skia_vulkan::Renderer::new().expect("Vulkan readback (lavapipe is fine)");
+        let view = Node::section("root").children(
+            (0..8).map(|i| Node::text("text", [Span::plain(format!("VISIBLE line {i}"))])),
+        );
+        for rows in [1, 4] {
+            let scene = snapshot_scene(&view, 40, rows, metrics.clone());
+            assert!(
+                matches!(scene.ops.first(), Some(Op::Group { y, .. }) if (*y - 20.0).abs() < 0.01),
+                "snapshot must start at the top for {rows} rows"
+            );
+            let pixels = renderer
+                .render(&scene, misa_render::Color::Rgb(20, 22, 26))
+                .expect("GPU render/readback");
+            let (width, height) = pixels.dimensions();
+            assert_eq!((width, height), (scene.width as u32, scene.height as u32));
+            // Only the first row's glyphs can land in this band: the later rows are
+            // separated by their line height and the node's trailing space.
+            let ink = (20..height.min((20.0 + line_height) as u32)).any(|y| {
+                (20..width.min(180)).any(|x| pixels.get_pixel(x, y).0[..3] != [20, 22, 26])
+            });
+            assert!(ink, "first glyphs missing from the {rows}-row PNG viewport");
+        }
+
+        // The same App without the offline choice still follows a long view.
+        let mut window = misa_skia::app::App::new(view, metrics);
+        let followed = window.frame_at(380, 70, Duration::ZERO);
+        assert!(matches!(followed.ops.first(), Some(Op::Group { y, .. }) if *y < 0.0));
+    }
 }

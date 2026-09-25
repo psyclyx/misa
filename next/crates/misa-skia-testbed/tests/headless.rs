@@ -9,7 +9,7 @@ fn text(ops: &[Op]) -> String {
     for op in ops {
         match op {
             Op::Text { text, .. } => result.push_str(text),
-            Op::Group { ops, .. } => result.push_str(&text(ops)),
+            Op::Group { ops, .. } | Op::ClipRect { ops, .. } => result.push_str(&text(ops)),
             _ => {}
         }
     }

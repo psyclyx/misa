@@ -9,8 +9,9 @@ use misa_proto::{
     directory::Entry,
     view::{Action as ViewAction, ActionOn, Field, FieldKind, Kind, Node, Span},
 };
+use misa_skia_ui::TextMetrics;
 use misa_value::Value;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// Actions produced by host-owned workspace controls. UI App effects are kept
 /// distinct so relationship and request workflow never leaks into the UI crate.
@@ -346,8 +347,8 @@ mod tests {
         );
     }
 }
-#[derive(Default)]
 pub struct Local {
+    metrics: Arc<dyn TextMetrics>,
     report: Option<App>,
     appearance: crate::appearance::Choice,
     installed_commands: BTreeMap<String, Result<misa_client::form::Form, String>>,
@@ -375,10 +376,41 @@ fn action(id: &str, label: &str, args: Value, on: ActionOn) -> ViewAction {
         on,
     }
 }
+#[cfg(test)]
+impl Default for Local {
+    fn default() -> Self {
+        Self::new(misa_skia_paint::text_metrics().expect("Skia text metrics for workspace tests"))
+    }
+}
+
 impl Local {
+    pub fn new(metrics: Arc<dyn TextMetrics>) -> Self {
+        Self {
+            metrics,
+            report: None,
+            appearance: Default::default(),
+            installed_commands: Default::default(),
+            choosing_commands: false,
+            command_form: false,
+            form_visible: false,
+            managing: None,
+            daemon_form: None,
+            form: None,
+            directories: Vec::new(),
+            chooser: None,
+            requests: Default::default(),
+            attention: None,
+            active: None,
+            catalog: Vec::new(),
+            preferences: Default::default(),
+            observation: None,
+            choosing_presentations: false,
+        }
+    }
+
     pub fn report(&mut self, document: Node) {
         self.deactivate();
-        self.report = Some(App::new(document));
+        self.report = Some(App::new(document, self.metrics.clone()));
     }
     pub fn set_light(&mut self, light: bool) {
         if let Some(app) = self.app() {
@@ -440,7 +472,7 @@ impl Local {
                 )],
             ));
         }
-        let mut app = App::new(root);
+        let mut app = App::new(root, self.metrics.clone());
         app.scroll(-f32::MAX);
         self.chooser = Some(app);
     }
@@ -489,7 +521,7 @@ impl Local {
             .id("local.form")
             .label(form.title.clone())
             .action(action("submit", "Submit", Value::Null, ActionOn::Submit));
-        self.form = Some((form.title, App::new(node)));
+        self.form = Some((form.title, App::new(node, self.metrics.clone())));
     }
     pub fn deactivate(&mut self) {
         self.report = None;
@@ -515,7 +547,7 @@ impl Local {
         self.daemon_form = None;
         self.choosing_presentations = false;
         self.hide_request();
-        self.chooser = Some(App::new(Node::section("chooser")));
+        self.chooser = Some(App::new(Node::section("chooser"), self.metrics.clone()));
         self.rebuild_chooser();
     }
     pub fn composition(
@@ -617,7 +649,7 @@ impl Local {
                 ActionOn::Click,
             ));
         }
-        self.chooser = Some(App::new(root));
+        self.chooser = Some(App::new(root, self.metrics.clone()));
     }
     fn rebuild_chooser(&mut self) {
         if self.managing.is_some() {
@@ -795,7 +827,8 @@ impl Local {
             .label(format!("{} · Escape hides · Ctrl+R reopens", model.title))
             .child(model.body.clone())
             .child(form);
-        self.requests.insert(id.clone(), (model, App::new(view)));
+        self.requests
+            .insert(id.clone(), (model, App::new(view, self.metrics.clone())));
         self.focus_attention();
     }
     fn hide_request(&mut self) {
@@ -1122,7 +1155,7 @@ impl Local {
                 Value::Null,
                 ActionOn::Submit,
             ));
-        self.daemon_form = Some((daemon, form, App::new(node)));
+        self.daemon_form = Some((daemon, form, App::new(node, self.metrics.clone())));
     }
     fn rebuild_management(&mut self) {
         let Some(identity) = self.managing.as_ref() else {

@@ -30,13 +30,15 @@ struct Fixtures {
 }
 
 impl Fixtures {
-    fn new() -> Self {
-        Self {
+    fn new() -> Result<Self, String> {
+        let metrics = misa_skia_paint::text_metrics()
+            .map_err(|error| format!("Cannot load Skia text metrics: {error}"))?;
+        Ok(Self {
             mode: Mode::Native,
             native: native::Dashboard { selected: false },
-            semantic: App::new(semantic_fixture()),
+            semantic: App::new(semantic_fixture(), metrics),
             deadline: None,
-        }
+        })
     }
 
     /// The native view is idle; only a painted semantic pulse schedules a wakeup.
@@ -78,7 +80,7 @@ impl Fixtures {
                 }
                 None => {
                     self.deadline = None;
-                    self.semantic.frame(width, height)
+                    self.semantic.frame_at(width, height, Duration::ZERO)
                 }
             },
         };
@@ -225,7 +227,7 @@ mod tests {
     fn has_text(ops: &[Op], needle: &str) -> bool {
         ops.iter().any(|op| match op {
             Op::Text { text, .. } => text.contains(needle),
-            Op::Group { ops, .. } => has_text(ops, needle),
+            Op::Group { ops, .. } | Op::ClipRect { ops, .. } => has_text(ops, needle),
             _ => false,
         })
     }
@@ -235,7 +237,7 @@ mod tests {
         for op in ops {
             match op {
                 Op::Text { text: run, .. } => text.push_str(run),
-                Op::Group { ops, .. } => text.push_str(&scene_text(ops)),
+                Op::Group { ops, .. } | Op::ClipRect { ops, .. } => text.push_str(&scene_text(ops)),
                 _ => {}
             }
         }
@@ -244,7 +246,7 @@ mod tests {
 
     #[test]
     fn fake_clock_pulses_only_the_semantic_fixture() {
-        let mut fixtures = Fixtures::new();
+        let mut fixtures = Fixtures::new().expect("Skia text metrics for fixtures");
         let start = Instant::now();
         fixtures.frame_at(500, 320, Some(Duration::ZERO));
         assert_eq!(fixtures.pulse_deadline(start), None);
@@ -271,7 +273,7 @@ mod tests {
 
     #[test]
     fn selection_resize_and_keys_change_the_painted_fixture() {
-        let mut fixtures = Fixtures::new();
+        let mut fixtures = Fixtures::new().expect("Skia text metrics for fixtures");
         let native = fixtures.frame(500, 320);
         assert!(has_text(&native.ops, "Native dashboard"));
         fixtures.input(Event::Text(" ".into()), Duration::ZERO, 500);

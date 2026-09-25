@@ -15,6 +15,7 @@ misa-proto.workspace = true
 misa-protocol.workspace = true
 misa-render.workspace = true
 misa-skia-ui = { path = "../misa-skia-ui" }
+misa-skia-paint = { path = "../misa-skia-paint" }
 misa-skia-vulkan = { path = "../misa-skia-vulkan", features = ["window"] }
 misa-window-core = { path = "../misa-window-core" }
 misa-transport.workspace = true

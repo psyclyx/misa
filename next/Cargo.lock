@@ -2901,6 +2901,7 @@ dependencies = [
  "misa-proto",
  "misa-protocol",
  "misa-render",
+ "misa-skia-paint",
  "misa-skia-ui",
  "misa-skia-vulkan",
  "misa-transport",

@@ -15,7 +15,7 @@ use winit::window::{Window, WindowId};
 pub fn run() -> Result<(), String> {
     let events = EventLoop::new().map_err(|error| error.to_string())?;
     let mut host = Host {
-        fixtures: Fixtures::new(),
+        fixtures: Fixtures::new()?,
         window: None,
         surface: None,
         modifiers: ModifiersState::empty(),
