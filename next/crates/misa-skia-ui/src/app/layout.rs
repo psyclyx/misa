@@ -404,38 +404,30 @@ impl App {
         let visible_lines = (paint_height / line_height).floor().max(1.0) as usize;
         let (cursor, mut viewport) = match &control {
             Control::Field { node, field } => {
-                let key = (node.clone(), field.clone());
-                let field_model = self
-                    .document
-                    .node(node)
-                    .and_then(|owner| match &owner.kind {
-                        Kind::Fields { fields } => fields.iter().find(|value| value.id == *field),
-                        _ => None,
-                    });
+                let field_model = self.document.field(node, field);
                 let cursor = self
                     .drafts
-                    .get(&key)
+                    .cursor(node, field)
                     .filter(|_| {
                         !field_model.is_some_and(|value| {
                             matches!(value.kind, FieldKind::Bool | FieldKind::Choice { .. })
                         })
                     })
-                    .map(|edit| {
+                    .map(|at| {
                         if field_model.is_some_and(|value| value.secret) {
                             // The displayed run has one bullet per scalar, including any newline.
-                            let column = edit.text()[..edit.cursor()].chars().count();
+                            let column = self.drafts.text(node, field).unwrap_or("")[..at]
+                                .chars()
+                                .count();
                             label
                                 .char_indices()
                                 .nth(column)
                                 .map_or(label.len(), |(at, _)| at)
                         } else {
-                            edit.cursor()
+                            at
                         }
                     });
-                (
-                    cursor,
-                    self.field_viewports.get(&key).copied().unwrap_or_default(),
-                )
+                (cursor, self.drafts.viewport(node, field))
             }
             Control::SavePath => (
                 self.save.as_ref().map(|(_, edit)| edit.cursor()),
@@ -470,8 +462,7 @@ impl App {
             viewport.x = viewport.x.max(edge - (paint_width - 1.5).max(0.0));
             match &control {
                 Control::Field { node, field } => {
-                    self.field_viewports
-                        .insert((node.clone(), field.clone()), viewport);
+                    self.drafts.set_viewport(node, field, viewport);
                 }
                 Control::SavePath => self.save_viewport = viewport,
                 _ => {}

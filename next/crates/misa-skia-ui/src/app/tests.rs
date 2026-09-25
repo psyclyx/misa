@@ -785,11 +785,11 @@ fn inline_field_scrolls_to_measured_cursor_and_home_restores_start() {
     assert_eq!(app.field_text("one", "value"), Some(draft.as_str()));
     assert_eq!(end.4, draft);
     assert!(end.5 >= end.0 && end.5 + 1.5 <= end.0 + end.2 + 0.01);
-    assert!(app.field_viewports[&("one".into(), "value".into())].x > 0.0);
+    assert!(app.drafts.viewport("one", "value").x > 0.0);
     app.drive(Event::Key(Key::Home), Duration::ZERO);
     let home = field_paint(&app.frame(160, 400));
     assert_eq!(home.5, home.0);
-    assert_eq!(app.field_viewports[&("one".into(), "value".into())].x, 0.0);
+    assert_eq!(app.drafts.viewport("one", "value").x, 0.0);
     app.drive(Event::Key(Key::End), Duration::ZERO);
     let end_again = field_paint(&app.frame(160, 400));
     assert!((end_again.5 - end.5).abs() < 0.01);
@@ -798,7 +798,7 @@ fn inline_field_scrolls_to_measured_cursor_and_home_restores_start() {
     assert!(typed.5 + 1.5 <= typed.0 + typed.2 + 0.01);
     assert!(typed.5 >= typed.0);
     assert!(app.field_text("one", "value").unwrap().ends_with("終"));
-    let offset = app.field_viewports[&("one".into(), "value".into())].x;
+    let offset = app.drafts.viewport("one", "value").x;
     assert!((typed.7 - (typed.0 - offset)).abs() < 0.01);
     assert!(
         (typed.5
@@ -822,7 +822,7 @@ fn secret_field_scroll_and_caret_use_bullet_advances_only() {
     let paint = field_paint(&app.frame(160, 400));
     assert_eq!(paint.4, "•".repeat(40));
     assert!(!paint.4.contains('W'));
-    let offset = app.field_viewports[&("one".into(), "value".into())].x;
+    let offset = app.drafts.viewport("one", "value").x;
     assert!((paint.7 - (paint.0 - offset)).abs() < 0.01);
     assert!((paint.5 - (paint.7 + 40.0 * 9.0)).abs() < 0.01);
     assert!(paint.5 + 1.5 <= paint.0 + paint.2 + 0.01);
@@ -853,7 +853,7 @@ fn capped_block_field_scrolls_lines_and_caret_inside_clip() {
     assert_eq!(home.5, home.0);
     assert_eq!(home.6, bottom.6);
     app.drafts
-        .get_mut(&("one".into(), "value".into()))
+        .editor_mut("one", "value")
         .unwrap()
         .move_cursor(Motion::First);
     app.invalidate("one");
@@ -909,7 +909,7 @@ fn reports_and_rejected_prompts_preserve_local_typing() {
     );
     app.key(Key::Escape);
     app.drafts
-        .get_mut(&("composer".into(), "prompt".into()))
+        .editor_mut("composer", "prompt")
         .unwrap()
         .set_text("");
     app.reject_prompt("restored".into(), "Rejected".into());
@@ -1799,4 +1799,125 @@ fn editing_a_field_does_not_relayout_the_transcript() {
         matches!(&sent[..],[Command::Intent(Intent::Action {fields,..})] if fields[0].value=="draft")
     );
     assert_eq!(app.field_text("panel.input", "value"), Some("draft"));
+}
+
+#[test]
+fn list_item_edits_survive_reset_and_replace_without_reallocating_the_owner() {
+    let list = || {
+        Node::new(
+            "list",
+            Kind::List {
+                ordered: false,
+                items: vec![vec![form("nested", FieldKind::Inline)]],
+                markers: vec![],
+            },
+        )
+        .id("list")
+    };
+    let view = Node::section("root").id("root").child(list());
+    let mut app = App::new(view.clone(), test_metrics());
+    assert_eq!(app.field_text("nested", "value"), Some(""));
+    let editor = app.drafts.identity("nested", "value").unwrap();
+    app.frame(400, 400);
+    assert!(app.cache.contains_key("list"));
+    app.focus = Some(Control::Field {
+        node: "nested".into(),
+        field: "value".into(),
+    });
+    app.drive(Event::Text("my edit".into()), Duration::ZERO);
+    assert!(
+        !app.cache.contains_key("list"),
+        "embedded edits invalidate the indexed list owner"
+    );
+    app.set_view(view);
+    assert_eq!(app.drafts.identity("nested", "value"), Some(editor));
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Replace {
+            id: "list".into(),
+            node: list(),
+        }],
+        live: &[],
+        reset_live: false,
+    })
+    .unwrap();
+    assert_eq!(app.drafts.identity("nested", "value"), Some(editor));
+    assert_eq!(app.field_text("nested", "value"), Some("my edit"));
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Remove { id: "list".into() }],
+        live: &[],
+        reset_live: false,
+    })
+    .unwrap();
+    assert_eq!(app.field_text("nested", "value"), None);
+    assert_eq!(app.drafts.identity("nested", "value"), None);
+}
+
+#[test]
+fn clearing_secret_erases_its_viewport_and_only_invalidates_its_owner() {
+    let mut secret = form("private", FieldKind::Inline);
+    let Kind::Fields { fields } = &mut secret.kind else {
+        unreachable!()
+    };
+    fields[0].secret = true;
+    let mut app = App::new(
+        Node::section("root")
+            .id("root")
+            .child(secret)
+            .child(Node::text("text", [Span::plain("other")]).id("other")),
+        test_metrics(),
+    );
+    app.focus = Some(Control::Field {
+        node: "private".into(),
+        field: "value".into(),
+    });
+    app.drive(Event::Text("secret".repeat(30)), Duration::ZERO);
+    app.frame(180, 400);
+    assert!(app.drafts.viewport("private", "value").x > 0.0);
+    let unrelated = Arc::clone(&app.cache["other"]);
+    app.clear_secret_drafts();
+    assert_eq!(app.field_text("private", "value"), Some(""));
+    assert_eq!(app.drafts.viewport("private", "value").x, 0.0);
+    assert!(Arc::ptr_eq(&unrelated, &app.cache["other"]));
+    assert!(!app.cache.contains_key("private"));
+    app.frame(180, 400);
+    assert_eq!(app.drafts.viewport("private", "value").x, 0.0);
+}
+
+#[test]
+fn choice_selected_default_cycles_and_keeps_local_value_on_refresh() {
+    let mut view = form(
+        "choice",
+        FieldKind::Choice {
+            options: vec![
+                misa_proto::view::Choice {
+                    value: "first".into(),
+                    label: "First".into(),
+                    detail: None,
+                    metadata: None,
+                },
+                misa_proto::view::Choice {
+                    value: "second".into(),
+                    label: "Second".into(),
+                    detail: None,
+                    metadata: None,
+                },
+            ],
+            selected: Some("second".into()),
+        },
+    );
+    let mut app = App::new(view.clone(), test_metrics());
+    assert_eq!(app.field_text("choice", "value"), Some("second"));
+    app.activate(Control::Field {
+        node: "choice".into(),
+        field: "value".into(),
+    });
+    assert_eq!(app.field_text("choice", "value"), Some("first"));
+    let Kind::Fields { fields } = &mut view.kind else {
+        unreachable!()
+    };
+    fields[0].value = "second".into();
+    app.set_view(view);
+    assert_eq!(app.field_text("choice", "value"), Some("first"));
+    assert!(matches!(&app.submit("choice", "answer")[..],
+        [Command::Intent(Intent::Action { fields, .. })] if fields[0].value == "first"));
 }

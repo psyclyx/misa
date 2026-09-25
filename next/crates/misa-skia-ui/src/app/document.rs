@@ -34,6 +34,48 @@ impl DocumentStore {
     pub fn node(&self, id: &str) -> Option<&Node> {
         self.tree.node(id)
     }
+    /// Fields in list items are embedded in their list owner, not separate index entries.
+    /// The cache owner of a node embedded inside a list item is its indexed list.
+    pub fn cache_owner<'a>(&'a self, id: &'a str) -> &'a str {
+        if self.tree.contains(id) {
+            return id;
+        }
+        fn contains(node: &Node, id: &str) -> bool {
+            node.id == id
+                || node.children.iter().any(|child| contains(child, id))
+                || matches!(&node.kind, Kind::List { items, .. } if items.iter().flatten().any(|child| contains(child, id)))
+        }
+        self.tree
+            .nodes()
+            .find(|node| contains(node, id))
+            .map_or(id, |node| node.id.as_str())
+    }
+    pub fn field(&self, id: &str, field: &str) -> Option<&misa_proto::view::Field> {
+        fn find<'a>(node: &'a Node, id: &str, field: &str) -> Option<&'a misa_proto::view::Field> {
+            if node.id == id {
+                if let Kind::Fields { fields } = &node.kind {
+                    return fields.iter().find(|value| value.id == field);
+                }
+            }
+            if let Kind::List { items, .. } = &node.kind {
+                for child in items.iter().flatten() {
+                    if let Some(found) = find(child, id, field) {
+                        return Some(found);
+                    }
+                }
+            }
+            for child in &node.children {
+                if let Some(found) = find(child, id, field) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        self.tree
+            .node(id)
+            .and_then(|node| find(node, id, field))
+            .or_else(|| self.tree.nodes().find_map(|node| find(node, id, field)))
+    }
     pub fn stream_or_node(&self, id: &str) -> Option<&Node> {
         self.streams.get(id).or_else(|| self.node(id))
     }

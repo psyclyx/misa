@@ -4,7 +4,9 @@ use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
 use misa_pixel_ui::{Op, Scene, TextMetrics};
 use misa_proto::sync::{StreamUpdate, ViewOp};
-use misa_proto::view::{ActionOn, FieldKind, Kind, Node};
+#[cfg(test)]
+use misa_proto::view::FieldKind;
+use misa_proto::view::{ActionOn, Kind, Node};
 #[cfg(test)]
 use misa_render::Theme;
 use misa_style::Style;
@@ -16,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod document;
+mod drafts;
 mod layout;
 #[cfg(test)]
 mod tests;
@@ -143,8 +146,7 @@ pub struct App {
     pub hits: Vec<Hit>,
     pub focus: Option<Control>,
     pub expanded: BTreeSet<String>,
-    drafts: BTreeMap<(String, String), Editor>,
-    field_viewports: BTreeMap<(String, String), FieldViewport>,
+    drafts: drafts::Drafts,
     save_viewport: FieldViewport,
     save: Option<(String, Editor)>,
     picker: Option<misa_kit::picker::Picker>,
@@ -220,8 +222,7 @@ impl App {
             hits: vec![],
             focus: None,
             expanded: BTreeSet::new(),
-            drafts: BTreeMap::new(),
-            field_viewports: BTreeMap::new(),
+            drafts: drafts::Drafts::default(),
             save_viewport: FieldViewport::default(),
             save: None,
             picker: None,
@@ -322,21 +323,13 @@ impl App {
         });
     }
     pub fn clear_secret_drafts(&mut self) {
-        for ((node, field), edit) in &mut self.drafts {
-            if self.document.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields {fields} if fields.iter().any(|value| &value.id == field && value.secret))) { edit.set_text(""); }
+        for node in self.drafts.clear_secrets(&self.document) {
+            self.invalidate(&node);
         }
-        self.cache.clear();
-        self.moving_indicators.clear();
     }
     pub fn reject_prompt(&mut self, text: String, reason: String) {
-        let target = self
-            .drafts
-            .keys()
-            .find(|(_, field)| field == "prompt")
-            .cloned();
-        if let Some(key) = target.filter(|key| self.drafts[key].text().is_empty()) {
-            self.drafts.get_mut(&key).unwrap().set_text(text);
-            self.invalidate(&key.0);
+        if let Some(node) = self.drafts.recover_prompt(&text) {
+            self.invalidate(&node);
         } else {
             // Keep newer typing intact. The separate local report can be copied
             // even if the original composer was removed by a scope update.
@@ -351,55 +344,15 @@ impl App {
         misa_proto::sync::address(&mut view);
         self.cache.clear();
         self.moving_indicators.clear();
-        fn fields(node: &Node, keys: &mut Vec<(String, misa_proto::view::Field)>) {
-            if let Kind::Fields { fields } = &node.kind {
-                for field in fields {
-                    if !field.read_only {
-                        keys.push((node.id.clone(), field.clone()));
-                    }
-                }
-            }
-            for child in &node.children {
-                fields(child, keys);
-            }
-            if let Kind::List { items, .. } = &node.kind {
-                for child in items.iter().flatten() {
-                    fields(child, keys);
-                }
-            }
-        }
-        let mut keys = vec![];
-        fields(&view, &mut keys);
-        self.drafts.retain(|(node, field), _| {
-            keys.iter()
-                .any(|(id, value)| id == node && &value.id == field)
-        });
-        self.field_viewports
-            .retain(|key, _| self.drafts.contains_key(key));
-        for (node, field) in &keys {
-            self.drafts
-                .entry((node.clone(), field.id.clone()))
-                .or_insert_with(|| {
-                    let mut edit = Editor::new();
-                    let value = match &field.kind {
-                        FieldKind::Choice {
-                            selected: Some(value),
-                            ..
-                        } => value,
-                        _ => &field.value,
-                    };
-                    edit.set_text(value);
-                    edit
-                });
-        }
+        let keys = self.drafts.reset(&view);
         if self.save.is_some() {
             // A live update cannot steal focus from a local destination dialog.
         } else if let Some((node, field)) = keys.iter().find(|(node, _)| node == "panel.input" && self.document.node(node).is_none()) {
             if !matches!(&self.focus, Some(Control::Field { node: focused, .. }) if focused == node) {
-                self.focus = Some(Control::Field { node: node.clone(), field: field.id.clone() });
+                self.focus = Some(Control::Field { node: node.clone(), field: field.clone() });
             }
-        } else if self.focus.as_ref().is_none_or(|control| matches!(control, Control::Field { node, field } if !self.drafts.contains_key(&(node.clone(),field.clone())))) {
-            self.focus = keys.last().map(|(node,field)| Control::Field { node: node.clone(), field: field.id.clone() });
+        } else if self.focus.as_ref().is_none_or(|control| matches!(control, Control::Field { node, field } if !self.drafts.contains(node, field))) {
+            self.focus = keys.last().map(|(node,field)| Control::Field { node: node.clone(), field: field.clone() });
         }
         let changes = self
             .document
@@ -413,7 +366,7 @@ impl App {
     }
 
     fn invalidate(&mut self, id: &str) {
-        let mut cursor = Some(id.to_string());
+        let mut cursor = Some(self.document.cache_owner(id).to_string());
         while let Some(id) = cursor {
             self.cache.remove(&id);
             self.moving_indicators.remove(&id);
@@ -431,62 +384,20 @@ impl App {
             self.invalidate(&id);
         }
     }
-    fn refresh_fields(&mut self, node: &Node) {
-        if let Kind::Fields { fields } = &node.kind {
-            for field in fields.iter().filter(|field| !field.read_only) {
-                self.drafts
-                    .entry((node.id.clone(), field.id.clone()))
-                    .or_insert_with(|| {
-                        let mut edit = Editor::new();
-                        let value = match &field.kind {
-                            FieldKind::Choice {
-                                selected: Some(value),
-                                ..
-                            } => value,
-                            _ => &field.value,
-                        };
-                        edit.set_text(value);
-                        edit
-                    });
-            }
-            if node.id == "panel.input" && self.save.is_none() {
-                if let Some(field) = fields.iter().find(|field| !field.read_only) {
-                    self.focus = Some(Control::Field {
-                        node: node.id.clone(),
-                        field: field.id.clone(),
-                    });
-                }
-            }
-        }
-        for child in &node.children {
-            self.refresh_fields(child);
-        }
-    }
     fn refresh_tree_fields(&mut self, operations: &[ViewOp]) {
-        for op in operations {
-            match op {
-                ViewOp::Insert { node, .. } | ViewOp::Replace { node, .. } => {
-                    self.refresh_fields(node)
-                }
-                ViewOp::Remove { .. } => {}
-            }
+        let panel_input = self.drafts.changed(operations, &self.document);
+        if let Some((node, field)) = panel_input.filter(|_| self.save.is_none()) {
+            self.focus = Some(Control::Field { node, field });
         }
-        self.drafts.retain(|(id,field),_|self.document.node(id).is_some_and(|node|matches!(&node.kind,Kind::Fields {fields} if fields.iter().any(|value|&value.id==field && !value.read_only))));
-        self.field_viewports
-            .retain(|key, _| self.drafts.contains_key(key));
-        if matches!(&self.focus,Some(Control::Field {node,field}) if !self.drafts.contains_key(&(node.clone(),field.clone())))
+        if matches!(&self.focus, Some(Control::Field { node, field }) if !self.drafts.contains(node, field))
         {
             self.focus = None;
         }
         if self.focus.is_none() && self.save.is_none() {
             self.focus = self
                 .drafts
-                .keys()
-                .next_back()
-                .map(|(node, field)| Control::Field {
-                    node: node.clone(),
-                    field: field.clone(),
-                });
+                .last()
+                .map(|(node, field)| Control::Field { node, field });
         }
     }
     fn invalidate_document(&mut self, changes: document::Changes) {
@@ -536,9 +447,7 @@ impl App {
         self.document.decoded_image_bytes()
     }
     pub fn field_text(&self, node: &str, field: &str) -> Option<&str> {
-        self.drafts
-            .get(&(node.into(), field.into()))
-            .map(Editor::text)
+        self.drafts.text(node, field)
     }
     /// Pin an offline snapshot to the beginning of the view, rather than following
     /// live updates to the bottom. May be called before the first frame.
@@ -613,31 +522,7 @@ impl App {
                 }
             }
             Control::Field { node, field } => {
-                let kind = self.document.node(&node).and_then(|node| match &node.kind {
-                    Kind::Fields { fields } => fields
-                        .iter()
-                        .find(|value| value.id == field)
-                        .map(|field| field.kind.clone()),
-                    _ => None,
-                });
-                if let Some(edit) = self.drafts.get_mut(&(node, field)) {
-                    match kind {
-                        Some(FieldKind::Bool) => edit.set_text(if edit.text() == "true" {
-                            "false"
-                        } else {
-                            "true"
-                        }),
-                        Some(FieldKind::Choice { options, .. }) if !options.is_empty() => {
-                            let next = options
-                                .iter()
-                                .position(|option| option.value == edit.text())
-                                .map(|index| (index + 1) % options.len())
-                                .unwrap_or(0);
-                            edit.set_text(&options[next].value);
-                        }
-                        _ => {}
-                    }
-                }
+                self.drafts.cycle(&node, &field, &self.document);
             }
             Control::Action { node, action } if action == "attachment.save" => {
                 self.save = Some((node, Editor::new()));
@@ -679,11 +564,7 @@ impl App {
             Kind::Fields { fields } => fields.clone(),
             _ => vec![],
         };
-        for field in &mut fields {
-            if let Some(edit) = self.drafts.get(&(node_id.into(), field.id.clone())) {
-                field.value = edit.text().into();
-            }
-        }
+        self.drafts.overlay(node_id, &mut fields);
         let intent = if action_id == "composer.submit" {
             let text = fields
                 .iter()
@@ -709,20 +590,14 @@ impl App {
         // Other forms remain locally editable until their owner acknowledges or
         // removes the request; validation/rejection must not erase the input.
         if action_id == "composer.submit" && action.on == ActionOn::Submit {
-            for ((node, _), edit) in &mut self.drafts {
-                if node == node_id {
-                    edit.submit();
-                }
-            }
+            self.drafts.submit_composer(node_id);
         }
         vec![Command::Intent(intent)]
     }
     fn editor(&mut self) -> Option<&mut Editor> {
         match &self.focus {
             Some(Control::SavePath) => self.save.as_mut().map(|(_, edit)| edit),
-            Some(Control::Field { node, field }) => {
-                self.drafts.get_mut(&(node.clone(), field.clone()))
-            }
+            Some(Control::Field { node, field }) => self.drafts.editor_mut(node, field),
             _ => None,
         }
     }
@@ -751,7 +626,7 @@ impl App {
         }
         if let Some(control @ Control::Field { .. }) = self.focus.clone() {
             let discrete = match &control {
-                Control::Field { node, field } => self.document.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields { fields } if fields.iter().any(|value| &value.id == field && matches!(value.kind, FieldKind::Bool | FieldKind::Choice { .. })))),
+                Control::Field { node, field } => self.drafts.discrete(node, field, &self.document),
                 _ => false,
             };
             if discrete {
@@ -812,16 +687,8 @@ impl App {
                 }
                 Key::Enter { .. } => {
                     if let Some(candidate) = picker.selected().cloned() {
-                        let target = self
-                            .drafts
-                            .keys()
-                            .find(|(_, field)| field == "prompt")
-                            .cloned();
-                        if let Some((node, field)) = target {
-                            self.drafts
-                                .get_mut(&(node.clone(), field.clone()))
-                                .unwrap()
-                                .set_text(&format!("/{} ", candidate.value));
+                        if let Some((node, field)) = self.drafts.insert_command(&candidate.value) {
+                            self.invalidate(&node);
                             self.focus = Some(Control::Field { node, field });
                             self.picker = None;
                             self.notice =
@@ -915,7 +782,7 @@ impl App {
         }
         if let Some(control @ Control::Field { .. }) = self.focus.clone() {
             let discrete = match &control {
-                Control::Field {node,field} => self.document.node(node).is_some_and(|node| matches!(&node.kind, Kind::Fields {fields} if fields.iter().any(|value| &value.id == field && matches!(value.kind,FieldKind::Bool|FieldKind::Choice {..})))),
+                Control::Field { node, field } => self.drafts.discrete(node, field, &self.document),
                 _ => false,
             };
             if discrete {
