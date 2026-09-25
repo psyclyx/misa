@@ -1,0 +1,14 @@
+[package]
+name = "misa-pixel-testbed"
+description = "Independent native pixel fixture with headless Vulkan readback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+misa-pixel-ui = { path = "../misa-pixel-ui" }
+misa-style.workspace = true
+misa-window-core = { path = "../misa-window-core" }
+misa-skia-paint = { path = "../misa-skia-paint" }
+misa-skia-vulkan = { path = "../misa-skia-vulkan" }

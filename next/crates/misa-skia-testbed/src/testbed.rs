@@ -1,7 +1,6 @@
 //! Shared offline fixtures for the default headless GPU driver and optional window.
 //! No connection, daemon discovery, clipboard, or preferences are initialized here.
 pub mod headless;
-mod native;
 #[cfg(feature = "native")]
 pub mod window;
 
@@ -9,6 +8,7 @@ pub mod window;
 use crate::app::PULSE_PERIOD;
 use crate::app::{App, Key};
 use crate::{Op, Scene};
+use misa_pixel_testbed::Dashboard;
 use misa_pixel_ui::TextMetrics;
 use misa_proto::view::{Action, ActionOn, Field, FieldKind, Kind, Node, Span};
 use misa_style::Style;
@@ -26,7 +26,7 @@ enum Mode {
 
 struct Fixtures {
     mode: Mode,
-    native: native::Dashboard,
+    native: Dashboard,
     metrics: Arc<dyn TextMetrics>,
     semantic: App,
     deadline: Option<Duration>,
@@ -38,7 +38,7 @@ impl Fixtures {
             .map_err(|error| format!("Cannot load Skia text metrics: {error}"))?;
         Ok(Self {
             mode: Mode::Native,
-            native: native::Dashboard { selected: false },
+            native: Dashboard { selected: false },
             semantic: App::new(semantic_fixture(), metrics.clone()),
             metrics,
             deadline: None,

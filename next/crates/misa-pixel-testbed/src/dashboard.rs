@@ -1,6 +1,6 @@
 //! Toolkit-owned scene: no semantic tree or protocol types involved.
-use crate::{Op, Scene};
 use misa_pixel_ui::{Button, Rect, TextMetrics};
+use misa_pixel_ui::{Op, Scene};
 use misa_style::Style;
 
 #[derive(Clone, Copy)]
@@ -8,7 +8,7 @@ enum NativeAction {
     Toggle,
 }
 
-pub(super) struct Dashboard {
+pub struct Dashboard {
     pub selected: bool,
 }
 

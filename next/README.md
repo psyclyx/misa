@@ -119,7 +119,8 @@ headless tests. Open a native window, or request a headless GPU-rendered PNG exp
 
 ```sh
 cargo run -p misa-skia -- --ticket misa:<endpoint id>:demo
-cargo run -p misa-skia-testbed               # default: synthetic input + clock, offscreen Vulkan readback
+cargo run -p misa-pixel-testbed              # independent native pixel fixture; headless Vulkan GPU readback
+cargo run -p misa-skia-testbed               # native + semantic fixture, synthetic input + clock, Vulkan readback
 cargo run -p misa-skia-testbed --features native -- --window  # optional native window (Ctrl+1/2)
 cargo run -p misa-skia-testbed --release -- --bench-gpu  # offscreen Vulkan baseline with readback
 cargo run -p misa-skia-testbed -- --bench-ab  # historical CPU font-cache comparison
@@ -143,10 +144,11 @@ measurement and button primitives live in `misa-pixel-ui`. Skia canvas
 painting and font resolution live in `misa-skia-paint`; `misa-skia-vulkan`
 uses that same painter for both offscreen readback and native swapchain presentation.
 The connected hosts (`misa-tui`, `misa-skia`) and standalone fixture apps
-(`misa-tui-testbed`, `misa-skia-testbed`) depend on these crates independently.
+(`misa-tui-testbed`, `misa-skia-testbed`, `misa-pixel-testbed`) depend on these crates independently.
 Neither UI crate nor fixture app depends on `misa-client` or `misa-transport`.
-The pixel fixture drives the same input and GPU painter as production without a window;
-both fixtures include native component and semantic `misa-proto` views. All semantic
+`misa-pixel-testbed` is native-only: its Dashboard, normalized input driver and
+Vulkan readback have no protocol/tree/kit/render dependency. `misa-skia-testbed`
+uses that Dashboard for Ctrl+1 and keeps its separate semantic `misa-proto` fixture. All semantic
 pixel views, including PNG exports, use the same `App` layout; its text positions,
 wrapping, caret and selection use measurements from the font used for painting.
 
@@ -165,6 +167,7 @@ nix-build next -A packages.misa-web
 nix-build next -A packages.misa-skia
 nix-build next -A packages.misa-tui-testbed
 nix-build next -A packages.misa-skia-testbed
+nix-build next -A packages.misa-pixel-testbed
 nix-build next -A packages.misa-guest
 nix-build next -A packages.misa-android
 nix-build next -A packages.checks
