@@ -10,10 +10,12 @@ use std::{collections::BTreeMap, sync::Arc};
 
 mod chooser;
 mod forms;
+mod presentations;
 mod requests;
 use chooser::Chooser;
 pub use chooser::DaemonChoice;
 use forms::Forms;
+use presentations::Presentations;
 use requests::Requests;
 
 /// Actions produced by host-owned workspace controls. UI DocumentUi effects are kept
@@ -447,12 +449,8 @@ pub struct Local {
     appearance: misa_pixel_document::appearance::Choice,
     forms: Forms,
     chooser: Chooser,
-    overlay: Option<DocumentUi>,
     pub(crate) requests: Requests,
-    catalog: Vec<misa_proto::presentation::Presentation>,
-    preferences: misa_client::composition::Preferences,
-    pub observation: Option<misa_client::ObservationId>,
-    choosing_presentations: bool,
+    presentations: Presentations,
 }
 fn action(id: &str, label: &str, args: Value, on: ActionOn) -> ViewAction {
     ViewAction {
@@ -477,12 +475,8 @@ impl Local {
             appearance: Default::default(),
             forms: Forms::new(metrics.clone()),
             chooser: Chooser::new(),
-            overlay: None,
             requests: Requests::new(metrics.clone()),
-            catalog: Vec::new(),
-            preferences: Default::default(),
-            observation: None,
-            choosing_presentations: false,
+            presentations: Presentations::new(),
         }
     }
 
@@ -498,9 +492,8 @@ impl Local {
     pub fn appearance(&mut self, choice: misa_pixel_document::appearance::Choice) {
         if self.appearance != choice {
             self.appearance = choice;
-            if self.choosing_presentations {
-                self.open_presentations();
-            }
+            self.presentations
+                .refresh_appearance(self.metrics.clone(), self.appearance);
         }
     }
     pub fn commands(
@@ -526,8 +519,7 @@ impl Local {
         self.report = None;
         self.forms.hide();
         self.chooser.close();
-        self.overlay = None;
-        self.choosing_presentations = false;
+        self.presentations.close();
         self.requests.hide();
     }
     pub fn directory(&mut self, entries: Vec<DaemonChoice>) {
@@ -536,8 +528,7 @@ impl Local {
     pub fn open_chooser(&mut self) {
         self.report = None;
         self.forms.hide();
-        self.choosing_presentations = false;
-        self.overlay = None;
+        self.presentations.close();
         self.requests.hide();
         self.chooser.open(self.metrics.clone());
     }
@@ -547,99 +538,24 @@ impl Local {
         preferences: misa_client::composition::Preferences,
         observation: misa_client::ObservationId,
     ) {
-        self.catalog = catalog;
-        self.preferences = preferences;
-        self.observation = Some(observation);
-        if self.choosing_presentations {
-            self.open_presentations();
-        }
+        self.presentations.update(
+            catalog,
+            preferences,
+            observation,
+            self.metrics.clone(),
+            self.appearance,
+        );
+    }
+    pub fn observation(&self) -> Option<misa_client::ObservationId> {
+        self.presentations.observation()
     }
     pub fn open_presentations(&mut self) {
         self.report = None;
         self.forms.hide();
         self.requests.hide();
-        self.choosing_presentations = true;
-        let mut root = Node::section("presentations")
-            .id("presentations")
-            .label(format!(
-                "Presentations · appearance {} · Escape closes",
-                self.appearance.name()
-            ));
-        for presentation in self
-            .catalog
-            .iter()
-            .filter(|entry| entry.id != "conversation")
-            .chain(
-                self.catalog
-                    .iter()
-                    .filter(|entry| entry.id == "conversation"),
-            )
-        {
-            let choice = self
-                .preferences
-                .0
-                .get(&presentation.id)
-                .cloned()
-                .unwrap_or_else(|| {
-                    if presentation.id == "status" || presentation.id == "conversation" {
-                        misa_client::composition::Choice::Auto
-                    } else {
-                        misa_client::composition::Choice::Hidden
-                    }
-                });
-            let chosen = match &choice {
-                misa_client::composition::Choice::Hidden => "Hidden",
-                misa_client::composition::Choice::Auto => "Automatic",
-                misa_client::composition::Choice::Variant(id) => id,
-            };
-            let mut row = Node::section("presentation")
-                .id(format!("presentation.{}", presentation.id))
-                .label(format!("{} · {}", presentation.title, chosen));
-            for (label, value) in [("Hide", "hide"), ("Automatic", "auto")] {
-                if presentation.id == "conversation" && value == "hide" {
-                    continue;
-                }
-                row = row.action(action(
-                    &format!("presentation.{value}"),
-                    label,
-                    Value::map([
-                        ("id", Value::str(&presentation.id)),
-                        ("choice", Value::str(value)),
-                    ]),
-                    ActionOn::Click,
-                ));
-            }
-            for variant in presentation
-                .variants
-                .iter()
-                .filter(|variant| variant.requirements.is_empty())
-            {
-                row = row.action(action(
-                    &format!("variant.{}", variant.id),
-                    &variant.id,
-                    Value::map([
-                        ("id", Value::str(&presentation.id)),
-                        ("choice", Value::str(&variant.id)),
-                    ]),
-                    ActionOn::Click,
-                ));
-            }
-            root = root.child(row);
-        }
-        for choice in [
-            misa_pixel_document::appearance::Choice::System,
-            misa_pixel_document::appearance::Choice::Dark,
-            misa_pixel_document::appearance::Choice::Light,
-        ] {
-            root = root.action(action(
-                &format!("appearance.{}", choice.name()),
-                &format!("Theme: {}", choice.name()),
-                Value::str(choice.name()),
-                ActionOn::Click,
-            ));
-        }
         self.chooser.close();
-        self.overlay = Some(DocumentUi::new(root, self.metrics.clone()));
+        self.presentations
+            .open(self.metrics.clone(), self.appearance);
     }
     /// Opening attention dismisses other local overlays while awaiting its exact generation.
     pub fn show_request(&mut self, id: String, generation: i64) {
@@ -650,7 +566,7 @@ impl Local {
         self.report = None;
         self.forms.hide();
         self.chooser.close();
-        self.overlay = None;
+        self.presentations.close();
         self.requests.cycle();
     }
     fn app(&mut self) -> Option<&mut DocumentUi> {
@@ -660,8 +576,8 @@ impl Local {
         if self.forms.is_active() {
             return self.forms.app();
         }
-        if self.overlay.is_some() {
-            return self.overlay.as_mut();
+        if self.presentations.is_open() {
+            return self.presentations.app();
         }
         if self.chooser.is_open() {
             self.chooser.app()
@@ -721,26 +637,9 @@ impl Local {
                     ..
                 }) if self.forms.is_active() => self.forms.action(&action, fields, args),
                 Command::Intent(misa_kit::intent::Intent::Action { action, args, .. })
-                    if self.overlay.is_some() =>
+                    if self.presentations.is_open() =>
                 {
-                    match action.as_str() {
-                        action if action.starts_with("appearance.") => Some(Action::Appearance(
-                            misa_pixel_document::appearance::Choice::parse(args.as_str()?)?,
-                        )),
-                        value
-                            if value.starts_with("presentation.")
-                                || value.starts_with("variant.") =>
-                        {
-                            let id = args.get("id")?.as_str()?.to_owned();
-                            let choice = match args.get("choice")?.as_str()? {
-                                "hide" => PresentationChoice::Hidden,
-                                "auto" => PresentationChoice::Auto,
-                                value => PresentationChoice::Variant(value.into()),
-                            };
-                            Some(Action::Presentation { id, choice })
-                        }
-                        _ => None,
-                    }
+                    self.presentations.action(&action, &args)
                 }
                 Command::Intent(misa_kit::intent::Intent::Action {
                     action,

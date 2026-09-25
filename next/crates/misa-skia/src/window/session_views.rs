@@ -649,7 +649,7 @@ fn apply_update(
             }
         }
         Update::Documents(deliveries) => {
-            if local.observation != deliveries.first().map(|delivery| delivery.observation_id()) {
+            if local.observation() != deliveries.first().map(|delivery| delivery.observation_id()) {
                 return;
             }
             for (slot, update) in connection::Delivery::capture_many(&deliveries) {
