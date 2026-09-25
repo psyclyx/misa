@@ -2,6 +2,7 @@
 pub mod graphics;
 pub mod output;
 pub mod terminal_style;
+pub mod viewport;
 
 use misa_style::Style;
 

@@ -7,6 +7,7 @@ use misa_proto::Node;
 use misa_proto::sync::StreamUpdate;
 use misa_proto::sync::{IndexedTree, Stream, ViewOp};
 use misa_proto::view::{ActionOn, Kind};
+use misa_terminal_ui::viewport::{Head, Request, Viewport};
 use std::collections::HashMap;
 
 /// Rows an image may occupy in the current view. The verbose transcript lets an
@@ -156,19 +157,6 @@ impl Rows {
         (index, row.saturating_sub(sum), steps)
     }
 }
-/// A semantic position, independent of the physical row it currently occupies.
-///
-/// The previous system anchored the viewport to a source node and a character
-/// offset; the rewrite's rendered lines only carry the node id, so the anchor is
-/// the node under the top row and its ordinal among the consecutive rows that
-/// share it. That is enough to hold a reader's place while earlier content grows.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Anchor {
-    node: Option<String>,
-    offset: usize,
-}
-
-// TODO(misa-linear): move the retained viewport once it is decoupled from Screen
 pub struct Retained {
     tree: IndexedTree,
     owners: HashMap<String, Owner>,
@@ -186,27 +174,7 @@ pub struct Retained {
     theme: String,
     opened: Vec<String>,
     components: misa_lines::components::Settings,
-    /// The semantic row the reader scrolled to, when not following.
-    anchor: Option<Anchor>,
-    /// The layout generation `anchor_row` was resolved against, so an ordinary
-    /// repaint does not re-walk the document.
-    anchor_epoch: u64,
-    /// The resolved first row for the current anchor and layout.
-    anchor_row: usize,
-    /// The last `Screen::scroll_intent` this viewport resolved.
-    last_intent: u64,
-    /// The selection head the viewport last revealed, so a movement scrolls the
-    /// caret into view once rather than fighting a reader who scrolled away.
-    revealed_head: Option<crate::select::Spot>,
-    /// Bumped whenever retained lengths change.
-    layout_epoch: u64,
-    /// The first row the last frame resolved to; the event loop writes it back to
-    /// `Screen::scroll` so the next delta is relative to what was shown.
-    resolved_scroll: usize,
-    /// Whether the viewport is showing the tail. It mirrors `Screen::follow` and
-    /// is also set when a reader scrolls to the last page, so new output keeps
-    /// arriving in view once they catch up.
-    following: bool,
+    viewport: Viewport<String, crate::select::Spot>,
     pub work: Work,
 }
 impl Retained {
@@ -230,14 +198,7 @@ impl Retained {
             theme: screen.theme.name.clone(),
             opened: screen.prefs.opened.clone(),
             components: screen.prefs.components.clone(),
-            anchor: None,
-            anchor_epoch: 0,
-            anchor_row: 0,
-            last_intent: 0,
-            revealed_head: None,
-            layout_epoch: 0,
-            resolved_scroll: 0,
-            following: screen.follow,
+            viewport: Viewport::new(screen.follow),
             work: Work::default(),
         };
         out.order = out.build(view, 0, 0, screen);
@@ -579,7 +540,7 @@ impl Retained {
             }
         }
         self.rows = Rows::new(&self.lengths);
-        self.layout_epoch = self.layout_epoch.wrapping_add(1);
+        self.viewport.layout_changed();
     }
     fn lines(&self, segment: &Segment) -> &[Line] {
         match segment {
@@ -601,6 +562,7 @@ impl Retained {
     }
 
     /// The line at a physical row, or `None` for a row outside the document.
+    #[cfg(test)]
     fn row_line(&self, row: usize) -> Option<&Line> {
         let (index, offset, _) = self.rows.locate(row);
         if index >= self.segments.len() {
@@ -609,116 +571,64 @@ impl Retained {
         self.lines(&self.segments[index])[..self.lengths[index]].get(offset)
     }
 
-    /// The anchor for a row: the node it belongs to and how many rows above it in
-    /// the same node's run precede it. This is the rewrite's `line-anchor`.
-    fn anchor_at(&self, row: usize) -> Anchor {
-        let node = self.row_line(row).and_then(|line| line.node.clone());
-        let mut offset = 0;
-        if node.is_some() {
-            let mut previous = row;
-            while previous > 0 {
-                previous -= 1;
-                if self.row_line(previous).and_then(|line| line.node.as_ref()) != node.as_ref() {
-                    break;
-                }
-                offset += 1;
-            }
-        }
-        Anchor { node, offset }
-    }
-
-    /// The row an anchor currently occupies, preferring the same run offset. This
-    /// is the rewrite's `anchored-row`: it looks for the node without assuming the
-    /// physical row survived an update above it.
-    fn anchored_row(&self, anchor: &Anchor) -> Option<usize> {
-        let want = anchor.node.as_ref()?;
-        let mut row = 0;
-        for (index, segment) in self.segments.iter().enumerate() {
-            for line in &self.lines(segment)[..self.lengths[index]] {
-                if line.node.as_deref() == Some(want.as_str()) {
-                    return Some(row + anchor.offset);
-                }
-                row += 1;
-            }
-        }
-        None
-    }
-
-    /// Resolve the first row of the viewport.
-    ///
-    /// Following owns the tail. A reader's scroll owns a physical row until the
-    /// layout changes under it; then the anchor decides where they stay. A plain
-    /// repaint with no structural change reuses the previous resolution, so
-    /// anchoring never walks the document on the animation tick.
     fn viewport_start(&mut self, screen: &Screen, room: usize) -> usize {
-        let total = self.rows.total();
-        // The last page starts here, so the final row sits on the viewport's last
-        // line. Clamping to `total - 1` would leave most of a short page blank and
-        // let the composer ride up with the transcript.
-        let bottom = total.saturating_sub(room);
-        if screen.follow {
-            self.following = true;
-        }
-        let user_scrolled = self.last_intent != screen.scroll_intent;
-        if user_scrolled {
-            // A reader who scrolls to or past the last page has caught up, so
-            // following resumes and later output stays visible.
-            self.following = screen.scroll >= bottom;
-        }
-        if self.following {
-            self.anchor = None;
-            self.last_intent = screen.scroll_intent;
-            self.anchor_row = bottom;
-            self.anchor_epoch = self.layout_epoch;
-            self.resolved_scroll = bottom;
-            return bottom;
-        }
-        let intent = screen.scroll.min(bottom);
-        if user_scrolled || self.anchor.is_none() {
-            self.last_intent = screen.scroll_intent;
-            self.anchor = Some(self.anchor_at(intent));
-            self.anchor_row = intent;
-            self.anchor_epoch = self.layout_epoch;
-        } else if self.anchor_epoch != self.layout_epoch {
-            self.anchor_row = self
-                .anchor
-                .as_ref()
-                .and_then(|anchor| self.anchored_row(anchor))
-                .unwrap_or(intent);
-            self.anchor_epoch = self.layout_epoch;
-        }
-        // Reveal the focused selection once per movement. This is the previous
-        // system's selection reveal: navigating the document brings the caret into
-        // view, and a reader who then scrolls away is not fought on every repaint.
-        if let Some(selection) = &screen.selection {
-            let head = selection.head();
-            if self.revealed_head != Some(head) {
-                self.revealed_head = Some(head);
-                if head.row < self.anchor_row {
-                    self.anchor_row = head.row;
-                } else if head.row >= self.anchor_row.saturating_add(room) {
-                    self.anchor_row = head.row.saturating_add(1).saturating_sub(room);
+        let request = Request {
+            scroll: screen.scroll,
+            follow: screen.follow,
+            intent: screen.scroll_intent,
+            room,
+            head: screen.selection.as_ref().map(|selection| {
+                let identity = selection.head();
+                Head {
+                    identity,
+                    row: identity.row,
                 }
-                self.anchor = Some(self.anchor_at(self.anchor_row));
-                self.anchor_epoch = self.layout_epoch;
+            }),
+        };
+        let total = self.rows.total();
+        // Separate viewport mutation from immutable document lookups.
+        let rows = &self.rows;
+        let segments = &self.segments;
+        let lengths = &self.lengths;
+        let owners = &self.owners;
+        let live = &self.live;
+        let lines = |segment: &Segment| -> &[Line] {
+            match segment {
+                Segment::Owner(id) => &owners[id].lines,
+                Segment::Live(id) => &live[id].lines,
             }
-        } else {
-            self.revealed_head = None;
-        }
-        self.resolved_scroll = self.anchor_row.min(bottom);
-        self.resolved_scroll
+        };
+        self.viewport.resolve(
+            request,
+            total,
+            |row| {
+                let (index, offset, _) = rows.locate(row);
+                segments
+                    .get(index)
+                    .and_then(|segment| lines(segment)[..lengths[index]].get(offset))
+                    .and_then(|line| line.node.clone())
+            },
+            |key, offset| {
+                let mut row = 0;
+                for (index, segment) in segments.iter().enumerate() {
+                    for line in &lines(segment)[..lengths[index]] {
+                        if line.node.as_deref() == Some(key.as_str()) {
+                            return Some(row + offset);
+                        }
+                        row += 1;
+                    }
+                }
+                None
+            },
+        )
     }
 
-    /// The first row the last frame used, for the event loop to write back into
-    /// `Screen::scroll` so scroll deltas are relative to the resolved position.
     pub fn resolved_scroll(&self) -> usize {
-        self.resolved_scroll
+        self.viewport.resolved_scroll()
     }
 
-    /// Whether the viewport is showing (and staying on) the tail. The event loop
-    /// mirrors it back into `Screen::follow` so every frame agrees.
     pub fn following(&self) -> bool {
-        self.following
+        self.viewport.following()
     }
     fn current(&mut self, stream: Stream, screen: &Screen) {
         let id = stream.id.clone();
@@ -796,7 +706,7 @@ impl Retained {
                             self.work.index_steps +=
                                 self.rows.change(index, self.lengths[index], new);
                             self.lengths[index] = new;
-                            self.layout_epoch = self.layout_epoch.wrapping_add(1);
+                            self.viewport.layout_changed();
                         }
                     }
                 }
@@ -1365,6 +1275,46 @@ mod tests {
     }
 
     #[test]
+    fn a_wrapped_semantic_row_keeps_its_run_offset_after_an_insert() {
+        let mut screen = Screen::new(20, 12);
+        let mut root = Node::section("session").id("session");
+        root.children.push(text("wrapped", &"word ".repeat(30)));
+        for i in 0..10 {
+            root.children.push(text(&format!("tail{i}"), "tail"));
+        }
+        let mut retained = Retained::new(root, &screen);
+        let first = (0..retained.rows.total())
+            .find(|&row| {
+                retained.row_line(row).and_then(|line| line.node.as_deref()) == Some("wrapped")
+            })
+            .unwrap();
+        assert_eq!(
+            retained.row_line(first + 1).unwrap().node.as_deref(),
+            Some("wrapped")
+        );
+        screen.follow = false;
+        screen.scroll = first + 1;
+        screen.scroll_intent = 1;
+        assert_eq!(retained.viewport_start(&screen, 2), first + 1);
+        retained
+            .apply_ops(
+                &[ViewOp::Insert {
+                    parent: "session".into(),
+                    before: Some("wrapped".into()),
+                    node: text("inserted", "new row"),
+                }],
+                &screen,
+            )
+            .unwrap();
+        let start = retained.viewport_start(&screen, 2);
+        assert_eq!(start, first + 2);
+        assert_eq!(
+            retained.row_line(start).unwrap().node.as_deref(),
+            Some("wrapped")
+        );
+    }
+
+    #[test]
     fn a_plain_repaint_does_not_rewalk_the_document_and_a_user_scroll_reanchors() {
         let mut screen = Screen::new(40, 12);
         let mut retained = Retained::new(document(6), &screen);
@@ -1424,7 +1374,7 @@ mod tests {
         let total = retained.rows.total();
         assert!(screen.follow);
         assert_eq!(retained.viewport_start(&screen, 3), total.saturating_sub(3));
-        assert!(retained.anchor.is_none());
+        assert!(retained.following());
     }
 
     #[test]
