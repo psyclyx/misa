@@ -1,5 +1,6 @@
+use misa_pixel_ui::{Op, Scene};
 use misa_proto::view::{Node, Span};
-use misa_skia_ui::{Op, Scene, app::App};
+use misa_skia_ui::app::App;
 use misa_skia_vulkan::Renderer;
 use misa_style::Color;
 use std::{sync::Arc, time::Duration};
@@ -106,10 +107,10 @@ fn app_drives_two_deterministic_gpu_frames() {
     let mut app = App::new(tree.clone(), metrics.clone());
     let mut renderer = Renderer::new().expect("Vulkan/Ganesh device required (lavapipe is fine)");
     let a = renderer
-        .frame_at(&mut app, 320, 160, Duration::ZERO, BG)
+        .render(&app.frame_at(320, 160, Duration::ZERO), BG)
         .expect("first App frame");
     let b = renderer
-        .frame_at(&mut app, 320, 160, Duration::ZERO, BG)
+        .render(&app.frame_at(320, 160, Duration::ZERO), BG)
         .expect("second App frame");
     assert_eq!(a, b);
     assert_eq!(a.dimensions(), (320, 160));

@@ -233,7 +233,7 @@ fn write_frame(
     columns: u32,
     rows: u32,
     out: &str,
-    metrics: std::sync::Arc<dyn misa_skia_ui::TextMetrics>,
+    metrics: std::sync::Arc<dyn misa_pixel_ui::TextMetrics>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scene = snapshot_scene(view, columns, rows, metrics);
     let pixels = renderer.render(&scene, misa_style::Color::Rgb(20, 22, 26))?;
@@ -247,8 +247,8 @@ fn snapshot_scene(
     view: &Node,
     columns: u32,
     rows: u32,
-    metrics: std::sync::Arc<dyn misa_skia_ui::TextMetrics>,
-) -> misa_skia_ui::Scene {
+    metrics: std::sync::Arc<dyn misa_pixel_ui::TextMetrics>,
+) -> misa_pixel_ui::Scene {
     // Size the offline frame using the resolved paint typeface's measurements.
     let font_size = 15.0;
     let margin = 24.0;
@@ -263,8 +263,8 @@ fn snapshot_scene(
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
+    use misa_pixel_ui::Op;
     use misa_proto::view::Span;
-    use misa_skia_ui::Op;
 
     #[test]
     fn snapshot_keeps_first_glyphs_visible_at_one_and_multiple_rows() {

@@ -1,0 +1,11 @@
+[package]
+name = "misa-pixel-ui"
+description = "Protocol-free pixel primitives and button layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+image.workspace = true
+misa-style.workspace = true

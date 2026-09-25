@@ -11,14 +11,15 @@ default = []
 window = ["dep:ash-window", "dep:raw-window-handle"]
 
 [dependencies]
+misa-pixel-ui = { path = "../misa-pixel-ui" }
 ash = { version = "0.38", default-features = false, features = ["loaded", "std"] }
 ash-window = { version = "0.13", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 image.workspace = true
-misa-skia-ui = { path = "../misa-skia-ui" }
 misa-skia-paint = { path = "../misa-skia-paint" }
 misa-style.workspace = true
 skia-safe.workspace = true
 
 [dev-dependencies]
+misa-skia-ui = { path = "../misa-skia-ui" }
 misa-proto.workspace = true

@@ -25,8 +25,8 @@ impl TextMetrics for TestMetrics {
         }
         widths
     }
-    fn line_metrics(&self, _size: f32) -> crate::LineMetrics {
-        crate::LineMetrics {
+    fn line_metrics(&self, _size: f32) -> misa_pixel_ui::LineMetrics {
+        misa_pixel_ui::LineMetrics {
             ascent: -15.0,
             descent: 4.0,
             leading: 2.0,
@@ -664,6 +664,41 @@ fn status_footer_and_queue_components_render_natively() {
     ));
 }
 
+#[test]
+fn semantic_action_uses_measured_button_paint_and_hit_bounds() {
+    let view = Node::section("root").id("root").action(Action {
+        id: "go".into(),
+        on: ActionOn::Submit,
+        label: Some("Run".into()),
+        args: Value::Null,
+    });
+    let mut app = App::new(view, test_metrics());
+    let scene = app.frame_at(400, 200, Duration::ZERO);
+    let hit = app
+        .hits
+        .iter()
+        .find(|hit| matches!(&hit.control, Control::Action { action, .. } if action == "go"))
+        .unwrap();
+    let bounds = misa_pixel_ui::Rect {
+        x: hit.x,
+        y: hit.y,
+        width: hit.width,
+        height: hit.height,
+    };
+    assert!(bounds.contains(hit.x + 1.0, hit.y + 1.0));
+    assert!(!bounds.contains(hit.x + hit.width, hit.y + 1.0));
+    fn button_clip(ops: &[Op]) -> bool {
+        ops.iter().any(|op| match op {
+            Op::Group { ops, .. } => button_clip(ops),
+            Op::ClipRect { width, ops, .. } => {
+                *width == 248.0 && matches!(&ops[0], Op::Text { text, .. } if text == "Run")
+            }
+            _ => false,
+        })
+    }
+    assert!(button_clip(&scene.ops));
+}
+
 fn form(id: &str, kind: FieldKind) -> Node {
     Node::new(
         "panel",
@@ -1207,7 +1242,7 @@ fn giant_unwrapped_status_and_label_only_measure_and_paint_visible_prefixes() {
             self.longest.fetch_max(value.len(), Ordering::Relaxed);
             TestMetrics.advances(value, size)
         }
-        fn line_metrics(&self, size: f32) -> crate::LineMetrics {
+        fn line_metrics(&self, size: f32) -> misa_pixel_ui::LineMetrics {
             TestMetrics.line_metrics(size)
         }
     }
@@ -1358,7 +1393,7 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
             self.0.fetch_add(1, Ordering::Relaxed);
             TestMetrics.advances(value, size)
         }
-        fn line_metrics(&self, size: f32) -> crate::LineMetrics {
+        fn line_metrics(&self, size: f32) -> misa_pixel_ui::LineMetrics {
             TestMetrics.line_metrics(size)
         }
     }

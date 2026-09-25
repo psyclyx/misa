@@ -4,14 +4,13 @@
 use ash::{vk, vk::Handle};
 #[cfg(feature = "window")]
 mod window;
+use misa_pixel_ui::Scene;
 use misa_skia_paint::draw_scene;
-use misa_skia_ui::{Scene, app::App};
 use misa_style::Color;
 use skia_safe::{AlphaType, ColorType, ImageInfo, gpu};
 use std::{
     ffi::{CStr, CString},
     ptr,
-    time::Duration,
 };
 #[cfg(feature = "window")]
 pub use window::WindowRenderer;
@@ -258,18 +257,6 @@ impl Renderer {
         }
         image::RgbaImage::from_raw(width as u32, height as u32, bytes)
             .ok_or("invalid RGBA readback".into())
-    }
-
-    /// Drive an App's deterministic clock through an offscreen GPU frame.
-    pub fn frame_at(
-        &mut self,
-        app: &mut App,
-        width: u32,
-        height: u32,
-        elapsed: Duration,
-        background: Color,
-    ) -> Result<image::RgbaImage, String> {
-        self.render(&app.frame_at(width, height, elapsed), background)
     }
 }
 

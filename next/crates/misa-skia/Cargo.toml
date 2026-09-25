@@ -7,8 +7,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
+misa-pixel-ui = { path = "../misa-pixel-ui" }
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 misa-client.workspace = true
 misa-kit = { path = "../misa-kit" }
 misa-proto.workspace = true

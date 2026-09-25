@@ -64,7 +64,7 @@ pub fn run(
     host.error.take().map_or(Ok(()), Err)
 }
 struct Host {
-    metrics: Arc<dyn misa_skia_ui::TextMetrics>,
+    metrics: Arc<dyn misa_pixel_ui::TextMetrics>,
     appearance: crate::appearance::Choice,
     appearance_writer: std::sync::mpsc::SyncSender<crate::appearance::Choice>,
     app: App,
@@ -309,7 +309,7 @@ impl Host {
                 );
                 self.deadline = self.deadline.or(pane_output.deadline);
                 let pane = pane_output.frame.ok_or("Empty panel scene")?;
-                scene.ops.push(crate::Op::Rect {
+                scene.ops.push(misa_pixel_ui::Op::Rect {
                     x: 0.0,
                     y: self.panel_top,
                     width: size.width as f32,
@@ -319,7 +319,7 @@ impl Host {
                         ..Default::default()
                     },
                 });
-                scene.ops.push(crate::Op::Group {
+                scene.ops.push(misa_pixel_ui::Op::Group {
                     x: 0.0,
                     y: self.panel_top,
                     ops: Arc::new(pane.ops),
@@ -794,7 +794,7 @@ fn apply_update(
     local: &mut crate::workspace::Local,
     panels: &mut std::collections::BTreeMap<String, App>,
     update: Update,
-    metrics: &Arc<dyn misa_skia_ui::TextMetrics>,
+    metrics: &Arc<dyn misa_pixel_ui::TextMetrics>,
 ) {
     match update {
         Update::DaemonForm {

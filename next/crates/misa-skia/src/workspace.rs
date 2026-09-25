@@ -1,15 +1,12 @@
 //! Native-local relationship selection and request instances. Neither a hidden
 //! dialog nor a session switch cancels the operation that owns a request.
-use crate::{
-    Scene,
-    app::{App, Command, Key},
-};
+use crate::app::{App, Command, Key};
 use misa_client::request::Model;
+use misa_pixel_ui::{Scene, TextMetrics};
 use misa_proto::{
     directory::Entry,
     view::{Action as ViewAction, ActionOn, Field, FieldKind, Kind, Node, Span},
 };
-use misa_skia_ui::TextMetrics;
 use misa_value::Value;
 use std::{collections::BTreeMap, sync::Arc};
 

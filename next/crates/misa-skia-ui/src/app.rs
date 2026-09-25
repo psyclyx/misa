@@ -1,8 +1,8 @@
 //! Client-owned interaction and layout. No field draft, disclosure state or destination leaves
 //! this module until the person activates an action the session advertised.
-use crate::{Op, Scene, TextMetrics};
 use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
+use misa_pixel_ui::{Op, Scene, TextMetrics};
 use misa_proto::sync::{IndexedTree, StreamUpdate, ViewOp};
 use misa_proto::view::{ActionOn, FieldKind, Kind, Node};
 #[cfg(test)]

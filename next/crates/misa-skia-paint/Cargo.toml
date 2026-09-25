@@ -7,10 +7,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+misa-pixel-ui = { path = "../misa-pixel-ui" }
 image.workspace = true
 misa-style.workspace = true
-misa-skia-ui = { path = "../misa-skia-ui" }
 skia-safe.workspace = true
 
 [dev-dependencies]
+misa-skia-ui = { path = "../misa-skia-ui" }
 misa-proto.workspace = true

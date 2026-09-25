@@ -1,5 +1,5 @@
 //! Shared Skia canvas painting for raster exports and Ganesh targets.
-use misa_skia_ui::{LineMetrics, Op, Scene, TextMetrics};
+use misa_pixel_ui::{LineMetrics, Op, Scene, TextMetrics};
 use misa_style::Color;
 use skia_safe::{Canvas, Font, FontMgr, FontStyle, Paint as SkPaint, PaintStyle, Rect, surfaces};
 use std::{

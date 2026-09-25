@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
+misa-pixel-ui = { path = "../misa-pixel-ui" }
 misa-kit = { path = "../misa-kit" }
 misa-proto.workspace = true
 misa-render.workspace = true

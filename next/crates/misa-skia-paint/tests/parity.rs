@@ -1,12 +1,10 @@
+use misa_pixel_ui::{Op, Scene};
 use misa_proto::{
     sync::{IndexedTree, Stream, StreamUpdate, ViewOp},
     view::{Kind, Node, Span},
 };
 use misa_skia_paint::{draw_scene, png, raster, text_metrics};
-use misa_skia_ui::{
-    Op, Scene,
-    app::{App, DocumentUpdate},
-};
+use misa_skia_ui::app::{App, DocumentUpdate};
 use misa_style::Color;
 use std::sync::Arc;
 use std::time::Duration;

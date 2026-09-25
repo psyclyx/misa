@@ -2,7 +2,7 @@ use super::{
     App, Cached, Control, FONT_SIZE, FieldViewport, Hit, IndicatorBounds, PULSE_PERIOD, TextRow,
     pulse_phase, text,
 };
-use crate::{Op, Scene};
+use misa_pixel_ui::{Button, Op, Rect, Scene};
 use misa_proto::view::{FieldKind, Kind, Node};
 use misa_render::Theme;
 use misa_style::Style;
@@ -1057,18 +1057,44 @@ impl App {
             self.prefixes.pop();
         }
         for action in &node.actions {
-            self.box_control(
-                scene,
+            let control = Control::Action {
+                node: node.id.clone(),
+                action: action.id.clone(),
+            };
+            let bounds = Rect {
                 x,
-                *y,
-                width.min(260.0),
-                32.0,
-                action.label.as_deref().unwrap_or(&action.id),
-                Control::Action {
-                    node: node.id.clone(),
-                    action: action.id.clone(),
+                y: *y,
+                width: width.min(260.0),
+                height: 32.0,
+            };
+            scene.ops.push(Op::Rect {
+                x: x - 1.0,
+                y: *y - 1.0,
+                width: bounds.width + 2.0,
+                height: 34.0,
+                style: if self.focus.as_ref() == Some(&control) {
+                    self.colors().accent
+                } else {
+                    self.colors().border
                 },
-            );
+            });
+            let button = Button {
+                id: control,
+                bounds,
+                label: action.label.as_deref().unwrap_or(&action.id).into(),
+                font_size: FONT_SIZE,
+                background: self.colors().field,
+                foreground: self.colors().text,
+            }
+            .place(self.metrics.as_ref());
+            scene.ops.extend(button.ops);
+            self.hits.push(Hit {
+                x: button.bounds.x,
+                y: button.bounds.y,
+                width: button.bounds.width,
+                height: button.bounds.height,
+                control: button.id,
+            });
             *y += 39.0;
         }
         *y += 5.0;

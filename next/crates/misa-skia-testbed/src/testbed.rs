@@ -9,9 +9,11 @@ pub mod window;
 use crate::app::PULSE_PERIOD;
 use crate::app::{App, Key};
 use crate::{Op, Scene};
+use misa_pixel_ui::TextMetrics;
 use misa_proto::view::{Action, ActionOn, Field, FieldKind, Kind, Node, Span};
 use misa_style::Style;
 use misa_window_core::{Event, Size};
+use std::sync::Arc;
 use std::time::Duration;
 #[cfg(any(feature = "native", test))]
 use std::time::Instant;
@@ -25,6 +27,7 @@ enum Mode {
 struct Fixtures {
     mode: Mode,
     native: native::Dashboard,
+    metrics: Arc<dyn TextMetrics>,
     semantic: App,
     deadline: Option<Duration>,
 }
@@ -36,7 +39,8 @@ impl Fixtures {
         Ok(Self {
             mode: Mode::Native,
             native: native::Dashboard { selected: false },
-            semantic: App::new(semantic_fixture(), metrics),
+            semantic: App::new(semantic_fixture(), metrics.clone()),
+            metrics,
             deadline: None,
         })
     }
@@ -68,7 +72,7 @@ impl Fixtures {
         let mut scene = match self.mode {
             Mode::Native => {
                 self.deadline = None;
-                self.native.frame(width, height)
+                self.native.frame(width, height, self.metrics.as_ref())
             }
             Mode::Semantic => match elapsed {
                 Some(elapsed) => {
@@ -120,7 +124,7 @@ impl Fixtures {
                 dragging: false,
             } => {
                 if self.mode == Mode::Native {
-                    self.native.click(x, y, width);
+                    self.native.click(x, y, width, self.metrics.as_ref());
                 } else {
                     self.semantic_input(
                         Event::Pointer {

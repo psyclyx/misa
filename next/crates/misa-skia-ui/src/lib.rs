@@ -1,99 +1,13 @@
-//! Backend-neutral pixel scene and interaction model.
+//! Misa-specific semantic document presentation for pixel frontends.
 //!
-//! # What is shared and what is not
-//!
-//! A pixel frontend cannot use the terminal's lines: it has no cells, and it wants
-//! real type. What it *can* share is everything that is not a cell —
-//! [`misa_render::text`] for measurement, [`misa_render::Theme`] for what a role
-//! looks like, and the tree itself.
-//!
-//! So this frontend maps the same tree to a **scene** of positioned runs and
-//! rectangles, and that mapping is the interesting part: it is where a role becomes
-//! a colour and a weight, where a rail becomes a bar, and where a code block becomes
-//! a raised panel. It is testable with no window and no GPU, which is why the scene
-//! is built and tested without a painter or a window.
-//!
-//! Text flow wraps to measured pixel width and stacks runs; a rail is a drawn
-//! bar, a code block is highlighted from the client's own grammar, and nothing
-//! below a role becomes a terminal cell.
+//! This adapter interprets protocol nodes, Misa theme roles and local editing
+//! policy. Protocol-free scene, font measurement and interactive primitives
+//! belong to `misa-pixel-ui`; this crate is not the reusable toolkit. Its scenes
+//! are painted by the same Skia renderer in offline tests and native windows.
 
 use misa_proto::view::{Span, SpanKind};
 use misa_render::Theme;
 use misa_style::Style;
-
-/// Skia-independent font measurements for pixel text layout.
-///
-/// `ascent` is negative above the baseline, as in Skia; a line whose top is
-/// `y` has its baseline at `y - ascent`. `line_height` is the font's reported
-/// spacing, not a guessed multiple of the font size.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LineMetrics {
-    pub ascent: f32,
-    pub descent: f32,
-    pub leading: f32,
-    pub line_height: f32,
-}
-
-/// Measure with the same font and size that the painter uses for a text run.
-pub trait TextMetrics: Send + Sync {
-    /// Horizontal advance in pixels, not the ink bounds.
-    fn measure(&self, text: &str, size: f32) -> f32;
-    /// Prefix advances at every Unicode scalar boundary, beginning with zero.
-    /// The last advance must equal `measure(text, size)`; boundaries describe
-    /// the exact unshaped text run the painter draws.
-    fn advances(&self, text: &str, size: f32) -> Vec<f32>;
-    fn line_metrics(&self, size: f32) -> LineMetrics;
-}
-
-/// One thing to draw.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Op {
-    /// A retained local scene, positioned without rebuilding its paint operations.
-    Group {
-        x: f32,
-        y: f32,
-        ops: std::sync::Arc<Vec<Op>>,
-    },
-    /// Clip child operations to a local pixel viewport (also inside translated groups).
-    ClipRect {
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-        ops: std::sync::Arc<Vec<Op>>,
-    },
-    Image {
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-        image: std::sync::Arc<image::RgbaImage>,
-    },
-    /// A run of text with `y` at the line top (the painter uses font ascent for its baseline).
-    Text {
-        x: f32,
-        y: f32,
-        size: f32,
-        style: Style,
-        text: String,
-    },
-    /// A filled rectangle, in device pixels.
-    Rect {
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-        style: Style,
-    },
-}
-
-/// A drawable frame.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Scene {
-    pub width: f32,
-    pub height: f32,
-    pub ops: Vec<Op>,
-}
 
 /// Map one semantic run onto the resolved style for its kind, over a base style.
 pub(crate) fn span_style(theme: &Theme, span: &Span, base: Style) -> Style {

@@ -2815,6 +2815,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "misa-pixel-ui"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "misa-style",
+]
+
+[[package]]
 name = "misa-plugin"
 version = "0.1.0"
 dependencies = [
@@ -2901,6 +2909,7 @@ dependencies = [
  "misa-client",
  "misa-kit",
  "misa-local-start",
+ "misa-pixel-ui",
  "misa-proto",
  "misa-protocol",
  "misa-render",
@@ -2922,6 +2931,7 @@ name = "misa-skia-paint"
 version = "0.1.0"
 dependencies = [
  "image",
+ "misa-pixel-ui",
  "misa-proto",
  "misa-skia-ui",
  "misa-style",
@@ -2933,6 +2943,7 @@ name = "misa-skia-testbed"
 version = "0.1.0"
 dependencies = [
  "image",
+ "misa-pixel-ui",
  "misa-proto",
  "misa-render",
  "misa-skia-paint",
@@ -2951,6 +2962,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "misa-kit",
+ "misa-pixel-ui",
  "misa-proto",
  "misa-render",
  "misa-style",
@@ -2967,6 +2979,7 @@ dependencies = [
  "ash",
  "ash-window",
  "image",
+ "misa-pixel-ui",
  "misa-proto",
  "misa-skia-paint",
  "misa-skia-ui",

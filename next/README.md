@@ -136,9 +136,11 @@ waits for a live advertisement, and leaves the daemon running after the client e
 Nix frontend wrappers default it to the packaged daemon. No daemon flags are assumed for
 external binaries. Without `--start-local`, neither frontend launches a daemon.
 
-The terminal screen lives in `misa-tui-ui`. Pixel input/clock types live in the
-zero-dependency `misa-window-core`; semantic layout and scenes live in `misa-skia-ui`;
-Skia canvas painting and font resolution live in `misa-skia-paint`; `misa-skia-vulkan`
+The terminal screen in `misa-tui-ui` and document presenter in `misa-skia-ui`
+are **Misa-specific application UI**, not reusable toolkits. Pixel input/clock
+lives in the zero-dependency `misa-window-core`; protocol-free scene, font
+measurement and button primitives live in `misa-pixel-ui`. Skia canvas
+painting and font resolution live in `misa-skia-paint`; `misa-skia-vulkan`
 uses that same painter for both offscreen readback and native swapchain presentation.
 The connected hosts (`misa-tui`, `misa-skia`) and standalone fixture apps
 (`misa-tui-testbed`, `misa-skia-testbed`) depend on these crates independently.
