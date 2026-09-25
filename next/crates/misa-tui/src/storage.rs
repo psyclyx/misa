@@ -188,10 +188,10 @@ mod tests {
         let mut first = crate::Screen::remembering(Prefs::default(), path.clone());
         let mut second = crate::Screen::remembering(Prefs::default(), path.clone());
         first.enter_draft_scope("first:session:epoch".into());
-        first.editor.set_text("first draft");
+        first.composer.set_text("first draft");
         first.save();
         second.enter_draft_scope("second:session:epoch".into());
-        second.editor.set_text("second draft");
+        second.composer.set_text("second draft");
         second.save();
         assert!(first.notice.is_none());
         assert!(second.notice.is_none());
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(stored.drafts["second:session:epoch"], "second draft");
         let mut reopened = crate::Screen::remembering(stored, path);
         reopened.enter_draft_scope("first:session:epoch".into());
-        assert_eq!(reopened.editor.text(), "first draft");
+        assert_eq!(reopened.composer.text(), "first draft");
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -215,7 +215,7 @@ mod tests {
         let path = directory.join("client.json");
         std::fs::create_dir(&path).unwrap(); // A directory cannot be atomically replaced by a file.
         let mut screen = crate::Screen::remembering(Prefs::default(), path.clone());
-        screen.editor.set_text("not yet saved");
+        screen.composer.set_text("not yet saved");
         screen.save();
         assert!(
             screen

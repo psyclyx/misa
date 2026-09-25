@@ -102,12 +102,12 @@ mod tests {
                 .iter()
                 .any(|item| item.value == "/save")
         );
-        screen.editor.set_text("/save 2 /tmp/my file.png");
+        screen.composer.set_text("/save 2 /tmp/my file.png");
         assert_eq!(
             screen.key(Key::Submit),
             KeyOut::Submitted("/save 2 /tmp/my file.png".into())
         );
-        assert!(screen.editor.is_empty());
+        assert!(screen.composer.is_empty());
 
         screen.declare(&Catalog {
             commands: vec![Command::new("save", "Session save", "session-owned")],
@@ -121,12 +121,12 @@ mod tests {
                 .count(),
             1
         );
-        screen.editor.set_text("/save");
+        screen.composer.set_text("/save");
         assert!(
             matches!(screen.key(Key::Submit), KeyOut::Intent(Intent::Command { name, .. }) if name == "save")
         );
-        screen.editor.set_text("/save /tmp/local");
+        screen.composer.set_text("/save /tmp/local");
         assert_eq!(screen.key(Key::Submit), KeyOut::Local);
-        assert_eq!(screen.editor.text(), "/save /tmp/local");
+        assert_eq!(screen.composer.text(), "/save /tmp/local");
     }
 }

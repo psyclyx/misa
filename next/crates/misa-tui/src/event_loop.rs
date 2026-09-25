@@ -192,7 +192,7 @@ async fn drive_with_clipboard(
                 match update {
                     Some(Update::View(crate::Presentation::Forget(id)))=>{
                         parked.remove(&id);
-                        if scope==id {scope.clear();screen.editor.set_text("");screen.dialogs=Default::default();screen.picker=None;screen.pending_command=None;screen.panel=None;screen.selection=None;contributions.clear();pending.clear();uploads=0;}
+                        if scope==id {scope.clear();screen.composer.set_text("");screen.composer.clear_picker();screen.dialogs=Default::default();screen.panel=None;screen.selection=None;contributions.clear();pending.clear();uploads=0;}
                     },
                     Some(Update::View(crate::Presentation::Documents(documents))) => {
                         for (id,update) in documents {
@@ -212,14 +212,13 @@ async fn drive_with_clipboard(
                             let old = (
                                 std::mem::replace(&mut retained, crate::retained::Retained::new(misa_proto::Node::section("session").id("session"), screen)),
                                 std::mem::take(&mut contributions), std::mem::take(&mut screen.dialogs),
-                                std::mem::replace(&mut screen.editor, crate::ed::Editor::new()),
-                                screen.picker.take(), screen.pending_command.take(), screen.panel.take(),
+                                screen.composer.park(), screen.panel.take(),
                                 screen.selection.take(), screen.scroll, screen.follow,
                                 std::mem::take(&mut pending), uploads, generation,
                             );
                             if !scope.is_empty() { parked.insert(scope,old); }
-                            if let Some((r,c,d,e,p,command,panel,selection,scroll,follow,attachments,upload_count,epoch))=parked.remove(&next) {
-                                retained=r;contributions=c;screen.dialogs=d;screen.editor=e;screen.picker=p;screen.pending_command=command;screen.panel=panel;screen.selection=selection;screen.scroll=scroll;screen.follow=follow;pending=attachments;uploads=upload_count;generation=epoch;screen.activate_draft_scope(next.clone());
+                            if let Some((r,c,d,composer,panel,selection,scroll,follow,attachments,upload_count,epoch))=parked.remove(&next) {
+                                retained=r;contributions=c;screen.dialogs=d;screen.composer.restore(composer);screen.panel=panel;screen.selection=selection;screen.scroll=scroll;screen.follow=follow;pending=attachments;uploads=upload_count;generation=epoch;screen.activate_draft_scope(next.clone());
                             } else { screen.restore_draft_scope(next.clone());screen.scroll=0;screen.follow=true;uploads=0;generation=generation.wrapping_add(1); }
                             scope=next;
                         }
@@ -284,8 +283,7 @@ async fn drive_with_clipboard(
                         Ok(()) => screen.notice = None,
                         Err(error) => {
                             if let Some((text, attachments)) = draft {
-                                if screen.editor.text().is_empty() { screen.editor.set_text(&text); }
-                                else if !text.is_empty() { let draft = format!("{text}\n{}", screen.editor.text()); screen.editor.set_text(draft); }
+                                screen.composer.prepend(&text);
                                 pending.extend(attachments);
                             }
                             screen.notice = Some(error);
@@ -408,7 +406,7 @@ async fn drive_with_clipboard(
                 let queued = view.children.iter().any(|node| node.id == "queue");
                 if key.code == event::KeyCode::Enter
                     && !screen.dialogs.focused()
-                    && screen.editor.text().is_empty()
+                    && screen.composer.text().is_empty()
                     && crate::panel_of(&view).is_none()
                     && !key.modifiers.contains(event::KeyModifiers::SHIFT)
                     && (queued || !pending.is_empty())
@@ -442,13 +440,13 @@ async fn drive_with_clipboard(
                     // belongs to this input router because only it has both the
                     // rendered session actions and the terminal-local draft.
                     if key == crate::Key::Interrupt
-                        && screen.picker.is_none()
+                        && !screen.composer.has_picker()
                         && !screen.dialogs.focused()
                         && screen.panel.is_none()
                         && screen.selection.is_none()
                         && !has_action(&view, "turn.cancel")
                     {
-                        screen.editor.set_text("");
+                        screen.composer.set_text("");
                         screen.notice = None;
                         continue;
                     }
@@ -518,8 +516,7 @@ async fn drive_with_clipboard(
                             .collect(),
                         false,
                     );
-                    screen.editor.set_text(":");
-                    screen.picker = Some(picker);
+                    screen.composer.open_host_picker(picker, ":");
                     continue;
                 }
                 if let misa_kit::intent::Intent::Command { name, args } = &intent
@@ -561,7 +558,7 @@ async fn drive_with_clipboard(
                         pending.clear();
                     }
                 } else if let Some(text) = draft {
-                    screen.editor.set_text(text);
+                    screen.composer.set_text(text);
                 }
             }
             KeyOut::Complete { source, prefix } => {
@@ -582,7 +579,7 @@ async fn drive_with_clipboard(
                     Err(error) => screen.notice = Some(error),
                 },
                 Some(Err(error)) => {
-                    screen.editor.set_text(text);
+                    screen.composer.set_text(text);
                     screen.save();
                     screen.notice = Some(error);
                 }
@@ -705,7 +702,7 @@ mod tests {
         .await
         .expect("idle session blocked local input")
         .unwrap();
-        assert_eq!(screen.editor.text(), "two\nlines");
+        assert_eq!(screen.composer.text(), "two\nlines");
         assert_eq!((screen.width, screen.height), (100, 30));
     }
 
@@ -746,7 +743,7 @@ mod tests {
             ],
             sources: vec![misa_kit::intent::Source::resident("models", "Models")],
         });
-        screen.editor.set_text("/model");
+        screen.composer.set_text("/model");
         let (sender, receiver) = mpsc::channel(64);
         sender
             .try_send(Ok(Event::Key(event::KeyEvent::new(
@@ -777,7 +774,7 @@ mod tests {
         })
         .await
         .expect("completion blocked local input");
-        assert!(screen.editor.text().contains("still editing"));
+        assert!(screen.composer.text().contains("still editing"));
         assert_eq!((screen.width, screen.height), (100, 30));
     }
 
@@ -916,7 +913,7 @@ mod clipboard_tests {
             changed,
         };
         let mut screen = Screen::new(80, 24);
-        screen.editor.set_text("a picture");
+        screen.composer.set_text("a picture");
         let (sender, receiver) = mpsc::channel(64);
         let script = async move {
             sender
@@ -970,7 +967,7 @@ mod clipboard_tests {
         assert!(
             matches!(&session.sent[1], Intent::Prompt { text, attachments } if text == "a picture" && attachments.len() == 1 && attachments[0].hash == "blob-1")
         );
-        assert!(screen.editor.text().is_empty());
+        assert!(screen.composer.text().is_empty());
         assert!(
             String::from_utf8(writer.bytes)
                 .unwrap()
@@ -1095,7 +1092,7 @@ mod save_liveness_test {
         };
         let mut screen = Screen::new(80, 24);
         screen.declare(&session.catalog());
-        screen.editor.set_text("/save /tmp/unused-save-test");
+        screen.composer.set_text("/save /tmp/unused-save-test");
         let mut writer = Observed {
             bytes: vec![],
             ready: ready.clone(),
@@ -1130,7 +1127,7 @@ mod save_liveness_test {
         })
         .await
         .expect("save wait blocked keyboard");
-        assert_eq!(screen.editor.text(), "still editing");
+        assert_eq!(screen.composer.text(), "still editing");
         assert_eq!((screen.width, screen.height), (90, 30));
     }
 }
@@ -1264,7 +1261,7 @@ mod scope_tests {
         })
         .await
         .unwrap();
-        assert_eq!(screen.editor.text(), "draft A");
+        assert_eq!(screen.composer.text(), "draft A");
         screen.dialogs.open();
         screen
             .dialogs
@@ -1276,6 +1273,122 @@ mod scope_tests {
         ));
         assert!(text.contains("••"), "hidden secret draft was lost: {text}");
     }
+    #[tokio::test]
+    async fn returning_to_parked_picker_keeps_the_latest_declaration_and_resident_items() {
+        use misa_kit::intent::{Command, Source};
+        use misa_proto::preparation::Arg;
+        use misa_proto::view::Choice;
+
+        let frame = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (changed, mut frames) = tokio::sync::watch::channel(0);
+        let (updates, receive_updates) = mpsc::channel(8);
+        let (received, mut receipts) = mpsc::channel(8);
+        let mut session = SurfaceSession {
+            updates: receive_updates,
+            received,
+            frames: frame.clone(),
+            sent: None,
+        };
+        let mut writer = Writer {
+            frames: frame,
+            changed,
+        };
+        let mut screen = Screen::new(80, 24);
+        let original = misa_tui_ui::Catalog {
+            commands: vec![
+                Command::new("model", "Model", "choose")
+                    .arg(Arg::new("model", "Model").required().from("models")),
+            ],
+            sources: vec![Source::resident("models", "Models")],
+        };
+        screen.declare(&original);
+        screen.composer.set_text("/model");
+        assert!(matches!(
+            screen.key(crate::Key::Submit),
+            KeyOut::Complete { .. }
+        ));
+        screen.key(crate::Key::Char('f'));
+        screen.set_draft_for("A".into(), "/model f".into());
+        let mut latest = original.clone();
+        latest
+            .commands
+            .push(Command::new("fresh", "Fresh", "new command"));
+        let (keys, events) = mpsc::channel(8);
+        let script = async move {
+            for scope in ["A", "B"] {
+                updates
+                    .send(crate::Presentation::Activate(scope.into()))
+                    .await
+                    .unwrap();
+                painted(&mut frames, receipts.recv().await.unwrap()).await;
+            }
+            updates
+                .send(crate::Presentation::Declaration {
+                    catalog: latest,
+                    location: String::new(),
+                })
+                .await
+                .unwrap();
+            painted(&mut frames, receipts.recv().await.unwrap()).await;
+            updates
+                .send(crate::Presentation::Candidates {
+                    source: "models".into(),
+                    items: vec![Choice {
+                        value: "fresh-model".into(),
+                        label: "Fresh model".into(),
+                        detail: None,
+                        metadata: None,
+                    }],
+                    truncated: false,
+                })
+                .await
+                .unwrap();
+            painted(&mut frames, receipts.recv().await.unwrap()).await;
+            updates
+                .send(crate::Presentation::Activate("A".into()))
+                .await
+                .unwrap();
+            painted(&mut frames, receipts.recv().await.unwrap()).await;
+            keys.send(Ok(Event::Key(event::KeyEvent::new(
+                event::KeyCode::Char('q'),
+                event::KeyModifiers::CONTROL,
+            ))))
+            .await
+            .unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let (result, ()) = tokio::join!(
+                drive(&mut session, &mut screen, events, &mut writer),
+                script
+            );
+            result.unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(screen.composer.text(), "/model f");
+        assert_eq!(screen.composer.picker().unwrap().query, "f");
+        assert!(
+            screen
+                .command_candidates()
+                .iter()
+                .any(|c| c.value == "/fresh")
+        );
+        screen.key(crate::Key::Escape);
+        assert_eq!(
+            screen.key(crate::Key::Action(crate::Action::OpenModel)),
+            KeyOut::Local
+        );
+        assert_eq!(
+            screen
+                .composer
+                .picker()
+                .unwrap()
+                .selected()
+                .map(|c| c.value.as_str()),
+            Some("fresh-model")
+        );
+    }
+
     #[test]
     fn optional_documents_contribute_portable_actions_without_merging_node_spaces() {
         let screen = Screen::new(80, 24);
@@ -1332,7 +1445,7 @@ mod scope_tests {
             ],
             sources: vec![],
         });
-        screen.editor.set_text("/actions");
+        screen.composer.set_text("/actions");
         let mut pet = misa_proto::Node::section("pet").id("pet");
         pet.actions.push(misa_proto::view::Action {
             id: "pet.feed".into(),

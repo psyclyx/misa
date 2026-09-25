@@ -10,7 +10,7 @@ pub struct Frame {
     pub images: Vec<misa_terminal_ui::graphics::Placement>,
 }
 fn row(screen: &Screen, first: bool) -> Line {
-    let (mode, role) = match screen.editor.mode() {
+    let (mode, role) = match screen.composer.mode() {
         crate::ed::Mode::Insert => ("│", "mode.insert"),
         crate::ed::Mode::Normal => ("◆", "mode.normal"),
         crate::ed::Mode::Visual => ("◇", "mode.visual"),
@@ -36,7 +36,7 @@ fn row(screen: &Screen, first: bool) -> Line {
 fn text_style(screen: &Screen, byte: usize) -> misa_style::Style {
     let base = screen.theme.role("user");
     let selected = screen
-        .editor
+        .composer
         .visual_range()
         .is_some_and(|(start, end)| byte >= start && byte < end);
     if selected {
@@ -74,9 +74,9 @@ pub(crate) fn composer_with_budget(screen: &Screen, max_rows: usize) -> Frame {
     let mut lines = vec![row(screen, true)];
     lines[0].spans[0].1 = misa_render::clip(&lines[0].spans[0].1, prefix);
     let mut column = 0;
-    let cursor = screen.editor.split_at_cursor().0.len();
+    let cursor = screen.composer.split_at_cursor().0.len();
     let mut caret = (0, prefix);
-    for (byte, ch) in screen.editor.text().char_indices() {
+    for (byte, ch) in screen.composer.text().char_indices() {
         let text = if ch == '\n' {
             String::new()
         } else if ch.is_control() {
@@ -110,7 +110,7 @@ pub(crate) fn composer_with_budget(screen: &Screen, max_rows: usize) -> Frame {
             column += cells;
         }
     }
-    if cursor == screen.editor.text().len() {
+    if cursor == screen.composer.text().len() {
         if column == budget {
             let mut next = row(screen, false);
             next.spans[0].1 = misa_render::clip(&next.spans[0].1, prefix);
@@ -264,16 +264,16 @@ pub fn frame(screen: &Screen, attachments: usize, staging: Option<&str>) -> Fram
         };
     }
     let overlay = screen
-        .picker
-        .as_ref()
+        .composer
+        .picker()
         .is_some_and(misa_kit::picker::Picker::is_overlay);
     if !overlay {
         top.push(Line::default());
     }
     let input = composer(screen);
     let picker = screen
-        .picker
-        .as_ref()
+        .composer
+        .picker()
         .filter(|picker| picker.is_overlay())
         .map(|picker| {
             let mut lines = physical(crate::picker_lines(screen, picker), screen.width as usize);
@@ -288,15 +288,15 @@ pub fn frame(screen: &Screen, attachments: usize, staging: Option<&str>) -> Fram
     // owner. It still keeps the picker as the focused input; the retained terminal
     // inserts the same picker into the reference overlay region below.
     let completions = screen
-        .picker
-        .as_ref()
+        .composer
+        .picker()
         .filter(|picker| picker.is_inline())
         .map(|picker| crate::completion_lines(screen, picker))
         .unwrap_or_default();
     let (reserved, cursor) = if let Some(picker) = &picker {
         let query = screen
-            .picker
-            .as_ref()
+            .composer
+            .picker()
             .map(|picker| {
                 let prefix = match picker.accept {
                     misa_kit::picker::Accept::Run => "/",
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn multiline_wide_drafts_have_physical_rows_and_a_matching_cursor() {
         let mut screen = Screen::new(8, 10);
-        screen.editor.set_text("日本\nhello world");
+        screen.composer.set_text("日本\nhello world");
         let frame = composer(&screen);
         assert_eq!(
             frame.lines.iter().map(Line::text).collect::<Vec<_>>(),
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn chrome_never_exceeds_the_physical_screen() {
         let mut screen = Screen::new(20, 8);
-        screen.editor.set_text("first\nsecond\nthird");
+        screen.composer.set_text("first\nsecond\nthird");
         screen.notice = Some("a long notice that wraps onto several physical rows".into());
         let frame = frame(&screen, 5, Some("2 clipboard attachments · 1 uploading"));
         assert!(frame.lines.len() <= 8);

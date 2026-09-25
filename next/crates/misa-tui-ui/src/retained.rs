@@ -249,8 +249,8 @@ impl Retained {
             };
         }
         if screen
-            .picker
-            .as_ref()
+            .composer
+            .picker()
             .is_some_and(misa_kit::picker::Picker::is_overlay)
         {
             // The reference picker is an overlay: the transcript remains visible
@@ -264,7 +264,7 @@ impl Retained {
                 .take(1)
                 .collect::<Vec<_>>();
             let picker = crate::chrome::physical(
-                crate::picker_lines(screen, screen.picker.as_ref().unwrap()),
+                crate::picker_lines(screen, screen.composer.picker().unwrap()),
                 screen.width as usize,
             );
             let available = (screen.height as usize).saturating_sub(top.len() + status.len());
@@ -280,8 +280,8 @@ impl Retained {
                 &extra_document[..extra_document.len().min(room.saturating_sub(lines.len()))],
             );
             let cursor_column = screen
-                .picker
-                .as_ref()
+                .composer
+                .picker()
                 .map(|picker| {
                     let prefix = match picker.accept {
                         misa_kit::picker::Accept::Run => "/",
@@ -342,8 +342,8 @@ impl Retained {
         let dock = &dock[..dock.len().min(remaining.saturating_sub(1))];
         let remaining = remaining.saturating_sub(dock.len());
         let completions = screen
-            .picker
-            .as_ref()
+            .composer
+            .picker()
             .filter(|picker| picker.is_inline())
             .map(|picker| crate::completion_lines(screen, picker))
             .unwrap_or_default();
@@ -805,7 +805,7 @@ mod tests {
     #[test]
     fn the_composer_keeps_its_row_when_the_transcript_scrolls() {
         let mut screen = Screen::new(40, 16);
-        screen.editor.set_text("DRAFT");
+        screen.composer.set_text("DRAFT");
         let mut retained = Retained::new(document(50), &screen);
         let composer_row = |frame: &crate::chrome::Frame| {
             frame
@@ -1483,7 +1483,7 @@ mod review_tests {
                 .push(Node::text("text", [Span::plain("history")]).id(format!("n{i}")));
         }
         let mut screen = Screen::new(30, 12);
-        screen.editor.set_text("first\nsecond");
+        screen.composer.set_text("first\nsecond");
         let mut retained = Retained::new(root, &screen);
         let frame = retained.frame(&screen, Some("1 clipboard attachments · 1 uploading"));
         assert_eq!(frame.lines.len(), 12);

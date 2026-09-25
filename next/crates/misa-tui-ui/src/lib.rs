@@ -20,7 +20,9 @@
 //! items to hold — see [`misa_kit::picker`].
 
 mod catalog;
+mod composer;
 pub use catalog::Catalog;
+pub use composer::{Composer, ParkedInput};
 
 pub mod buttons;
 pub mod chrome;
@@ -36,12 +38,11 @@ thread_local! { static RESOLVE_VISITS: std::cell::Cell<usize> = const { std::cel
 pub use crate::prefs::PreferencePersistence;
 use crate::prefs::{PreferenceState, Prefs};
 use crate::retained::Retained;
-use catalog::ComposerCatalog;
 pub use misa_kit::editor as ed;
+#[cfg(test)]
 use misa_kit::intent as line;
 use misa_kit::intent::Command;
 use misa_kit::intent::Intent;
-use misa_kit::picker::Effect as PickerEffect;
 pub use misa_kit::picker::{Accept, Picker};
 use misa_lines::Line;
 use misa_lines::select;
@@ -194,12 +195,6 @@ pub enum KeyOut {
 }
 
 /// The client's whole state.
-struct HistorySearch {
-    draft: String,
-    query: String,
-    before: usize,
-}
-
 /// The named theme with the client's overrides applied.
 fn theme_named(name: &str, overrides: &ThemeOverrides) -> Theme {
     let base = match name {
@@ -235,22 +230,18 @@ pub struct Screen {
     pub local_presentation: presentation::Local,
     pub components: misa_lines::components::Registry,
     pub values: misa_render::fact::Registry,
-    operator: Option<char>,
-    history_search: Option<HistorySearch>,
     pub theme: Theme,
-    pub editor: ed::Editor,
+    pub composer: Composer,
     preferences: PreferenceState,
-    /// The picker in front of the editor, when one is open.
-    pub picker: Option<Picker>,
-    /// Which command an accepted argument belongs to.
-    pub pending_command: Option<String>,
+    composer_settings_revision: Option<u64>,
+    #[cfg(test)]
+    composer_settings_refreshes: usize,
     pub notice: Option<String>,
     /// The reader's selection, when one is open. It is over the rendered body, so
     /// moving it needs the view — which is why `selection_key` takes one.
     pub selection: Option<select::Selection>,
     /// What has been typed into an open panel, and which panel it is for.
     pub panel: Option<PanelInput>,
-    catalog: ComposerCatalog,
     pub location: String,
     pub scroll: usize,
     /// Whether the viewport follows new output. Scrolling away stops it, which is
@@ -270,20 +261,18 @@ impl Screen {
     pub fn new(width: u16, height: u16) -> Screen {
         Screen {
             preferences: PreferenceState::default(),
+            composer_settings_revision: None,
+            #[cfg(test)]
+            composer_settings_refreshes: 0,
             local_presentation: presentation::stock(),
             components: Default::default(),
             values: Default::default(),
-            operator: None,
-            history_search: None,
             theme: Theme::dark(),
-            editor: ed::Editor::new(),
-            picker: None,
-            pending_command: None,
+            composer: Composer::default(),
             notice: None,
             dialogs: Default::default(),
             selection: None,
             panel: None,
-            catalog: ComposerCatalog::default(),
             location: String::new(),
             scroll: 0,
             follow: true,
@@ -300,16 +289,16 @@ impl Screen {
         let mut screen = Screen::new(100, 40);
         screen.preferences = PreferenceState::remembering(prefs, persistence);
         screen.theme = screen.preferences.theme();
-        screen.editor.set_text(screen.preferences.initial_draft());
+        screen.composer.set_text(screen.preferences.initial_draft());
         screen
     }
 
     pub fn remember_draft(&mut self) {
-        self.preferences.remember_draft(self.editor.text());
+        self.preferences.remember_draft(self.composer.text());
     }
     pub fn enter_draft_scope(&mut self, scope: String) {
-        let draft = self.preferences.enter_scope(scope, self.editor.text());
-        self.editor.set_text(draft);
+        let draft = self.preferences.enter_scope(scope, self.composer.text());
+        self.composer.set_text(draft);
     }
     /// Activate a parked editor without overwriting its text with the saved draft.
     pub fn activate_draft_scope(&mut self, scope: String) {
@@ -318,7 +307,7 @@ impl Screen {
     /// A newly visited scope has no parked editor; restore only its durable draft.
     pub fn restore_draft_scope(&mut self, scope: String) {
         let draft = self.preferences.restore_scope(scope);
-        self.editor.set_text(draft);
+        self.composer.set_text(draft);
     }
     pub fn set_draft_for(&mut self, scope: String, text: String) {
         self.preferences.set_draft_for(scope, text);
@@ -357,118 +346,28 @@ impl Screen {
     /// keystroke: a write per character is a write per character. The draft is the one thing
     /// that waits for somebody to stop typing, which is the price of this being a file.
     pub fn save(&mut self) {
-        if let Err(error) = self.preferences.save(self.editor.text()) {
+        if let Err(error) = self.preferences.save(self.composer.text()) {
             self.notice = Some(error);
         }
     }
 
-    /// Replace local composer declarations after the selected scope's catalogs load.
-    /// Owner metadata and connection status are supplied independently.
     pub fn declare(&mut self, info: &Catalog) {
-        self.declare_with_raw(info, &[]);
+        self.composer.declare(info);
     }
-
-    /// Add host-owned commands whose arguments are interpreted by the host rather
-    /// than the session's positional command parser. Session declarations win on id collisions.
     pub fn declare_with_raw(&mut self, info: &Catalog, raw: &[Command]) {
-        self.catalog.declare_with_raw(info, raw);
+        self.composer.declare_with_raw(info, raw);
     }
-
-    /// The commands as candidates, built from the declaration.
-    ///
-    /// The declaration carries everything a candidate needs, so this costs nothing
-    /// and works before any subscription has arrived. `completion.commands` exists
-    /// as well, for a frontend that renders server-side and has no declaration in
-    /// hand; the two say the same thing.
     pub fn command_candidates(&self) -> Vec<Choice> {
-        self.catalog.command_candidates()
+        self.composer.command_candidates()
     }
-
-    /// Open the picker a command's next argument needs.
-    fn open_argument_picker(&mut self, command: &str, argument: &str, source: &str) -> KeyOut {
-        let words = line::words(self.editor.text().trim_start_matches('/'));
-        let index = self.catalog.argument_index(command, argument).unwrap_or(0);
-        if words.values.first().map(String::as_str) != Some(command) {
-            self.editor.set_text(format!("/{command} "));
-        } else if words.values.len() <= index + 1 && !words.trailing_space {
-            self.editor.set_text(format!("{} ", self.editor.text()));
-        }
-        self.pending_command = Some(command.to_string());
-        let accept = Accept::Argument {
-            command: command.to_string(),
-            argument: argument.to_string(),
-        };
-        // Ranked by what this client remembers: a list that started from nothing every run
-        // would be a list that learned nothing.
-        self.picker = Some(
-            Picker::inline(source, format!("/{command} {argument}"), accept)
-                .with_views(
-                    self.picker_settings()
-                        .picker_views(source, misa_kit::picker::PickerPlacement::Inline),
-                )
-                .with_frecency(self.preferences.frecency())
-                .with_favorites(self.preferences.favorites()),
-        );
-        if let Some((items, truncated)) = self.catalog.held(source) {
-            self.picker
-                .as_mut()
-                .unwrap()
-                .set_items(items.clone(), *truncated);
-        }
-        if let Some(picker) = self.picker.as_mut() {
-            picker.set_query(Self::picker_query(
-                self.editor.text(),
-                &picker.accept,
-                &self.catalog,
-            ));
-        }
-        let needs_catalog = self.catalog.request(source);
-        if needs_catalog {
-            KeyOut::Complete {
-                source: source.to_string(),
-                prefix: self
-                    .picker
-                    .as_ref()
-                    .map(|picker| picker.query.clone())
-                    .unwrap_or_default(),
-            }
-        } else {
-            KeyOut::Local
-        }
-    }
-
-    /// Give the picker the items a source produced.
     pub fn candidates(&mut self, source: &str, items: Vec<Choice>, truncated: bool) {
-        let resident = self.catalog.received(source, &items, truncated);
-        if let Some(picker) = self.picker.as_mut()
-            && picker.source.as_deref() == Some(source)
-            && resident
-        {
-            picker.set_items(items, truncated);
-        }
+        self.composer.candidates(source, items, truncated);
     }
-
-    /// Commit an asynchronous completion to the source cache without allowing a
-    /// stale answer to replace the query currently on screen. Resident sources
-    /// are subscriptions from the client's point of view: one successful answer
-    /// is enough for every later picker in this scope.
     pub fn completion(&mut self, source: &str, prefix: &str, items: Vec<Choice>, truncated: bool) {
-        if !self.catalog.completed(source, &items, truncated) {
-            return;
-        }
-        if let Some(picker) = self.picker.as_mut()
-            && picker.source.as_deref() == Some(source)
-            && picker.query == prefix
-        {
-            picker.set_items(items, truncated);
-        }
+        self.composer.completion(source, prefix, items, truncated);
     }
-
-    /// Let a failed resident request be retried by the next local query. A
-    /// failure is different from a successful empty catalogue: the former is a
-    /// recoverable transport state, not an empty list that should trap the picker.
     pub fn completion_failed(&mut self, source: &str) {
-        self.catalog.failed(source);
+        self.composer.completion_failed(source);
     }
 
     /// The rendered body a selection moves over. Nothing here reaches a session.
@@ -494,12 +393,7 @@ impl Screen {
         self.selection_in(&self.body(view), key)
     }
     fn reading_key(&self, key: &Key) -> bool {
-        self.selection.is_some()
-            || self.editor.mode() == ed::Mode::Normal
-                && (matches!(key, Key::StartSelection | Key::Char('v'))
-                    || matches!(key, Key::Char('y'))
-                        && self.editor.is_empty()
-                        && self.operator.is_none())
+        self.selection.is_some() || self.composer.reader_key(key)
     }
     fn selection_in(&mut self, body: &select::Body, key: &Key) -> Option<KeyOut> {
         if self.selection.is_some() {
@@ -507,7 +401,7 @@ impl Screen {
         }
         // `v` and `y` belong to a reader, but only where a vim reader expects them: in
         // normal mode, so typing into the composer is never stolen.
-        if self.editor.mode() != ed::Mode::Normal {
+        if self.composer.mode() != ed::Mode::Normal {
             return None;
         }
         match key {
@@ -515,9 +409,7 @@ impl Screen {
                 self.begin_selection(body);
                 Some(KeyOut::Local)
             }
-            Key::Char('y') if self.editor.is_empty() && self.operator.is_none() => {
-                Some(self.copy_body(body))
-            }
+            Key::Char('y') if self.composer.is_empty() => Some(self.copy_body(body)),
             _ => None,
         }
     }
@@ -750,676 +642,82 @@ impl Screen {
         KeyOut::Local
     }
 
-    fn search_history(&mut self, restart: bool) {
-        let search = self.history_search.as_mut().expect("search is active");
-        if restart {
-            search.before = self.editor.history().len();
+    fn composer_settings(&self) -> composer::Settings {
+        composer::Settings {
+            picker: self.preferences.picker().clone(),
+            keymap: self.preferences.keymap().clone(),
+            frecency: self.preferences.frecency(),
+            favorites: self.preferences.favorites().collect(),
         }
-        if let Some(at) = (0..search.before)
-            .rev()
-            .find(|&at| self.editor.history()[at].contains(&search.query))
+    }
+    fn composer_decision(
+        &mut self,
+        refresh_settings: bool,
+        f: impl FnOnce(&mut Composer) -> KeyOut,
+    ) -> KeyOut {
+        if refresh_settings
+            && self.composer_settings_revision != Some(self.preferences.composer_revision())
         {
-            let found = self.editor.history()[at].clone();
-            search.before = at;
-            self.editor.set_text(found);
-            self.notice = Some(format!("reverse search: {}", search.query));
+            self.composer.settings(self.composer_settings());
+            self.composer_settings_revision = Some(self.preferences.composer_revision());
+            #[cfg(test)]
+            {
+                self.composer_settings_refreshes += 1;
+            }
+        }
+        let decision = self.composer.decide(self.notice.take(), f);
+        self.notice = decision.notice;
+        for effect in decision.preferences {
+            match effect {
+                composer::Effect::Frecency(value) => self.preferences.remember_frecency(&value),
+                composer::Effect::Remembered(value) => self.preferences.remembered(&value),
+                composer::Effect::Favorite(value, favorite) => {
+                    self.preferences.set_favorite(&value, favorite)
+                }
+            }
+        }
+        if decision.save_needed {
+            self.save();
+        }
+        if let Some(action) = decision.action {
+            self.action(action)
         } else {
-            self.notice = Some(format!("reverse search: {} — no match", search.query));
+            decision.out
         }
     }
-
     pub fn key(&mut self, key: Key) -> KeyOut {
-        if self.history_search.is_some() {
+        if !self.composer.has_picker() {
             match key {
-                Key::HistorySearch => self.search_history(false),
-                Key::Char(character) => {
-                    self.history_search.as_mut().unwrap().query.push(character);
-                    self.search_history(true);
-                }
-                Key::Backspace => {
-                    self.history_search.as_mut().unwrap().query.pop();
-                    self.search_history(true);
-                }
-                Key::Escape => {
-                    let search = self.history_search.take().unwrap();
-                    self.editor.set_text(search.draft);
-                    self.notice = None;
-                }
-                Key::Submit => {
-                    self.history_search = None;
-                    self.notice = None;
-                }
-                Key::Quit => return KeyOut::Quit,
-                _ => {
-                    self.history_search = None;
-                    self.notice = None;
-                    return self.key(key);
-                }
-            }
-            return KeyOut::Local;
-        }
-
-        // A picker in front of the editor takes everything except the way out.
-        if self.picker.is_some() {
-            return self.picker_key(if key == Key::InterruptSubmit {
-                Key::Submit
-            } else {
-                key
-            });
-        }
-        match key {
-            Key::HistorySearch => {
-                self.history_search = Some(HistorySearch {
-                    draft: self.editor.text().into(),
-                    query: String::new(),
-                    before: self.editor.history().len(),
-                });
-                self.search_history(false);
-                KeyOut::Local
-            }
-            // Alt-P is a history binding in the editor and a previous-view
-            // binding only while a picker owns the input. `picker_key` has
-            // already consumed the latter case above.
-            Key::HistoryPrevious | Key::PickerPreviousView => {
-                self.editor.history_step(true);
-                KeyOut::Local
-            }
-            Key::HistoryNext => {
-                self.editor.history_step(false);
-                KeyOut::Local
-            }
-            Key::Newline => {
-                self.editor.insert("\n");
-                KeyOut::Local
-            }
-            Key::InterruptSubmit => match self.submit() {
-                KeyOut::Intent(Intent::Prompt { text, attachments }) => {
-                    KeyOut::Intent(Intent::Interrupt { text, attachments })
-                }
-                other => other,
-            },
-            Key::Quit => KeyOut::Quit,
-            Key::Escape => {
-                self.operator = None;
-                self.editor.set_mode(ed::Mode::Normal);
-                KeyOut::Local
-            }
-            Key::Interrupt => {
-                // The draft is kept: an interrupt is about the model, not about what
-                // somebody has typed. Kept, and written down, because that is the whole point
-                // of keeping it.
-                self.editor.interrupt();
-                self.save();
-                KeyOut::Intent(Intent::Cancel { target: None })
-            }
-            Key::Submit => self.submit(),
-            Key::Char('/') if self.editor.is_empty() => self.open_command_picker_inline(),
-            // `:` lists what *this program* can do, which is a different question
-            // from what the session can do and is answered without asking it.
-            Key::Char(':') if self.editor.is_empty() => self.open_action_palette(),
-            Key::Fill(text) => {
-                // A picker's answer, arriving as the line it completes.
-                self.editor.set_text(text);
-                self.submit()
-            }
-            Key::Char(character) if self.editor.mode() == ed::Mode::Normal => {
-                self.normal_char(character)
-            }
-            Key::Char(character) if self.editor.mode() == ed::Mode::Visual => {
-                self.visual_char(character)
-            }
-            Key::Char(character) => {
-                self.editor.type_char(character);
-                KeyOut::Local
-            }
-            Key::Backspace => {
-                self.editor.backspace();
-                KeyOut::Local
-            }
-            Key::Eof if self.editor.is_empty() => KeyOut::Quit,
-            Key::Delete | Key::Eof => {
-                self.editor.delete();
-                KeyOut::Local
-            }
-            Key::Tab => self.complete_argument(),
-            Key::Motion(motion) => {
-                if let Some(operator) = self.operator.take() {
-                    let text = self.editor.operate(operator, Some(motion));
-                    if operator == 'y' {
-                        return KeyOut::Copy(text);
+                Key::ScrollPage(delta) => {
+                    if self.composer.searching() {
+                        self.composer.cancel_history_search();
+                        self.notice = None;
                     }
-                } else if motion == ed::Motion::Up && self.editor.on_first_line() {
-                    self.editor.history_step(true);
-                } else if motion == ed::Motion::Down && self.editor.on_last_line() {
-                    self.editor.history_step(false);
-                } else {
-                    self.editor.move_cursor(motion);
+                    self.scroll_by(delta);
+                    return KeyOut::Local;
                 }
-                KeyOut::Local
-            }
-            Key::ScrollPage(delta) => {
-                self.scroll_by(delta);
-                KeyOut::Local
-            }
-            Key::Action(action) => self.action(action),
-            Key::Favorite
-            | Key::PickerSlot(_)
-            | Key::StartSelection
-            | Key::Extend(_)
-            | Key::Alt(_) => KeyOut::Local,
-            Key::QueueEdit => KeyOut::Intent(Intent::Action {
-                node: "queue".into(),
-                action: "queue.edit".into(),
-                args: misa_value::Value::Null,
-                fields: vec![],
-            }),
-        }
-    }
-
-    fn normal_char(&mut self, character: char) -> KeyOut {
-        let motion = match character {
-            'h' => Some(ed::Motion::Left),
-            'l' => Some(ed::Motion::Right),
-            'w' => Some(ed::Motion::WordNext),
-            'b' => Some(ed::Motion::WordPrevious),
-            'e' => Some(ed::Motion::WordEnd),
-            '0' => Some(ed::Motion::LineStart),
-            '$' => Some(ed::Motion::LineEnd),
-            'g' => Some(ed::Motion::First),
-            'G' => Some(ed::Motion::Last),
-            'j' => Some(ed::Motion::Down),
-            'k' => Some(ed::Motion::Up),
-            _ => None,
-        };
-        if let Some(operator) = self.operator.take() {
-            if character == operator || motion.is_some() {
-                let text = self.editor.operate(operator, motion);
-                if operator == 'y' {
-                    return KeyOut::Copy(text);
-                }
-            }
-        } else if let Some(motion) = motion {
-            return self.key(Key::Motion(motion));
-        } else {
-            match character {
-                'd' | 'c' | 'y' => self.operator = Some(character),
-                'i' => {
-                    self.editor.set_mode(ed::Mode::Insert);
-                }
-                'I' => {
-                    self.editor.move_cursor(ed::Motion::LineStart);
-                    self.editor.set_mode(ed::Mode::Insert);
-                }
-                'A' => {
-                    self.editor.move_cursor(ed::Motion::LineEnd);
-                    self.editor.set_mode(ed::Mode::Insert);
-                }
-                'v' => {
-                    self.editor.set_mode(ed::Mode::Visual);
-                }
-                'V' => {
-                    self.editor.visual_line();
-                }
-                'a' => {
-                    self.editor.move_cursor(ed::Motion::Right);
-                    self.editor.set_mode(ed::Mode::Insert);
-                }
-                'o' | 'O' => self.editor.open_line(character == 'O'),
-                'p' => {
-                    self.editor.paste();
-                }
-                'x' => {
-                    self.editor.delete();
-                }
-                'u' => {
-                    self.editor.undo();
-                }
-                'U' => {
-                    self.editor.redo();
-                }
+                Key::Action(action) if !self.composer.searching() => return self.action(action),
                 _ => {}
             }
         }
-        KeyOut::Local
+        // A preference revision check is cheap even while a picker is open; only
+        // opening it or changing relevant preferences clones the ranking snapshot.
+        let refresh = self.composer.has_picker()
+            || matches!(
+                key,
+                Key::Submit
+                    | Key::InterruptSubmit
+                    | Key::Fill(_)
+                    | Key::Tab
+                    | Key::Char('/')
+                    | Key::Char(':')
+                    | Key::PickerSlot(_)
+                    | Key::Alt(_)
+            );
+        self.composer_decision(refresh, |composer| composer.key(key))
     }
-
-    fn visual_char(&mut self, character: char) -> KeyOut {
-        match character {
-            'y' | 'd' | 'c' => {
-                let text = self.editor.visual_operation(character);
-                if character == 'y' {
-                    KeyOut::Copy(text)
-                } else {
-                    KeyOut::Local
-                }
-            }
-            _ => KeyOut::Local,
-        }
-    }
-
-    /// Enter: submit what is there, or open the picker a declaration asks for.
-    fn submit(&mut self) -> KeyOut {
-        let text = self.editor.text().to_string();
-        // Raw commands are declared explicitly by the host. Only the command word
-        // is inspected here; the host owns the syntax of the rest of the line.
-        let trimmed = text.trim();
-        if let Some(word) = trimmed
-            .strip_prefix('/')
-            .filter(|word| !word.contains('\n'))
-            .and_then(|word| word.split_whitespace().next())
-            && self.catalog.is_raw(word)
-        {
-            self.editor.submit();
-            self.notice = None;
-            self.save();
-            return KeyOut::Submitted(text);
-        }
-        match line::parse(&text, self.catalog.commands()) {
-            line::Parsed::Invalid { message } => {
-                self.notice = Some(message);
-                KeyOut::Local
-            }
-            line::Parsed::Empty => KeyOut::Local,
-            line::Parsed::Needs {
-                command,
-                argument,
-                source,
-                ..
-            } => {
-                // A command that cannot run yet is not sent. The declaration said
-                // where its value comes from, so the client opens its own picker.
-                match source {
-                    Some(source) => self.open_argument_picker(&command, &argument, &source),
-                    None => {
-                        self.notice = Some(format!("/{command} needs a value for {argument}"));
-                        KeyOut::Local
-                    }
-                }
-            }
-            line::Parsed::Unknown { name } => {
-                self.notice = Some(format!("no command named `/{name}`"));
-                KeyOut::Local
-            }
-            parsed => match line::intent(&parsed) {
-                Some(intent) => {
-                    self.editor.submit();
-                    self.notice = None;
-                    // The draft is spent; what is left is written down, so a client that is
-                    // killed after this does not resurrect what was just sent.
-                    self.save();
-                    KeyOut::Intent(intent)
-                }
-                None => KeyOut::Local,
-            },
-        }
-    }
-
-    /// Tab: complete the argument the cursor is in, if the declaration says one can
-    /// be completed.
-    fn complete_argument(&mut self) -> KeyOut {
-        let text = self.editor.text().trim_start().to_string();
-        let Some(rest) = text.strip_prefix('/') else {
-            return KeyOut::Local;
-        };
-        let words = line::words(rest);
-        let name = words.values.first().cloned().unwrap_or_default();
-        let Some(command) = self.catalog.command(&name).cloned() else {
-            return KeyOut::Local;
-        };
-        let count = words.values.len().saturating_sub(1);
-        let position = if words.trailing_space {
-            count
-        } else {
-            count.saturating_sub(1)
-        };
-        let Some(argument) = command.args.get(position) else {
-            return KeyOut::Local;
-        };
-        match argument.source.clone() {
-            Some(source) => self.open_argument_picker(&name, &argument.name, &source),
-            None => KeyOut::Local,
-        }
-    }
-
-    fn open_command_picker_inline(&mut self) -> KeyOut {
-        self.open_command_picker_with(misa_kit::picker::PickerPlacement::Inline)
-    }
-
-    fn open_command_picker(&mut self) -> KeyOut {
-        self.open_command_picker_with(misa_kit::picker::PickerPlacement::Overlay)
-    }
-
-    fn open_command_picker_with(&mut self, placement: misa_kit::picker::PickerPlacement) -> KeyOut {
-        self.pending_command = None;
-        self.editor.set_text("/");
-        // `/` on an empty line is a request for the session's commands, and the
-        // promise the declaration made is that they can be listed without asking.
-        let mut picker = if self.catalog.has_source("commands") {
-            match placement {
-                misa_kit::picker::PickerPlacement::Inline => {
-                    Picker::inline("commands", "Commands", Accept::Run)
-                }
-                misa_kit::picker::PickerPlacement::Overlay => {
-                    Picker::over("commands", "Commands", Accept::Run)
-                }
-            }
-        } else {
-            Picker::new("Commands", Accept::Run)
-        };
-        picker.placement = placement;
-        picker.set_items(self.command_candidates(), false);
-        self.picker = Some(
-            picker
-                .with_views(self.picker_settings().picker_views("commands", placement))
-                .with_frecency(self.preferences.frecency())
-                .with_favorites(self.preferences.favorites()),
-        );
-        KeyOut::Local
-    }
-
-    /// Open the client's own actions.
-    fn open_action_palette(&mut self) -> KeyOut {
-        self.editor.set_text(":");
-        let mut picker = Picker::over("actions", "Actions", Accept::Run)
-            .with_views(
-                self.picker_settings()
-                    .picker_views("actions", misa_kit::picker::PickerPlacement::Overlay),
-            )
-            .with_frecency(self.preferences.frecency())
-            .with_favorites(self.preferences.favorites());
-        picker.set_items(
-            Action::ALL
-                .iter()
-                .filter(|action| match action.command_name() {
-                    Some(command) => self.catalog.has_command(command),
-                    None => true,
-                })
-                .map(|action| {
-                    let keys = action.keys(self.keymap());
-                    Choice {
-                        value: action.id().to_string(),
-                        label: action.label().to_string(),
-                        detail: Some(if keys.is_empty() {
-                            String::new()
-                        } else {
-                            display_keys(&keys)
-                        }),
-                        metadata: None,
-                    }
-                })
-                .collect(),
-            false,
-        );
-        self.picker = Some(picker);
-        KeyOut::Local
-    }
-
-    fn picker_key(&mut self, key: Key) -> KeyOut {
-        // The slash is a lexical boundary, not a character for the current
-        // command or argument query. It starts a fresh command path, so `/model`
-        // can be abandoned directly for `/login` without clearing the draft first.
-        if key == Key::Char('/')
-            && self.editor.text() != "/"
-            && matches!(
-                self.picker.as_ref().map(|picker| &picker.accept),
-                Some(Accept::Run | Accept::Argument { .. })
-            )
-        {
-            return self.open_command_picker_inline();
-        }
-        if key == Key::Action(Action::OpenCommands) {
-            // Alt-/ is the reference picker's replace-view binding: it returns to
-            // the command catalog, with a fresh lexical query and the command
-            // picker as the owner of the input.
-            return self.open_command_picker();
-        }
-        // Completing the command word moves completion to its argument while
-        // keeping the composer as the only editable text.
-        if key == Key::Char(' ')
-            && self.pending_command.is_none()
-            && self.editor.text().starts_with('/')
-        {
-            let name = self.editor.text().trim_start_matches('/');
-            if self.catalog.has_command(name) {
-                self.editor.type_char(' ');
-                self.picker = None;
-                return match line::parse(self.editor.text(), self.catalog.commands()) {
-                    line::Parsed::Needs {
-                        source: Some(_), ..
-                    } => self.submit(),
-                    _ => KeyOut::Local,
-                };
-            }
-        }
-        if key == Key::Tab {
-            let query = self.picker.as_mut().and_then(Picker::complete);
-            if let Some(query) = query {
-                self.apply_picker_query(&query);
-            }
-            return KeyOut::Local;
-        }
-        let Some(picker) = self.picker.as_mut() else {
-            return KeyOut::Local;
-        };
-        let effect = match key {
-            Key::Escape => picker.cancel(),
-            Key::Submit => picker.accept(),
-            Key::Motion(ed::Motion::Right) => {
-                picker.cycle_view(1);
-                PickerEffect::None
-            }
-            Key::PickerPreviousView => {
-                picker.cycle_view(-1);
-                PickerEffect::None
-            }
-            Key::Motion(ed::Motion::Down) | Key::HistoryNext => {
-                picker.move_selection(1);
-                PickerEffect::None
-            }
-            Key::Favorite => picker.favorite(),
-            Key::Motion(ed::Motion::Up) | Key::HistoryPrevious => {
-                picker.move_selection(-1);
-                PickerEffect::None
-            }
-            Key::PickerSlot(index) => {
-                if picker.select_index(index) {
-                    picker.accept()
-                } else {
-                    PickerEffect::None
-                }
-            }
-            // The reference choice context owns Alt-letter sequences. In the
-            // normal editor those same physical keys may be global actions;
-            // routing them here keeps the context boundary explicit.
-            Key::Action(Action::ScrollUp) => picker.shortcut_key('k'),
-            Key::Action(Action::ScrollDown) => picker.shortcut_key('j'),
-            Key::QueueEdit => picker.shortcut_key('e'),
-            Key::Alt(character) => picker.shortcut_key(character),
-            Key::Char(character) if picker.shortcut_pending() => picker.shortcut_key(character),
-            Key::Char(character) => {
-                self.editor.type_char(character);
-                picker.set_query(Self::picker_query(
-                    self.editor.text(),
-                    &picker.accept,
-                    &self.catalog,
-                ))
-            }
-            Key::Backspace | Key::Delete => {
-                if key == Key::Backspace {
-                    self.editor.backspace();
-                } else {
-                    self.editor.delete();
-                }
-                if self.editor.is_empty() {
-                    picker.cancel()
-                } else {
-                    picker.set_query(Self::picker_query(
-                        self.editor.text(),
-                        &picker.accept,
-                        &self.catalog,
-                    ))
-                }
-            }
-            Key::Eof => picker.cancel(),
-            Key::Motion(ed::Motion::Left) => {
-                picker.cycle_view(-1);
-                PickerEffect::None
-            }
-            Key::Quit => return KeyOut::Quit,
-            Key::Interrupt => picker.cancel(),
-            _ => PickerEffect::None,
-        };
-        self.picker_effect(effect)
-    }
-
-    fn picker_query(text: &str, accept: &Accept, catalog: &ComposerCatalog) -> String {
-        match accept {
-            Accept::Argument { command, argument } => {
-                let index = catalog.argument_index(command, argument);
-                index
-                    .and_then(|index| {
-                        line::words(text.trim_start_matches('/'))
-                            .values
-                            .get(index + 1)
-                            .cloned()
-                    })
-                    .unwrap_or_default()
-            }
-            _ => text
-                .strip_prefix('/')
-                .or_else(|| text.strip_prefix(':'))
-                .unwrap_or(text)
-                .into(),
-        }
-    }
-
-    fn apply_picker_query(&mut self, query: &str) {
-        let Some(picker) = self.picker.as_ref() else {
-            return;
-        };
-        match &picker.accept {
-            Accept::Argument { command, argument } => {
-                let index = self.catalog.argument_index(command, argument).unwrap_or(0);
-                let mut values = line::words(self.editor.text().trim_start_matches('/'))
-                    .values
-                    .into_iter()
-                    .skip(1)
-                    .collect::<Vec<_>>();
-                values.resize(values.len().max(index + 1), String::new());
-                values[index] = query.to_string();
-                self.editor.set_text(format!(
-                    "/{command} {}",
-                    values
-                        .iter()
-                        .map(|value| line::quote(value))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ));
-            }
-            Accept::Run => {
-                let prefix = if self.editor.text().starts_with(':') {
-                    ':'
-                } else {
-                    '/'
-                };
-                self.editor.set_text(format!("{prefix}{query}"));
-            }
-            Accept::Action { .. } => self.editor.set_text(query),
-        }
-    }
-
     pub fn paste(&mut self, text: &str) -> KeyOut {
-        self.editor.insert(text);
-        let effect = self.picker.as_mut().map(|picker| {
-            picker.set_query(Self::picker_query(
-                self.editor.text(),
-                &picker.accept,
-                &self.catalog,
-            ))
-        });
-        effect.map_or(KeyOut::Local, |effect| self.picker_effect(effect))
-    }
-
-    fn picker_effect(&mut self, effect: PickerEffect) -> KeyOut {
-        match effect {
-            PickerEffect::None => KeyOut::Local,
-            PickerEffect::Cancelled => {
-                self.picker = None;
-                self.pending_command = None;
-                self.editor.set_text("");
-                KeyOut::Local
-            }
-            PickerEffect::Ask { source, prefix } => {
-                if self.catalog.should_ask(&source) {
-                    KeyOut::Complete { source, prefix }
-                } else {
-                    KeyOut::Local
-                }
-            }
-            PickerEffect::Accepted(accepted) => {
-                // An accepted candidate is what frecency is *for*: the next list is ranked by
-                // it, and a count a restart forgets is a list ranked by nothing. Taken from
-                // the picker before it is dropped, because that is where the counts are.
-                if let Some(picker) = &self.picker {
-                    let frecency = picker.frecency().clone();
-                    self.preferences.remember_frecency(&frecency);
-                }
-                self.picker = None;
-                self.preferences.remembered(&accepted.value);
-                self.pending_command = None;
-                self.save();
-                // An accepted argument completes the line rather than sending it, so
-                // somebody can add the next argument or edit what they got.
-                if let Accept::Argument { command, argument } = &accepted.accept {
-                    let index = self.catalog.argument_index(command, argument).unwrap_or(0);
-                    let mut values = line::words(self.editor.text().trim_start_matches('/'))
-                        .values
-                        .into_iter()
-                        .skip(1)
-                        .collect::<Vec<_>>();
-                    values.resize(values.len().max(index + 1), String::new());
-                    values[index] = accepted.value.clone();
-                    let text = format!(
-                        "/{command} {}",
-                        values
-                            .iter()
-                            .map(|value| line::quote(value))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    );
-                    self.editor.set_text(text);
-                    self.notice = Some(format!("{} → {}", accepted.label, accepted.value));
-                    // A command whose arguments are all filled is complete, so it is
-                    // sent: somebody who picked a model has said what they meant. One
-                    // that is not complete leaves the line for the next argument.
-                    match line::parse(self.editor.text(), self.catalog.commands()) {
-                        line::Parsed::Command { .. } => self.submit(),
-                        _ => KeyOut::Local,
-                    }
-                } else if let Some(action) = Action::find(&accepted.value) {
-                    // A candidate without a slash is one of this program's own actions:
-                    // there is nobody to ask, so it is done here.
-                    self.notice = None;
-                    self.action(action)
-                } else {
-                    // A command candidate is not sent here: it is put into the line and
-                    // submitted through the same path as a typed one, so a command with
-                    // an argument opens that argument's picker instead of being refused.
-                    self.editor.set_text(Picker::fill_text(&accepted));
-                    self.submit()
-                }
-            }
-            PickerEffect::Favorited { value, favorite } => {
-                self.preferences.set_favorite(&value, favorite);
-                self.notice = Some(if favorite {
-                    format!("favorite: {value}")
-                } else {
-                    format!("unfavorite: {value}")
-                });
-                self.save();
-                KeyOut::Local
-            }
-        }
+        self.composer_decision(false, |composer| composer.paste(text))
     }
 
     fn action(&mut self, action: Action) -> KeyOut {
@@ -1456,8 +754,10 @@ impl Screen {
                 self.scroll_intent = self.scroll_intent.wrapping_add(1);
                 KeyOut::Local
             }
-            Action::OpenModel => self.open_model_picker(),
-            Action::OpenActionPalette => self.open_action_palette(),
+            Action::OpenModel => self.composer_decision(true, Composer::open_model_picker),
+            Action::OpenActionPalette => {
+                self.composer_decision(true, Composer::open_action_palette)
+            }
             Action::ThemeDark => {
                 self.theme = self.preferences.select_theme("dark");
                 self.save();
@@ -1473,7 +773,7 @@ impl Screen {
                 self.save();
                 KeyOut::Local
             }
-            Action::OpenCommands => self.open_command_picker(),
+            Action::OpenCommands => self.composer_decision(true, Composer::open_command_picker),
             Action::OpenSelection => KeyOut::StartSelection,
             Action::Compact => KeyOut::Intent(Intent::Command {
                 name: "compact".into(),
@@ -1484,41 +784,6 @@ impl Screen {
                 args: misa_value::Value::Null,
             }),
             Action::Quit => KeyOut::Quit,
-        }
-    }
-
-    /// Open the model chooser as a focused overlay. The typed `/model` path is
-    /// still editor completion; the global model action is the direct chooser.
-    fn open_model_picker(&mut self) -> KeyOut {
-        let command = "model";
-        let source = "models";
-        self.pending_command = Some(command.into());
-        self.editor.set_text("/model ");
-        let mut picker = Picker::over(
-            source,
-            "Model",
-            Accept::Argument {
-                command: command.into(),
-                argument: "model".into(),
-            },
-        )
-        .with_views(
-            self.picker_settings()
-                .picker_views(source, misa_kit::picker::PickerPlacement::Overlay),
-        )
-        .with_frecency(self.preferences.frecency())
-        .with_favorites(self.preferences.favorites());
-        if let Some((items, truncated)) = self.catalog.held(source) {
-            picker.set_items(items.clone(), *truncated);
-        }
-        self.picker = Some(picker);
-        if self.catalog.should_ask(source) {
-            KeyOut::Complete {
-                source: source.into(),
-                prefix: String::new(),
-            }
-        } else {
-            KeyOut::Local
         }
     }
 
@@ -2457,7 +1722,7 @@ mod tests {
         }
         // The composer never saw a key, and the secret is masked on screen.
         assert_eq!(
-            screen.editor.text(),
+            screen.composer.text(),
             "",
             "the panel's keys went into the composer"
         );
@@ -2553,7 +1818,7 @@ mod tests {
             other => panic!("expected a prompt, got {other:?}"),
         }
         assert!(
-            screen.editor.is_empty(),
+            screen.composer.is_empty(),
             "the line was not cleared after sending"
         );
     }
@@ -2562,7 +1827,7 @@ mod tests {
     fn a_slash_opens_a_picker_built_from_the_declaration() {
         let mut screen = screen();
         assert_eq!(screen.key(Key::Char('/')), KeyOut::Local);
-        let picker = screen.picker.as_ref().expect("a picker");
+        let picker = screen.composer.picker().expect("a picker");
         assert_eq!(picker.items().len(), 3);
         assert_eq!(picker.views(), &[misa_kit::picker::PickerView::All]);
         assert!(!picker.items().iter().any(|item| item.value == "/save"));
@@ -2579,23 +1844,23 @@ mod tests {
         assert_eq!(screen.key(Key::Char('/')), KeyOut::Local);
         assert!(
             screen
-                .picker
-                .as_ref()
+                .composer
+                .picker()
                 .unwrap()
                 .items()
                 .iter()
                 .any(|item| item.value == "/export")
         );
-        screen.picker = None;
-        screen.editor.set_text("/export any unquoted path");
+        screen.composer.clear_picker();
+        screen.composer.set_text("/export any unquoted path");
         assert_eq!(
             screen.key(Key::Submit),
             KeyOut::Submitted("/export any unquoted path".into())
         );
-        assert!(screen.editor.is_empty());
-        screen.editor.set_text("/unknown");
+        assert!(screen.composer.is_empty());
+        screen.composer.set_text("/unknown");
         assert_eq!(screen.key(Key::Submit), KeyOut::Local);
-        assert_eq!(screen.editor.text(), "/unknown");
+        assert_eq!(screen.composer.text(), "/unknown");
     }
 
     #[test]
@@ -2612,18 +1877,18 @@ mod tests {
             false,
         );
         type_text(&mut screen, "/model ");
-        assert_eq!(screen.editor.text(), "/model ");
+        assert_eq!(screen.composer.text(), "/model ");
         assert_eq!(
-            screen.picker.as_ref().unwrap().source.as_deref(),
+            screen.composer.picker().unwrap().source.as_deref(),
             Some("models")
         );
-        assert_eq!(screen.picker.as_ref().unwrap().items()[0].value, "chosen");
+        assert_eq!(screen.composer.picker().unwrap().items()[0].value, "chosen");
         screen.paste("cho");
-        assert_eq!(screen.editor.text(), "/model cho");
-        assert_eq!(screen.picker.as_ref().unwrap().query, "cho");
+        assert_eq!(screen.composer.text(), "/model cho");
+        assert_eq!(screen.composer.picker().unwrap().query, "cho");
         screen.key(Key::Backspace);
-        assert_eq!(screen.editor.text(), "/model ch");
-        assert_eq!(screen.picker.as_ref().unwrap().query, "ch");
+        assert_eq!(screen.composer.text(), "/model ch");
+        assert_eq!(screen.composer.picker().unwrap().query, "ch");
         assert_eq!(screen.key(Key::Quit), KeyOut::Quit);
     }
 
@@ -2631,13 +1896,13 @@ mod tests {
     fn control_d_is_eof_only_on_an_empty_composer() {
         let mut screen = screen();
         assert_eq!(screen.key(Key::Eof), KeyOut::Quit);
-        screen.editor.set_text("éx");
+        screen.composer.set_text("éx");
         screen.key(Key::Motion(ed::Motion::LineStart));
         assert_eq!(screen.key(Key::Eof), KeyOut::Local);
-        assert_eq!(screen.editor.text(), "x");
+        assert_eq!(screen.composer.text(), "x");
         screen.key(Key::Motion(ed::Motion::LineEnd));
         assert_eq!(screen.key(Key::Eof), KeyOut::Local);
-        assert_eq!(screen.editor.text(), "x");
+        assert_eq!(screen.composer.text(), "x");
     }
 
     #[test]
@@ -2650,7 +1915,7 @@ mod tests {
             "a command picker asked a session"
         );
         assert_eq!(screen.key(Key::Char('o')), KeyOut::Local);
-        assert_eq!(screen.picker.as_ref().expect("a picker").query, "mo");
+        assert_eq!(screen.composer.picker().expect("a picker").query, "mo");
     }
 
     #[test]
@@ -2664,13 +1929,13 @@ mod tests {
                 args: misa_value::Value::Map(std::sync::Arc::new(Default::default())),
             })
         );
-        assert!(screen.picker.is_none());
+        assert!(!screen.composer.has_picker());
     }
 
     #[test]
     fn a_command_that_needs_a_value_opens_the_picker_its_declaration_named() {
         let mut screen = screen();
-        screen.editor.set_text("/model");
+        screen.composer.set_text("/model");
         assert_eq!(
             screen.key(Key::Submit),
             KeyOut::Complete {
@@ -2678,7 +1943,7 @@ mod tests {
                 prefix: String::new()
             }
         );
-        let picker = screen.picker.as_ref().expect("a picker");
+        let picker = screen.composer.picker().expect("a picker");
         assert_eq!(picker.source.as_deref(), Some("models"));
         assert_eq!(
             picker.accept,
@@ -2692,7 +1957,7 @@ mod tests {
     #[test]
     fn a_resident_source_with_nothing_held_is_asked_for_once() {
         let mut screen = screen();
-        screen.editor.set_text("/model");
+        screen.composer.set_text("/model");
         // The first ask is deliberate; after the items arrive, nothing more is sent.
         assert_eq!(
             screen.key(Key::Tab),
@@ -2722,7 +1987,7 @@ mod tests {
     #[test]
     fn empty_success_is_held_but_failure_can_retry_and_declaration_resets_requests() {
         let mut screen = screen();
-        screen.editor.set_text("/model");
+        screen.composer.set_text("/model");
         assert!(matches!(screen.key(Key::Tab), KeyOut::Complete { .. }));
         screen.completion_failed("models");
         // A keystroke in the still-open picker retries after failure.
@@ -2734,22 +1999,22 @@ mod tests {
             }
         );
         screen.completion("models", "x", vec![], false);
-        screen.picker = None;
+        screen.composer.clear_picker();
         assert_eq!(screen.key(Key::Tab), KeyOut::Local);
         screen.declare(&declaration());
-        screen.picker = None;
+        screen.composer.clear_picker();
         assert!(matches!(screen.key(Key::Tab), KeyOut::Complete { .. }));
         screen.declare(&declaration());
         // An answer from the abandoned request cannot fill the new scope's cache.
         screen.completion("models", "", vec![], false);
-        screen.picker = None;
+        screen.composer.clear_picker();
         assert!(matches!(screen.key(Key::Tab), KeyOut::Complete { .. }));
     }
 
     #[test]
     fn stale_completion_keeps_current_query_but_populates_resident_cache() {
         let mut screen = screen();
-        screen.editor.set_text("/model");
+        screen.composer.set_text("/model");
         assert!(matches!(screen.key(Key::Tab), KeyOut::Complete { .. }));
         screen.key(Key::Char('n'));
         screen.completion(
@@ -2763,12 +2028,12 @@ mod tests {
             }],
             false,
         );
-        assert_eq!(screen.picker.as_ref().unwrap().query, "n");
-        assert!(screen.picker.as_ref().unwrap().items().is_empty());
-        screen.picker = None;
+        assert_eq!(screen.composer.picker().unwrap().query, "n");
+        assert!(screen.composer.picker().unwrap().items().is_empty());
+        screen.composer.clear_picker();
         assert_eq!(screen.key(Key::Tab), KeyOut::Local);
         assert_eq!(
-            screen.picker.as_ref().unwrap().items()[0].value,
+            screen.composer.picker().unwrap().items()[0].value,
             "new-model"
         );
     }
@@ -2777,7 +2042,7 @@ mod tests {
     fn session_command_wins_over_colliding_host_raw_command() {
         let mut screen = screen();
         screen.declare_with_raw(&declaration(), &[Command::new("clear", "Raw", "raw")]);
-        screen.editor.set_text("/clear");
+        screen.composer.set_text("/clear");
         assert_eq!(
             screen.key(Key::Submit),
             KeyOut::Intent(Intent::Command {
@@ -2801,7 +2066,7 @@ mod tests {
                 ),
         );
         screen.declare(&info);
-        screen.editor.set_text("/visit 'daemon one' 'child se");
+        screen.composer.set_text("/visit 'daemon one' 'child se");
         assert_eq!(
             screen.key(Key::Tab),
             KeyOut::Complete {
@@ -2836,16 +2101,16 @@ mod tests {
     #[test]
     fn unfinished_quoted_argument_stays_in_the_composer() {
         let mut screen = screen();
-        screen.editor.set_text("/model 'two words");
-        assert_eq!(screen.submit(), KeyOut::Local);
-        assert_eq!(screen.editor.text(), "/model 'two words");
+        screen.composer.set_text("/model 'two words");
+        assert_eq!(screen.key(Key::Submit), KeyOut::Local);
+        assert_eq!(screen.composer.text(), "/model 'two words");
         assert!(screen.notice.as_ref().unwrap().contains("quoted"));
     }
 
     #[test]
     fn accepting_a_value_completes_the_command_and_sends_it() {
         let mut screen = screen();
-        screen.editor.set_text("/model");
+        screen.composer.set_text("/model");
         assert_eq!(
             screen.key(Key::Submit),
             KeyOut::Complete {
@@ -2872,7 +2137,7 @@ mod tests {
             })
         );
         assert!(
-            screen.editor.is_empty(),
+            screen.composer.is_empty(),
             "the line was not cleared after sending"
         );
     }
@@ -2880,18 +2145,18 @@ mod tests {
     #[test]
     fn escape_closes_a_picker_and_clears_the_half_typed_command() {
         let mut screen = screen();
-        screen.editor.set_text("/model");
+        screen.composer.set_text("/model");
         screen.key(Key::Submit);
-        assert!(screen.picker.is_some());
+        assert!(screen.composer.has_picker());
         assert_eq!(screen.key(Key::Escape), KeyOut::Local);
-        assert!(screen.picker.is_none());
-        assert!(screen.editor.is_empty());
+        assert!(!screen.composer.has_picker());
+        assert!(screen.composer.is_empty());
     }
 
     #[test]
     fn a_command_that_does_not_exist_is_answered_here_rather_than_sent() {
         let mut screen = screen();
-        screen.editor.set_text("/nonsense");
+        screen.composer.set_text("/nonsense");
         assert_eq!(screen.key(Key::Submit), KeyOut::Local);
         assert!(
             screen
@@ -2901,7 +2166,7 @@ mod tests {
                 .contains("nonsense")
         );
         assert!(
-            screen.editor.text().contains("nonsense"),
+            screen.composer.text().contains("nonsense"),
             "the line was lost"
         );
     }
@@ -2914,7 +2179,7 @@ mod tests {
             screen.key(Key::Interrupt),
             KeyOut::Intent(Intent::Cancel { target: None })
         );
-        assert_eq!(screen.editor.text(), "half written");
+        assert_eq!(screen.composer.text(), "half written");
     }
 
     #[derive(Clone, Default)]
@@ -2957,24 +2222,108 @@ mod tests {
     }
 
     #[test]
+    fn parking_preserves_input_but_not_the_old_declaration_or_resident_cache() {
+        let mut screen = screen();
+        screen.composer.set_text("/model");
+        assert!(matches!(screen.key(Key::Submit), KeyOut::Complete { .. }));
+        screen.key(Key::Char('p'));
+        let parked = screen.composer.park();
+        assert!(screen.composer.is_empty());
+        assert!(!screen.composer.has_picker());
+
+        // A declaration arriving while B is active replaces A's old catalogue.
+        let mut latest = declaration();
+        latest
+            .commands
+            .push(Command::new("fresh", "Fresh", "new command"));
+        screen.declare(&latest);
+        screen.candidates(
+            "models",
+            vec![Choice {
+                value: "fresh-model".into(),
+                label: "Fresh model".into(),
+                detail: None,
+                metadata: None,
+            }],
+            false,
+        );
+        screen.composer.set_text("other scope");
+        let other = screen.composer.park();
+        screen.composer.restore(parked);
+        assert_eq!(screen.composer.text(), "/model p");
+        assert_eq!(screen.composer.picker().unwrap().query, "p");
+        assert!(
+            screen
+                .command_candidates()
+                .iter()
+                .any(|c| c.value == "/fresh")
+        );
+
+        // Reopening the picker must read the cache filled under B, not ask again.
+        assert_eq!(screen.composer.open_model_picker(), KeyOut::Local);
+        assert_eq!(screen.composer.text(), "/model ");
+        assert_eq!(
+            screen
+                .composer
+                .picker()
+                .unwrap()
+                .selected()
+                .map(|c| c.value.as_str()),
+            Some("fresh-model")
+        );
+        screen.composer.restore(other);
+        assert_eq!(screen.composer.text(), "other scope");
+        assert!(!screen.composer.has_picker());
+        screen.composer.set_text("/fresh");
+        assert!(matches!(
+            screen.key(Key::Submit),
+            KeyOut::Intent(Intent::Command { name, .. }) if name == "fresh"
+        ));
+    }
+
+    #[test]
+    fn a_host_picker_replaces_the_command_path_atomically() {
+        let mut screen = screen();
+        screen.composer.set_text("/model");
+        screen.key(Key::Submit);
+        assert!(screen.composer.has_picker());
+        let mut picker = Picker::new("Host actions", Accept::Run);
+        picker.set_items(
+            vec![Choice {
+                value: "/clear".into(),
+                label: "Clear".into(),
+                detail: None,
+                metadata: None,
+            }],
+            false,
+        );
+        screen.composer.open_host_picker(picker, ":");
+        assert_eq!(screen.composer.text(), ":");
+        assert_eq!(screen.composer.picker().unwrap().title, "Host actions");
+        assert!(
+            matches!(screen.key(Key::Submit), KeyOut::Intent(Intent::Command { name, .. }) if name == "clear")
+        );
+    }
+
+    #[test]
     fn persisted_drafts_follow_exact_scope_and_independent_windows_merge() {
         let memory = Memory::default();
         let mut first = memory.screen(Prefs::default());
         let mut second = memory.screen(Prefs::default());
         first.enter_draft_scope("peer-a:session:epoch1".into());
-        first.editor.set_text("first");
+        first.composer.set_text("first");
         first.save();
         second.enter_draft_scope("peer-b:session:epoch1".into());
-        second.editor.set_text("second");
+        second.composer.set_text("second");
         second.save();
         let prefs = memory.prefs();
         assert_eq!(prefs.drafts["peer-a:session:epoch1"], "first");
         assert_eq!(prefs.drafts["peer-b:session:epoch1"], "second");
         let mut reopened = memory.screen(prefs);
         reopened.enter_draft_scope("peer-a:session:epoch2".into());
-        assert_eq!(reopened.editor.text(), "");
+        assert_eq!(reopened.composer.text(), "");
         reopened.enter_draft_scope("peer-a:session:epoch1".into());
-        assert_eq!(reopened.editor.text(), "first");
+        assert_eq!(reopened.composer.text(), "first");
     }
     #[test]
     fn a_client_that_remembers_starts_where_somebody_left_off() {
@@ -2994,7 +2343,7 @@ mod tests {
         let second = memory.screen(memory.prefs());
         // The theme somebody chose is the one they are drawn with next time.
         assert_eq!(second.theme.name, "plain");
-        assert_eq!(second.editor.text(), "half a question");
+        assert_eq!(second.composer.text(), "half a question");
         // And the opened node is open in what it draws, not only in what it remembers.
         assert!(
             text_of(&second, &view()).contains("the result"),
@@ -3009,10 +2358,10 @@ mod tests {
         let mut screen = memory.screen(Prefs::default());
         type_text(&mut screen, "send me");
         assert!(matches!(screen.key(Key::Submit), KeyOut::Intent(_)));
-        assert!(screen.editor.is_empty());
+        assert!(screen.composer.is_empty());
         // The line went out, so the memory of it goes out with it.
         let next = memory.screen(memory.prefs());
-        assert_eq!(next.editor.text(), "");
+        assert_eq!(next.composer.text(), "");
     }
 
     #[test]
@@ -3024,7 +2373,7 @@ mod tests {
         // A remembering client is a client like any other: it has the session's declarations
         // and it knows how to parse a line.
         first.declare(&declaration());
-        first.editor.set_text("/model");
+        first.composer.set_text("/model");
         first.key(Key::Submit);
         let candidates = || {
             ["scripted-1", "scripted-chatty"]
@@ -3044,13 +2393,13 @@ mod tests {
 
         let mut second = memory.screen(memory.prefs());
         second.declare(&declaration());
-        second.editor.set_text("/model");
+        second.composer.set_text("/model");
         second.key(Key::Submit);
         second.candidates("models", candidates(), false);
         assert_eq!(
             second
-                .picker
-                .as_ref()
+                .composer
+                .picker()
                 .expect("a picker")
                 .selected()
                 .map(|choice| choice.value.as_str()),
@@ -3065,7 +2414,7 @@ mod tests {
         let mut screen = Screen::new(80, 24);
         type_text(&mut screen, "a draft");
         screen.save();
-        assert_eq!(screen.editor.text(), "a draft");
+        assert_eq!(screen.composer.text(), "a draft");
         assert!(
             screen.notice.is_none(),
             "nothing failed, so there is nothing to say"
@@ -3126,7 +2475,7 @@ mod tests {
     fn a_colon_opens_the_clients_own_palette_and_an_action_needs_no_session() {
         let mut screen = screen();
         assert_eq!(screen.key(Key::Char(':')), KeyOut::Local);
-        let picker = screen.picker.as_ref().expect("a palette");
+        let picker = screen.composer.picker().expect("a palette");
         assert_eq!(picker.title, "Actions");
         assert!(
             picker
@@ -3140,13 +2489,12 @@ mod tests {
             .iter()
             .position(|item| item.value == Action::ToggleVerbose.id())
             .unwrap();
-        let picker = screen.picker.as_mut().expect("a palette");
         for _ in 0..chosen {
-            picker.move_selection(1);
+            screen.key(Key::Motion(ed::Motion::Down));
         }
         assert_eq!(screen.key(Key::Submit), KeyOut::Local);
         assert!(screen.any_open());
-        assert!(screen.picker.is_none());
+        assert!(!screen.composer.has_picker());
     }
 
     #[test]
@@ -3160,10 +2508,107 @@ mod tests {
     }
 
     #[test]
+    fn reverse_search_scroll_cancels_search_and_moves_the_reader_but_picker_owns_scroll() {
+        let mut screen = screen();
+        screen.composer.set_text("draft");
+        screen.scroll = 20;
+        assert_eq!(screen.key(Key::HistorySearch), KeyOut::Local);
+        assert!(screen.composer.searching());
+        assert_eq!(screen.key(Key::ScrollPage(-3)), KeyOut::Local);
+        assert!(!screen.composer.searching());
+        assert_eq!(screen.scroll, 17);
+        assert!(!screen.follow);
+        assert_eq!(screen.scroll_intent, 1);
+        assert_eq!(screen.notice, None);
+        assert_eq!(screen.composer.text(), "draft");
+
+        screen.key(Key::Action(Action::OpenCommands));
+        assert!(screen.composer.has_picker());
+        screen.follow = true;
+        assert_eq!(screen.key(Key::ScrollPage(-3)), KeyOut::Local);
+        assert_eq!(screen.scroll, 17);
+        assert!(screen.follow);
+        assert_eq!(screen.scroll_intent, 1);
+    }
+
+    #[test]
+    fn picker_queries_reuse_large_settings_snapshot_until_relevant_preferences_change() {
+        let mut prefs = Prefs::default();
+        for index in 0..10_000 {
+            prefs.frecency.insert(format!("choice-{index}"), index);
+        }
+        let mut screen = Screen::remembering(prefs, Box::new(Memory::default()));
+        screen.key(Key::Action(Action::OpenCommands));
+        assert_eq!(screen.composer_settings_refreshes, 1);
+        for character in "model".chars() {
+            screen.key(Key::Char(character));
+        }
+        screen.key(Key::Backspace);
+        assert_eq!(screen.composer_settings_refreshes, 1);
+
+        // A preference update while the picker is open must reach the next
+        // picker (and action key references), without cloning on every query.
+        screen.preferences.configure_picker(|picker| {
+            picker
+                .view_sets
+                .insert("commands".into(), vec!["recent".into()]);
+        });
+        screen.preferences.configure_keymap(|keymap| {
+            keymap
+                .bindings
+                .insert("transcript.up".into(), vec!["alt+z".into()]);
+        });
+        screen.key(Key::Char('x'));
+        assert_eq!(screen.composer_settings_refreshes, 2);
+        screen.key(Key::Char('y'));
+        assert_eq!(screen.composer_settings_refreshes, 2);
+        screen.key(Key::Action(Action::OpenCommands));
+        assert_eq!(
+            screen.composer.picker().unwrap().views(),
+            &[misa_kit::picker::PickerView::Recent]
+        );
+        assert_eq!(screen.composer_settings_refreshes, 2);
+        screen.key(Key::Escape);
+        screen.key(Key::Action(Action::OpenActionPalette));
+        let up = screen
+            .composer
+            .picker()
+            .unwrap()
+            .items()
+            .iter()
+            .find(|item| item.value == Action::ScrollUp.id())
+            .unwrap();
+        assert_eq!(up.detail.as_deref(), Some("⌥z"));
+
+        let favorite = screen
+            .composer
+            .picker()
+            .unwrap()
+            .selected()
+            .unwrap()
+            .value
+            .clone();
+        screen.key(Key::Favorite);
+        assert!(
+            screen
+                .preferences
+                .favorites()
+                .any(|value| value == favorite)
+        );
+        screen.key(Key::Escape);
+        screen.key(Key::Action(Action::OpenActionPalette));
+        assert_eq!(screen.composer_settings_refreshes, 3);
+        assert_eq!(
+            screen.composer.picker().unwrap().selected().unwrap().value,
+            favorite
+        );
+    }
+
+    #[test]
     fn the_input_line_shows_the_mode_the_previous_system_drew() {
         let mut screen = screen();
         assert!(text_of(&screen, &view()).contains("│"));
-        screen.editor.set_mode(ed::Mode::Normal);
+        screen.composer.set_mode(ed::Mode::Normal);
         assert!(text_of(&screen, &view()).contains("◆"));
     }
 
@@ -3173,10 +2618,9 @@ mod tests {
         screen.key(Key::Char('/'));
         screen.candidates("commands", screen.command_candidates(), true);
         let candidates = screen.command_candidates();
-        let picker = screen.picker.as_mut().expect("a picker");
-        picker.set_items(candidates, true);
+        screen.composer.preview_picker_items(candidates, true);
         let text = text_of(&screen, &view());
-        assert!(screen.picker.as_ref().is_some_and(Picker::is_inline));
+        assert!(screen.composer.picker().is_some_and(Picker::is_inline));
         assert!(
             text.contains("more"),
             "a partial list was not reported: {text}"
@@ -3203,11 +2647,7 @@ mod tests {
         });
         screen.key(Key::Char('/'));
         let candidates = screen.command_candidates();
-        screen
-            .picker
-            .as_mut()
-            .expect("command picker")
-            .set_items(candidates, true);
+        screen.composer.preview_picker_items(candidates, true);
         let text = text_of(&screen, &view());
         assert!(text.contains("[x]|"), "{text}");
         assert!(text.contains("choose it"), "{text}");
@@ -3233,7 +2673,7 @@ mod tests {
     #[test]
     fn copying_is_the_clients_and_needs_no_session() {
         let mut screen = screen();
-        screen.editor.set_mode(ed::Mode::Normal);
+        screen.composer.set_mode(ed::Mode::Normal);
         match screen.selection_key(&view(), &Key::Char('y')) {
             Some(KeyOut::Copy(text)) => {
                 assert!(text.contains("hello"), "{text}");
@@ -3253,7 +2693,7 @@ mod tests {
     #[test]
     fn a_selection_covers_the_rendered_rows_it_was_dragged_over() {
         let mut screen = screen();
-        screen.editor.set_mode(ed::Mode::Normal);
+        screen.composer.set_mode(ed::Mode::Normal);
         let view = view();
         // `v` anchors at the bottom, which is where somebody following the tail is
         // looking; the first motion is what says how far back the range goes.
@@ -3282,7 +2722,7 @@ mod tests {
     #[test]
     fn a_selection_ends_on_escape_and_leaves_the_composer_alone() {
         let mut screen = screen();
-        screen.editor.set_mode(ed::Mode::Normal);
+        screen.composer.set_mode(ed::Mode::Normal);
         let view = view();
         screen.selection_key(&view, &Key::Char('v'));
         assert_eq!(
@@ -3291,7 +2731,7 @@ mod tests {
         );
         assert!(screen.selection.is_none());
         assert!(screen.notice.is_none(), "the notice outlived the selection");
-        assert_eq!(screen.editor.text(), "", "escape reached the composer");
+        assert_eq!(screen.composer.text(), "", "escape reached the composer");
     }
 
     #[test]
@@ -3306,13 +2746,13 @@ mod tests {
             "insert mode lost a keystroke"
         );
         assert_eq!(screen.key(Key::Char('y')), KeyOut::Local);
-        assert_eq!(screen.editor.text(), "y");
+        assert_eq!(screen.composer.text(), "y");
     }
 
     #[test]
     fn a_selection_is_painted_from_offsets_the_client_holds() {
         let mut screen = screen();
-        screen.editor.set_mode(ed::Mode::Normal);
+        screen.composer.set_mode(ed::Mode::Normal);
         let view = view();
         screen.selection_key(&view, &Key::Char('v'));
         screen.selection_key(&view, &Key::Motion(ed::Motion::First));
@@ -3336,63 +2776,63 @@ mod tests {
     #[test]
     fn modal_operators_edit_unicode_and_yank_without_changing_text() {
         let mut screen = screen();
-        screen.editor.set_text("héllo world");
+        screen.composer.set_text("héllo world");
         screen.key(Key::Escape);
         screen.key(Key::Char('0'));
         screen.key(Key::Char('y'));
         assert_eq!(screen.key(Key::Char('w')), KeyOut::Copy("héllo ".into()));
-        assert_eq!(screen.editor.text(), "héllo world");
+        assert_eq!(screen.composer.text(), "héllo world");
         screen.key(Key::Char('d'));
         screen.key(Key::Char('w'));
-        assert_eq!(screen.editor.text(), "world");
+        assert_eq!(screen.composer.text(), "world");
         screen.key(Key::Char('u'));
-        assert_eq!(screen.editor.text(), "héllo world");
+        assert_eq!(screen.composer.text(), "héllo world");
         screen.key(Key::Char('c'));
         screen.key(Key::Char('$'));
-        assert_eq!(screen.editor.text(), "");
-        assert_eq!(screen.editor.mode(), ed::Mode::Insert);
+        assert_eq!(screen.composer.text(), "");
+        assert_eq!(screen.composer.mode(), ed::Mode::Insert);
     }
 
     #[test]
     fn line_operators_open_lines_and_escape_cancels_pending_edit() {
         let mut screen = screen();
-        screen.editor.set_text("first\nlast");
+        screen.composer.set_text("first\nlast");
         screen.key(Key::Escape);
         screen.key(Key::Char('d'));
         screen.key(Key::Char('d'));
-        assert_eq!(screen.editor.text(), "first");
+        assert_eq!(screen.composer.text(), "first");
         screen.key(Key::Char('O'));
-        assert_eq!(screen.editor.text(), "\nfirst");
+        assert_eq!(screen.composer.text(), "\nfirst");
         screen.key(Key::Char('a'));
         screen.key(Key::Escape);
         screen.key(Key::Char('o'));
-        assert_eq!(screen.editor.text(), "a\n\nfirst");
+        assert_eq!(screen.composer.text(), "a\n\nfirst");
         screen.key(Key::Escape);
         screen.key(Key::Char('d'));
         screen.key(Key::Escape);
         screen.key(Key::Char('w'));
-        assert_eq!(screen.editor.text(), "a\n\nfirst");
+        assert_eq!(screen.composer.text(), "a\n\nfirst");
     }
 
     #[test]
     fn reverse_search_refines_cycles_accepts_and_restores_draft() {
         let mut screen = screen();
         for text in ["old cat", "dog", "new cat"] {
-            screen.editor.set_text(text);
-            screen.editor.submit();
+            screen.composer.set_text(text);
+            screen.composer.commit_history();
         }
-        screen.editor.set_text("draft");
+        screen.composer.set_text("draft");
         screen.key(Key::HistorySearch);
         screen.key(Key::Char('c'));
-        assert_eq!(screen.editor.text(), "new cat");
+        assert_eq!(screen.composer.text(), "new cat");
         screen.key(Key::HistorySearch);
-        assert_eq!(screen.editor.text(), "old cat");
+        assert_eq!(screen.composer.text(), "old cat");
         screen.key(Key::Escape);
-        assert_eq!(screen.editor.text(), "draft");
+        assert_eq!(screen.composer.text(), "draft");
         screen.key(Key::HistorySearch);
         screen.key(Key::Char('d'));
         assert_eq!(screen.key(Key::Submit), KeyOut::Local);
-        assert_eq!(screen.editor.text(), "dog");
+        assert_eq!(screen.composer.text(), "dog");
         assert!(matches!(screen.key(Key::Submit), KeyOut::Intent(_)));
     }
 
@@ -3400,7 +2840,7 @@ mod tests {
     fn shift_enter_inserts_a_newline_and_alt_enter_interrupts_with_the_draft() {
         use crossterm::event::{KeyCode, KeyModifiers};
         let mut screen = screen();
-        screen.editor.set_text("first");
+        screen.composer.set_text("first");
         let key = translate(
             KeyCode::Enter,
             KeyModifiers::SHIFT,
@@ -3408,7 +2848,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(screen.key(key), KeyOut::Local);
-        assert_eq!(screen.editor.text(), "first\n");
+        assert_eq!(screen.composer.text(), "first\n");
         let key = translate(
             KeyCode::Enter,
             KeyModifiers::ALT,
@@ -3422,7 +2862,7 @@ mod tests {
                 attachments: vec![]
             })
         );
-        screen.editor.set_text("/clear");
+        screen.composer.set_text("/clear");
         assert!(
             matches!(screen.key(Key::InterruptSubmit), KeyOut::Intent(Intent::Command { ref name, .. }) if name == "clear")
         );
@@ -3510,26 +2950,26 @@ mod tests {
             assert_eq!(command.key(Key::Char(character)), KeyOut::Local);
         }
         assert_eq!(command.key(Key::Char('/')), KeyOut::Local);
-        assert_eq!(command.editor.text(), "/");
+        assert_eq!(command.composer.text(), "/");
 
         let mut argument = screen();
-        argument.editor.set_text("/model");
+        argument.composer.set_text("/model");
         assert!(
             matches!(argument.key(Key::Tab), KeyOut::Complete { source, .. } if source == "models")
         );
         assert_eq!(argument.key(Key::Char('/')), KeyOut::Local);
-        assert_eq!(argument.editor.text(), "/");
+        assert_eq!(argument.composer.text(), "/");
     }
 
     #[test]
     fn a_visual_editor_range_can_be_yanked_or_changed() {
         let mut screen = screen();
-        screen.editor.set_text("hello");
+        screen.composer.set_text("hello");
         screen.key(Key::Escape);
         screen.key(Key::Char('v'));
         screen.key(Key::Motion(ed::Motion::Left));
         assert_eq!(screen.key(Key::Char('y')), KeyOut::Copy("o".into()));
-        assert_eq!(screen.editor.mode(), ed::Mode::Normal);
+        assert_eq!(screen.composer.mode(), ed::Mode::Normal);
     }
 
     #[test]
@@ -3539,19 +2979,19 @@ mod tests {
         screen.key(Key::Escape);
         screen.key(Key::Char('g'));
         screen.key(Key::Char('e'));
-        assert_eq!(screen.editor.cursor(), 3);
+        assert_eq!(screen.composer.cursor(), 3);
         screen.key(Key::Char('0'));
         screen.key(Key::Char('y'));
         screen.key(Key::Char('w'));
         screen.key(Key::Char('G'));
         screen.key(Key::Char('p'));
-        assert_eq!(screen.editor.text(), "one twoone ");
+        assert_eq!(screen.composer.text(), "one twoone ");
     }
 
     #[test]
     fn the_visual_editor_range_is_painted_in_the_composer() {
         let mut screen = screen();
-        screen.editor.set_text("hello");
+        screen.composer.set_text("hello");
         screen.key(Key::Escape);
         screen.key(Key::Char('v'));
         screen.key(Key::Motion(ed::Motion::Left));

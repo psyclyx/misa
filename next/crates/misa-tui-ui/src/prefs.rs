@@ -48,6 +48,8 @@ pub struct PreferenceState {
     saved: Prefs,
     persistence: Option<Box<dyn PreferencePersistence>>,
     draft_scope: Option<String>,
+    /// Changes to the picker's ranking or to the settings used when opening it.
+    composer_revision: u64,
 }
 
 impl Default for PreferenceState {
@@ -57,6 +59,7 @@ impl Default for PreferenceState {
             saved: Prefs::default(),
             persistence: None,
             draft_scope: None,
+            composer_revision: 0,
         }
     }
 }
@@ -68,6 +71,7 @@ impl PreferenceState {
             current,
             persistence: Some(persistence),
             draft_scope: None,
+            composer_revision: 0,
         }
     }
 
@@ -78,6 +82,10 @@ impl PreferenceState {
     pub fn select_theme(&mut self, name: &str) -> misa_render::Theme {
         self.current.theme = name.into();
         self.theme()
+    }
+
+    pub fn composer_revision(&self) -> u64 {
+        self.composer_revision
     }
 
     pub fn keymap(&self) -> &KeymapSettings {
@@ -121,15 +129,20 @@ impl PreferenceState {
     }
     pub fn remember_frecency(&mut self, frecency: &Frecency) {
         self.current.remember_frecency(frecency);
+        self.composer_revision = self.composer_revision.wrapping_add(1);
     }
     pub fn remembered(&mut self, value: &str) {
         self.current.remembered(value);
+        self.composer_revision = self.composer_revision.wrapping_add(1);
     }
     pub fn set_favorite(&mut self, value: &str, favorite: bool) {
-        if favorite {
-            self.current.favorites.insert(value.into());
+        let changed = if favorite {
+            self.current.favorites.insert(value.into())
         } else {
-            self.current.favorites.remove(value);
+            self.current.favorites.remove(value)
+        };
+        if changed {
+            self.composer_revision = self.composer_revision.wrapping_add(1);
         }
     }
 
@@ -190,6 +203,12 @@ impl PreferenceState {
     #[cfg(test)]
     pub(crate) fn configure_picker(&mut self, f: impl FnOnce(&mut PickerSettings)) {
         f(&mut self.current.picker);
+        self.composer_revision = self.composer_revision.wrapping_add(1);
+    }
+    #[cfg(test)]
+    pub(crate) fn configure_keymap(&mut self, f: impl FnOnce(&mut KeymapSettings)) {
+        f(&mut self.current.keymap);
+        self.composer_revision = self.composer_revision.wrapping_add(1);
     }
 }
 
