@@ -127,3 +127,13 @@ an interleaved A/B comparison or native-window latency. Readback and swapchain
 presentation have different costs. Measure native frame-to-present before
 claiming a user-visible win. Offscreen height backfilling is not implemented;
 seeking into unknown content still measures exact owners synchronously.
+
+Two background prototypes were **reverted**, not shipped. A height-only worker
+stored exact offscreen heights but remeasured them on first visible placement,
+so it added work without avoiding the expensive font layout. A later worker
+prewarmed complete retained scenes and reused nearby geometry, but a full
+history scan retained unbounded offscreen scene data and woke the native GPU
+painter for each batch. A two-job channel bounded in-flight work, not retained
+memory or total presentations. Any future backfill needs a lightweight exact
+height index separate from a bounded near-viewport scene cache, plus a UI wake
+that can advance indexing without presenting another identical frame.

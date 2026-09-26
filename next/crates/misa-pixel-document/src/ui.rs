@@ -27,8 +27,6 @@ mod interaction;
 #[cfg(test)]
 mod interaction_tests;
 mod layout;
-#[allow(dead_code)] // Snapshot producer/consumer is wired to the height index in a later stage.
-mod measurement;
 mod nodes;
 mod overlays;
 mod retained;

@@ -511,11 +511,11 @@ fn ten_thousand_list_and_table_rows_have_bounded_tail_and_reflow() {
             .iter()
             .find(|p| p.id == tail)
             .unwrap();
-        let snapshot = super::measurement::HeightSnapshot::capture(&app, &tail, 600.0).unwrap();
+        assert!(placed.height > 0.0, "{kind}: tail row was not measured");
         assert_eq!(
-            super::measurement::measure(snapshot, super::tests::test_metrics()),
+            app.retained.cached(&tail.cache_key()).height,
             placed.height,
-            "{kind}: background height disagrees with placement"
+            "{kind}: retained tail height disagrees with placement"
         );
         app.frame(640, 240);
         assert_eq!(app.retained.owner_counts().0, 0);
@@ -548,6 +548,11 @@ fn ten_thousand_list_and_table_rows_have_bounded_tail_and_reflow() {
             .find(|p| p.id == anchor.id)
             .unwrap();
         assert_eq!(resized.y, anchor.y, "{kind}: unchanged row moved on resize");
+        assert_eq!(
+            resized.height,
+            app.retained.cached(&anchor.id.cache_key()).height,
+            "{kind}: resized row height disagrees with placement"
+        );
         assert!(
             app.retained.owner_counts().0 < 32,
             "{kind}: resize measured history"
@@ -1164,19 +1169,19 @@ fn fragmented_root_projects_live_streams_in_its_end() {
                 .iter()
                 .any(|p| p.id == FlowId::End("root".into()))
         );
-        let snapshot =
-            super::measurement::HeightSnapshot::capture(&app, &FlowId::End("root".into()), 600.0)
-                .unwrap();
+        let end_key = FlowId::End("root".into()).cache_key();
         let end = app
             .viewport
             .visible()
             .iter()
             .find(|p| p.id == FlowId::End("root".into()))
             .unwrap();
-        assert_eq!(
-            super::measurement::measure(snapshot, super::tests::test_metrics()),
-            end.height
+        assert!(
+            end.height > 5.0,
+            "{kind}: live stream did not grow end fragment"
         );
+        assert_eq!(app.retained.cached(&end_key).height, end.height);
+        let original_end = app.retained.cached(&end_key).ops.clone();
         let row_key = FlowId::Row("root".into(), 0).cache_key();
         let original = app.retained.cached(&row_key).ops.clone();
         app.observed(&DocumentUpdate::Changed {
@@ -1194,6 +1199,17 @@ fn fragmented_root_projects_live_streams_in_its_end() {
             &app.retained.cached(&row_key).ops
         ));
         app.frame(640, 480);
+        assert!(!std::sync::Arc::ptr_eq(
+            &original_end,
+            &app.retained.cached(&end_key).ops
+        ));
+        let end = app
+            .viewport
+            .visible()
+            .iter()
+            .find(|p| p.id == FlowId::End("root".into()))
+            .unwrap();
+        assert_eq!(app.retained.cached(&end_key).height, end.height);
         assert!(
             app.interaction
                 .rows()

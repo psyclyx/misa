@@ -206,7 +206,10 @@ fn every_kind_retains_the_same_owner_when_measured_without_placement() {
         empty.metrics.as_ref(),
         false,
     );
-    assert_eq!(builder.measure_owner("empty", 600.0, &theme), Some(0.0));
+    assert_eq!(
+        builder.measure_flow(&super::flow::FlowId::Node("empty".into()), 600.0, &theme),
+        Some(0.0)
+    );
 }
 
 #[test]
@@ -243,7 +246,11 @@ fn measured_field_defers_viewport_updates_until_the_owner_is_placed() {
         app.metrics.as_ref(),
         false,
     );
-    assert!(builder.measure_owner("owner", 160.0, &theme).is_some());
+    assert!(
+        builder
+            .measure_flow(&super::flow::FlowId::Node("owner".into()), 160.0, &theme)
+            .is_some()
+    );
     assert_eq!(builder.drafts.viewport("owner", "text"), initial);
     assert!(builder.interaction.hits().is_empty());
     drop(builder);
@@ -291,7 +298,7 @@ fn measured_composites_match_placed_owners_without_placing_hits() {
             false,
         );
         assert_eq!(
-            builder.measure_owner("owner", 600.0, &theme),
+            builder.measure_flow(&super::flow::FlowId::Node("owner".into()), 600.0, &theme),
             Some(standard.retained.cached("owner").height)
         );
         assert_eq!(
