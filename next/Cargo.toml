@@ -41,7 +41,9 @@ wasmtime = { version = "48", features = ["component-model"] }
 wit-component = "0.259"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-skia-safe = { version = "0.93", features = ["textlayout", "vulkan"] }
+# The Nix sandbox fetches the upstream binary for this exact Skia release and
+# feature set; outside Nix rust-skia resolves its matching archive itself.
+skia-safe = { version = "=0.93.1", features = ["textlayout", "vulkan"] }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"

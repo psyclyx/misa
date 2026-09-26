@@ -59,9 +59,11 @@ cd next && nix-shell              # inside next/ — bare, because ./shell.nix i
 nix-shell next -A shell           # or from the repository root, next to the root's own shell
 ```
 
-Entering `next/` with direnv loads it too, after `direnv allow` once: `next/.envrc` is new,
-and direnv blocks a new `.envrc` until somebody has read it. Inside `next/` that shell is
-what is on the path — the rewrite's toolchain, and not the Zig system's from the root.
+Entering `next/` with direnv loads the same shell after `direnv allow` once.
+The `.envrc` watches the imported Skia/Nix inputs so changing the feature-matched
+archive reloads the shell rather than leaving a stale binary URL in the environment.
+Inside `next/` that shell is what is on the path — the rewrite's toolchain, and
+not the Zig system's from the root.
 
 One shell, from the pin in `../npins`: the `rustc` and `cargo` this repository is built with
 (tooling from a profile is a different toolchain with a different std), `clippy`, `rustfmt`,
@@ -72,6 +74,7 @@ plus the Zig system's, so `cargo` is this repository's rustc wherever you are st
 ## Build and test
 
 ```sh
+cargo build                           # all workspace crates, including Skia/Vulkan, in the dev shell
 cargo test --workspace                 # the gate
 cargo run -p misa-daemon               # advertises locally and prints a ticket
 cargo run -p misa-tui --bin misa        # discover and pair with local daemons
