@@ -59,13 +59,16 @@ impl Headless {
             } {
                 if self
                     .dashboard
-                    .menu_key(menu_key, self.size.width, self.metrics.as_ref())
+                    .combo_key(menu_key, self.size.width, self.metrics.as_ref())
+                    || self
+                        .dashboard
+                        .menu_key(menu_key, self.size.width, self.metrics.as_ref())
                 {
                     return;
                 }
             }
         }
-        if self.dashboard.menu_open()
+        if (self.dashboard.menu_open() || self.dashboard.combo_open())
             && !matches!(
                 event,
                 Event::Pointer {
@@ -236,6 +239,89 @@ mod tests {
         host.input(Event::Key(Key::Escape));
         assert!(!host.dashboard.menu_open());
     }
+    #[test]
+    fn context_menu_replaces_open_combo_and_escape_dismisses_visible_overlay_gpu() {
+        let _gpu = GPU.lock().unwrap();
+        let mut host = Headless::new(Size {
+            width: 130,
+            height: 300,
+        })
+        .expect("GPU readback required");
+        host.frame().unwrap();
+        host.input(Event::Pointer {
+            x: 90.0,
+            y: 220.0,
+            dragging: false,
+        });
+        assert!(host.dashboard.combo_open());
+        host.input(Event::ContextMenu { x: 125.0, y: 285.0 });
+        assert!(!host.dashboard.combo_open());
+        assert!(host.dashboard.menu_open());
+        let scene = host.frame().unwrap();
+        assert!(matches!(
+            scene.scene.ops.last(),
+            Some(misa_pixel_ui::Op::ClipRect { .. })
+        ));
+        host.input(Event::Key(Key::Escape));
+        assert!(!host.dashboard.menu_open());
+        assert!(!host.dashboard.combo_open());
+    }
+    #[test]
+    fn combo_popup_scroll_resize_keyboard_and_pointer_gpu() {
+        let _gpu = GPU.lock().unwrap();
+        let mut host = Headless::new(Size {
+            width: 130,
+            height: 300,
+        })
+        .expect("GPU readback required");
+        let before = host.frame().unwrap();
+        host.input(Event::Pointer {
+            x: 90.0,
+            y: 220.0,
+            dragging: false,
+        });
+        let opened = host.frame().unwrap();
+        assert!(host.dashboard.combo_open());
+        assert_ne!(before.pixels, opened.pixels);
+        assert!(matches!(
+            opened.scene.ops.last(),
+            Some(misa_pixel_ui::Op::ClipRect {
+                x: 0.0,
+                width: 130.0,
+                height: 300.0,
+                ..
+            })
+        ));
+        host.input(Event::Wheel { delta: 300.0 });
+        let scrolled = host.frame().unwrap();
+        assert_ne!(opened.pixels, scrolled.pixels);
+        host.input(Event::Resize(Size {
+            width: 90,
+            height: 250,
+        }));
+        let narrow = host.frame().unwrap();
+        assert!(matches!(
+            narrow.scene.ops.last(),
+            Some(misa_pixel_ui::Op::ClipRect {
+                x: 0.0,
+                width: 90.0,
+                height: 250.0,
+                ..
+            })
+        ));
+        host.input(Event::Key(Key::End));
+        host.input(Event::Key(Key::Enter { newline: false }));
+        assert_eq!(host.dashboard.combo_value(), "value-29");
+        assert!(!host.dashboard.combo_open());
+        let chosen = host.frame().unwrap();
+        assert_ne!(chosen.pixels, narrow.pixels);
+        host.input(Event::Key(Key::Enter { newline: false }));
+        assert!(host.dashboard.combo_open());
+        host.input(Event::Key(Key::Escape));
+        assert!(!host.dashboard.combo_open());
+        assert_eq!(host.dashboard.combo_value(), "value-29");
+    }
+
     #[test]
     fn editable_note_uses_gpu_caret_clip_and_resize() {
         let _gpu = GPU.lock().unwrap();

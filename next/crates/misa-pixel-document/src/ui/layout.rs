@@ -372,10 +372,18 @@ impl DocumentUi {
             scene = builder.layout(&mut self.viewport, width, height);
         }
         builder.paint_report(&mut scene, width, height);
+        if let Some((control, mut state)) = self.choice.take() {
+            if let Some(widget) = self.choice_widget(&control) {
+                scene
+                    .ops
+                    .extend(widget.popup(self.metrics.as_ref(), &mut state));
+                self.choice = Some((control, state));
+            }
+        }
         if let Some(mut menu) = self.menu.take() {
             scene.ops.extend(
                 self.menu_widget(&menu.items, menu.anchor)
-                    .place(self.metrics.as_ref(), &mut menu.state)
+                    .place_with_width(self.metrics.as_ref(), &mut menu.state, menu.width)
                     .ops,
             );
             self.menu = Some(menu);

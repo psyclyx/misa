@@ -2881,7 +2881,51 @@ fn clearing_secret_erases_its_viewport_and_only_invalidates_its_owner() {
 }
 
 #[test]
-fn choice_selected_default_cycles_and_keeps_local_value_on_refresh() {
+fn choice_read_only_and_secret_never_open_popup() {
+    let choice = || FieldKind::Choice {
+        options: vec![misa_proto::view::Choice {
+            value: "private-value".into(),
+            label: "Friendly label".into(),
+            detail: None,
+            metadata: None,
+        }],
+        selected: Some("private-value".into()),
+    };
+    let mut read_only = form("readonly", choice());
+    let Kind::Fields { fields } = &mut read_only.kind else {
+        unreachable!()
+    };
+    fields[0].read_only = true;
+    let mut app = DocumentUi::new(read_only, test_metrics());
+    let scene = app.frame(240, 400);
+    assert!(format!("{:?}", scene.ops).contains("Friendly label"));
+    assert!(
+        app.control_center(&Control::Field {
+            node: "readonly".into(),
+            field: "value".into()
+        })
+        .is_none()
+    );
+
+    let mut secret = form("secret", choice());
+    let Kind::Fields { fields } = &mut secret.kind else {
+        unreachable!()
+    };
+    fields[0].secret = true;
+    let mut app = DocumentUi::new(secret, test_metrics());
+    let scene = app.frame(240, 400);
+    assert!(!format!("{:?}", scene.ops).contains("Friendly label"));
+    assert!(
+        app.choice_widget(&Control::Field {
+            node: "secret".into(),
+            field: "value".into()
+        })
+        .is_none()
+    );
+}
+
+#[test]
+fn choice_popup_keeps_local_value_on_refresh() {
     let mut view = form(
         "choice",
         FieldKind::Choice {
@@ -2904,10 +2948,31 @@ fn choice_selected_default_cycles_and_keeps_local_value_on_refresh() {
     );
     let mut app = DocumentUi::new(view.clone(), test_metrics());
     assert_eq!(app.field_text("choice", "value"), Some("second"));
-    app.activate(Control::Field {
+    app.frame(240, 400);
+    let control = Control::Field {
         node: "choice".into(),
         field: "value".into(),
-    });
+    };
+    let (x, y) = app.control_center(&control).unwrap();
+    assert!(app.pointer(x, y, false).is_empty());
+    assert!(app.choice.is_some());
+    let popup = app.frame(240, 400);
+    assert!(matches!(popup.ops.last(), Some(Op::ClipRect { ops, .. })
+        if format!("{ops:?}").contains("First") && format!("{ops:?}").contains("Second")));
+    app.key(Key::Escape);
+    assert!(app.choice.is_none());
+    assert_eq!(app.interaction.focus(), Some(&control));
+    assert_eq!(app.field_text("choice", "value"), Some("second"));
+    app.key(Key::Enter { newline: false });
+    app.key(Key::Home);
+    app.key(Key::Enter { newline: false });
+    assert!(app.choice.is_none());
+    assert_eq!(app.field_text("choice", "value"), Some("first"));
+    // Outside dismissal does not change either the focused control or local value.
+    app.pointer(x, y, false);
+    app.pointer(0.0, 0.0, false);
+    assert!(app.choice.is_none());
+    assert_eq!(app.interaction.focus(), Some(&control));
     assert_eq!(app.field_text("choice", "value"), Some("first"));
     let Kind::Fields { fields } = &mut view.kind else {
         unreachable!()
@@ -2917,4 +2982,150 @@ fn choice_selected_default_cycles_and_keeps_local_value_on_refresh() {
     assert_eq!(app.field_text("choice", "value"), Some("first"));
     assert!(matches!(&app.submit("choice", "answer")[..],
         [Command::Intent(Intent::Action { fields, .. })] if fields[0].value == "first"));
+}
+
+fn choice_form(secret: bool, values: &[(&str, &str)]) -> Node {
+    let mut view = form(
+        "choice",
+        FieldKind::Choice {
+            options: values
+                .iter()
+                .map(|(value, label)| misa_proto::view::Choice {
+                    value: (*value).into(),
+                    label: (*label).into(),
+                    detail: None,
+                    metadata: None,
+                })
+                .collect(),
+            selected: Some("first".into()),
+        },
+    );
+    if let Kind::Fields { fields } = &mut view.kind {
+        fields[0].secret = secret;
+    }
+    view
+}
+
+#[test]
+fn secret_choice_cycles_on_click_and_space_without_exposing_labels() {
+    let mut app = DocumentUi::new(
+        choice_form(
+            true,
+            &[("first", "Hidden first"), ("second", "Hidden second")],
+        ),
+        test_metrics(),
+    );
+    let scene = app.frame(360, 300);
+    let control = Control::Field {
+        node: "choice".into(),
+        field: "value".into(),
+    };
+    let (x, y) = app.control_center(&control).unwrap();
+    assert!(!format!("{:?}", scene.ops).contains("Hidden"));
+    assert!(!format!("{:?}", scene.ops).contains("first"));
+    app.pointer(x, y, false);
+    assert!(app.choice.is_none());
+    assert_eq!(app.field_text("choice", "value"), Some("second"));
+    let scene = app.frame(360, 300);
+    assert!(!format!("{:?}", scene.ops).contains("Hidden"));
+    assert!(!format!("{:?}", scene.ops).contains("second"));
+    assert!(matches!(&app.submit("choice", "answer")[..],
+        [Command::Intent(Intent::Action { fields, .. })] if fields[0].value == "second"));
+    app.drive(Event::Text(" ".into()), Duration::ZERO);
+    assert_eq!(app.field_text("choice", "value"), Some("first"));
+}
+
+#[test]
+fn removed_selected_choice_is_visible_as_unavailable_until_replaced() {
+    let mut app = DocumentUi::new(
+        choice_form(false, &[("first", "First"), ("second", "Second")]),
+        test_metrics(),
+    );
+    app.frame(360, 300);
+    let control = Control::Field {
+        node: "choice".into(),
+        field: "value".into(),
+    };
+    app.key(Key::Down);
+    app.key(Key::Enter { newline: false });
+    assert_eq!(app.field_text("choice", "value"), Some("second"));
+    let changed = choice_form(false, &[("first", "First new"), ("third", "Third")]);
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Replace {
+            id: "choice".into(),
+            node: changed,
+        }],
+        live: &[],
+        reset_live: false,
+    })
+    .unwrap();
+    let scene = app.frame(360, 300);
+    assert!(any_op(
+        &scene.ops,
+        |op| matches!(op, Op::Text { text, .. } if text == "Unavailable selection")
+    ));
+    assert_eq!(app.field_text("choice", "value"), Some("second"));
+    assert!(matches!(&app.submit("choice", "answer")[..],
+        [Command::Intent(Intent::Action { fields, .. })] if fields[0].value == "second"));
+    app.focus_control(Some(control));
+    app.key(Key::Down);
+    app.key(Key::Home);
+    app.key(Key::Enter { newline: false });
+    assert_eq!(app.field_text("choice", "value"), Some("first"));
+}
+
+#[test]
+fn unrelated_tree_change_keeps_choice_open_but_owner_change_closes_it() {
+    let mut app = DocumentUi::new(
+        Node::section("root")
+            .id("root")
+            .child(choice_form(
+                false,
+                &[("first", "First"), ("second", "Second")],
+            ))
+            .child(Node::text("text", [Span::plain("old")]).id("other")),
+        test_metrics(),
+    );
+    app.frame(360, 300);
+    let control = Control::Field {
+        node: "choice".into(),
+        field: "value".into(),
+    };
+    app.focus_control(Some(control));
+    app.key(Key::Down);
+    assert!(app.choice.is_some());
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Replace {
+            id: "other".into(),
+            node: Node::text("text", [Span::plain("new")]).id("other"),
+        }],
+        live: &[],
+        reset_live: false,
+    })
+    .unwrap();
+    assert!(app.choice.is_some());
+    app.key(Key::Escape);
+    assert!(app.choice.is_none());
+    app.key(Key::Down);
+    assert!(app.choice.is_some());
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Replace {
+            id: "choice".into(),
+            node: choice_form(false, &[("first", "Changed"), ("third", "New")]),
+        }],
+        live: &[],
+        reset_live: false,
+    })
+    .unwrap();
+    assert!(app.choice.is_none());
+    app.key(Key::Down);
+    let scene = app.frame(360, 300);
+    assert!(any_op(
+        &scene.ops,
+        |op| matches!(op, Op::Text { text, .. } if text == "Changed")
+    ));
+    assert!(!any_op(
+        &scene.ops,
+        |op| matches!(op, Op::Text { text, .. } if text == "Second")
+    ));
 }

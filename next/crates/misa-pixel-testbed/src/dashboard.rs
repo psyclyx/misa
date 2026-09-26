@@ -1,8 +1,8 @@
 //! Toolkit-owned scene: no semantic tree or protocol types involved.
 use misa_pixel_ui::{
-    Button, Checkbox, ContextMenu, FieldInsets, FieldMode, FieldViewport, ListBox, ListBoxState,
-    ListKey, MenuItem, MenuKey, MenuState, PlacedField, PlacedListBox, ProgressBar, Rect,
-    TextField, TextFlow, TextMetrics,
+    Button, Checkbox, ComboBox, ComboOption, ComboResult, ComboState, ContextMenu, FieldInsets,
+    FieldMode, FieldViewport, ListBox, ListBoxState, ListKey, MenuItem, MenuKey, MenuState,
+    PlacedField, PlacedListBox, ProgressBar, Rect, TextField, TextFlow, TextMetrics,
 };
 use misa_pixel_ui::{Op, Scene};
 use misa_style::Style;
@@ -22,6 +22,7 @@ enum Focus {
     Button,
     Check,
     List,
+    Combo,
 }
 
 pub struct Dashboard {
@@ -36,6 +37,10 @@ pub struct Dashboard {
     checked: bool,
     note_viewport: FieldViewport,
     menu: Option<((f32, f32), MenuState)>,
+    menu_width: Option<f32>,
+    combo: ComboState,
+    combo_options: Vec<ComboOption<String>>,
+    combo_value: String,
 }
 
 impl Default for Dashboard {
@@ -52,6 +57,16 @@ impl Default for Dashboard {
             checked: false,
             note_viewport: FieldViewport::default(),
             menu: None,
+            menu_width: None,
+            combo: ComboState::default(),
+            combo_options: (0..30)
+                .map(|i| ComboOption {
+                    value: format!("value-{i}"),
+                    label: format!("Local choice {i}"),
+                    enabled: i != 1,
+                })
+                .collect(),
+            combo_value: "value-0".into(),
         }
     }
 }
@@ -86,7 +101,7 @@ impl Dashboard {
     }
     fn menu_widget<'a>(
         &self,
-        items: &'a [MenuItem<u8>],
+        items: &'a Vec<MenuItem<u8>>,
         anchor: (f32, f32),
         width: u32,
     ) -> ContextMenu<'a, u8> {
@@ -119,17 +134,94 @@ impl Dashboard {
             _ => unreachable!(),
         }
     }
+    fn combo<'a>(
+        options: &'a Vec<ComboOption<String>>,
+        selected: &String,
+        focus: Option<Focus>,
+        last_height: u32,
+        width: u32,
+        metrics: &dyn TextMetrics,
+    ) -> misa_pixel_ui::PlacedComboBox<'a, String> {
+        ComboBox {
+            options,
+            selected: Some(selected),
+            bounds: Rect {
+                x: 36.0,
+                y: 207.0,
+                width: (width as f32 - 72.0).max(1.0),
+                height: 32.0,
+            },
+            viewport: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: width as f32,
+                height: last_height as f32,
+            },
+            font_size: 14.0,
+            row_height: 25.0,
+            focused: focus == Some(Focus::Combo),
+            enabled: true,
+            background: Style::rgb(35, 40, 48),
+            foreground: Style::rgb(230, 232, 236),
+            muted: Style::rgb(100, 110, 120),
+            border: Style::rgb(65, 74, 86),
+            highlight: Style::rgb(45, 105, 150),
+        }
+        .place(metrics)
+    }
+    fn combo_result(&mut self, result: ComboResult<String>) {
+        if let ComboResult::Selected(value) = result {
+            self.combo_value = value;
+        }
+    }
+    pub fn combo_value(&self) -> &str {
+        &self.combo_value
+    }
+    pub fn combo_open(&self) -> bool {
+        self.combo.open
+    }
+    pub fn combo_key(&mut self, key: MenuKey, width: u32, metrics: &dyn TextMetrics) -> bool {
+        if !self.combo.open {
+            return false;
+        }
+        let result = Self::combo(
+            &self.combo_options,
+            &self.combo_value,
+            self.focus,
+            self.last_height,
+            width,
+            metrics,
+        )
+        .key(metrics, &mut self.combo, key);
+        self.combo_result(result);
+        true
+    }
     pub fn context_menu(&mut self, x: f32, y: f32) {
+        // A new context menu replaces the popup; Escape now dismisses what is visible.
+        self.combo.open = false;
+        self.menu_width = None;
         self.menu = Some(((x, y), MenuState::default()));
+    }
+    fn measured_menu_width(&mut self, metrics: &dyn TextMetrics) -> f32 {
+        if let Some(width) = self.menu_width {
+            return width;
+        }
+        let items = self.menu_items();
+        let width = self
+            .menu_widget(&items, (0.0, 0.0), 0)
+            .measured_width(metrics);
+        self.menu_width = Some(width);
+        width
     }
     pub fn menu_key(&mut self, key: MenuKey, width: u32, metrics: &dyn TextMetrics) -> bool {
         let Some((anchor, mut state)) = self.menu else {
             return false;
         };
+        let measured_width = self.measured_menu_width(metrics);
         let items = self.menu_items();
         let result = self
             .menu_widget(&items, anchor, width)
-            .place(metrics, &mut state)
+            .place_with_width(metrics, &mut state, measured_width)
             .key(&mut state, key);
         self.menu = result.is_none().then_some((anchor, state));
         if let Some(Some(id)) = result {
@@ -141,6 +233,12 @@ impl Dashboard {
         self.menu.is_some()
     }
     pub fn scroll(&mut self, delta: f32) {
+        if self.combo.open {
+            if delta.is_finite() {
+                self.combo.menu.scroll = (self.combo.menu.scroll + delta).max(0.0);
+            }
+            return;
+        }
         if let Some((anchor, mut state)) = self.menu {
             if delta.is_finite() {
                 state.scroll = (state.scroll + delta).max(0.0);
@@ -172,7 +270,25 @@ impl Dashboard {
     }
 
     pub fn key(&mut self, key: ListKey, width: u32, height: u32, metrics: &dyn TextMetrics) {
-        if self.focus == Some(Focus::List) {
+        if self.focus == Some(Focus::Combo) {
+            let menu_key = match key {
+                ListKey::Up => MenuKey::Up,
+                ListKey::Down => MenuKey::Down,
+                ListKey::Home => MenuKey::Home,
+                ListKey::End => MenuKey::End,
+                ListKey::Enter => MenuKey::Enter,
+            };
+            let result = Self::combo(
+                &self.combo_options,
+                &self.combo_value,
+                self.focus,
+                self.last_height,
+                width,
+                metrics,
+            )
+            .key(metrics, &mut self.combo, menu_key);
+            self.combo_result(result);
+        } else if self.focus == Some(Focus::List) {
             let list = self.list(width, height, metrics);
             list.key(&mut self.list_state, key);
         } else if key == ListKey::Enter && self.focus == Some(Focus::Button) {
@@ -191,11 +307,13 @@ impl Dashboard {
     pub fn tab(&mut self, backward: bool) {
         let next = match (self.focus, backward) {
             (None, false) | (Some(Focus::List), false) => Focus::Note,
+            (Some(Focus::Button), false) => Focus::Combo,
+            (Some(Focus::Combo), false) => Focus::List,
             (Some(Focus::Note), false) => Focus::Check,
             (Some(Focus::Check), false) => Focus::Button,
-            (Some(Focus::Button), false) => Focus::List,
             (None, true) | (Some(Focus::Note), true) => Focus::List,
-            (Some(Focus::List), true) => Focus::Button,
+            (Some(Focus::List), true) => Focus::Combo,
+            (Some(Focus::Combo), true) => Focus::Button,
             (Some(Focus::Button), true) => Focus::Check,
             (Some(Focus::Check), true) => Focus::Note,
         };
@@ -324,7 +442,7 @@ impl Dashboard {
             )],
             (card_width - 32.0).max(0.0),
         );
-        let top = 205.0 + rows.len() as f32 * flow.line_height() + 16.0;
+        let top = 250.0 + rows.len() as f32 * flow.line_height() + 16.0;
         Rect {
             x: 36.0,
             y: top,
@@ -355,11 +473,25 @@ impl Dashboard {
     }
 
     pub fn click(&mut self, x: f32, y: f32, width: u32, metrics: &dyn TextMetrics) -> bool {
+        if self.combo.open {
+            let result = Self::combo(
+                &self.combo_options,
+                &self.combo_value,
+                self.focus,
+                self.last_height,
+                width,
+                metrics,
+            )
+            .click(metrics, &mut self.combo, x, y);
+            self.combo_result(result);
+            return true;
+        }
         if let Some((anchor, mut state)) = self.menu {
+            let measured_width = self.measured_menu_width(metrics);
             let items = self.menu_items();
             let result = self
                 .menu_widget(&items, anchor, width)
-                .place(metrics, &mut state)
+                .place_with_width(metrics, &mut state, measured_width)
                 .click(x, y);
             self.menu = result.is_none().then_some((anchor, state));
             if let Some(Some(id)) = result {
@@ -369,7 +501,29 @@ impl Dashboard {
         }
         self.note_focused = self.note_field(width, metrics).bounds.contains(x, y);
         self.focus = self.note_focused.then_some(Focus::Note);
-        if self.checkbox(width, metrics).click(x, y).is_some() {
+        if Self::combo(
+            &self.combo_options,
+            &self.combo_value,
+            self.focus,
+            self.last_height,
+            width,
+            metrics,
+        )
+        .bounds
+        .contains(x, y)
+        {
+            let result = Self::combo(
+                &self.combo_options,
+                &self.combo_value,
+                self.focus,
+                self.last_height,
+                width,
+                metrics,
+            )
+            .click(metrics, &mut self.combo, x, y);
+            self.combo_result(result);
+            self.focus = Some(Focus::Combo);
+        } else if self.checkbox(width, metrics).click(x, y).is_some() {
             self.checked = !self.checked;
             self.focus = Some(Focus::Check);
         } else if self.button(width, metrics).bounds.contains(x, y) {
@@ -395,7 +549,7 @@ impl Dashboard {
             vec![(Style::rgb(230, 232, 236), description.into())],
             available,
         );
-        let description_top = 205.0;
+        let description_top = 250.0;
         let list_top = description_top + description_rows.len() as f32 * flow.line_height() + 16.0;
         let mut scene = Scene {
             width: width as f32,
@@ -411,6 +565,17 @@ impl Dashboard {
         scene.ops.extend(button.ops);
         scene.ops.extend(self.note_field(width, metrics).ops);
         scene.ops.extend(self.checkbox(width, metrics).widget.ops);
+        scene.ops.extend(
+            Self::combo(
+                &self.combo_options,
+                &self.combo_value,
+                self.focus,
+                self.last_height,
+                width,
+                metrics,
+            )
+            .ops,
+        );
         scene.ops.extend(
             ProgressBar {
                 id: NativeAction::Progress,
@@ -468,13 +633,25 @@ impl Dashboard {
             .ops
             .extend(self.list(width, height, metrics).widget.ops);
         if let Some((anchor, mut state)) = self.menu {
+            let measured_width = self.measured_menu_width(metrics);
             let items = self.menu_items();
             scene.ops.extend(
                 self.menu_widget(&items, anchor, width)
-                    .place(metrics, &mut state)
+                    .place_with_width(metrics, &mut state, measured_width)
                     .ops,
             );
             self.menu = Some((anchor, state));
+        }
+        if self.combo.open {
+            let widget = Self::combo(
+                &self.combo_options,
+                &self.combo_value,
+                self.focus,
+                self.last_height,
+                width,
+                metrics,
+            );
+            scene.ops.extend(widget.popup(metrics, &mut self.combo));
         }
         scene
     }
@@ -517,8 +694,8 @@ mod tests {
     #[test]
     fn description_wraps_and_paints_inside_narrow_card() {
         let mut dashboard = Dashboard::default();
-        let narrow = dashboard.frame(130, 300, &Metrics);
-        let wide = dashboard.frame(500, 300, &Metrics);
+        let narrow = dashboard.frame(130, 450, &Metrics);
+        let wide = dashboard.frame(500, 450, &Metrics);
         let rows = |scene: &Scene| {
             scene
                 .ops
@@ -531,7 +708,7 @@ mod tests {
                         width,
                         ops,
                         ..
-                    } if *y >= 205.0 && *y < 205.0 + 15.0 * 12.0 => Some((*width, ops.clone())),
+                    } if *y >= 250.0 && *y < 250.0 + 15.0 * 12.0 => Some((*width, ops.clone())),
                     _ => None,
                 })
                 .collect::<Vec<_>>()

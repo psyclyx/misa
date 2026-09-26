@@ -7,8 +7,12 @@ pub mod flow;
 pub use flow::{
     Constraints as FlowConstraints, FlowPlacement, FlowPosition, FlowSource, FlowViewport,
 };
+mod combo_box;
+pub use combo_box::{ComboBox, ComboOption, ComboResult, ComboState, PlacedComboBox};
 mod context_menu;
-pub use context_menu::{ContextMenu, MenuItem, MenuKey, MenuState, PlacedMenu};
+pub use context_menu::{
+    ContextMenu, MenuEntries, MenuEntry, MenuItem, MenuKey, MenuState, PlacedMenu,
+};
 mod field;
 pub use field::{FieldInsets, FieldMode, FieldViewport, PlacedField, TextField};
 mod text;

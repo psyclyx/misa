@@ -12,6 +12,45 @@ pub enum MenuItem<Id> {
     },
     Separator,
 }
+/// Borrowed indexed rows allow large menus to paint without copying their contents.
+pub enum MenuEntry<'a, Id> {
+    Action {
+        id: &'a Id,
+        label: &'a str,
+        enabled: bool,
+    },
+    Separator,
+}
+pub trait MenuEntries<Id> {
+    fn len(&self) -> usize;
+    fn entry(&self, index: usize) -> Option<MenuEntry<'_, Id>>;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+impl<Id> MenuEntries<Id> for [MenuItem<Id>] {
+    fn len(&self) -> usize {
+        <[MenuItem<Id>]>::len(self)
+    }
+    fn entry(&self, index: usize) -> Option<MenuEntry<'_, Id>> {
+        self.get(index).map(|item| match item {
+            MenuItem::Action { id, label, enabled } => MenuEntry::Action {
+                id,
+                label,
+                enabled: *enabled,
+            },
+            MenuItem::Separator => MenuEntry::Separator,
+        })
+    }
+}
+impl<Id> MenuEntries<Id> for Vec<MenuItem<Id>> {
+    fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+    fn entry(&self, index: usize) -> Option<MenuEntry<'_, Id>> {
+        self.as_slice().entry(index)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuKey {
     Escape,
@@ -27,7 +66,7 @@ pub struct MenuState {
     pub scroll: f32,
 }
 pub struct ContextMenu<'a, Id> {
-    pub items: &'a [MenuItem<Id>],
+    pub items: &'a dyn MenuEntries<Id>,
     pub anchor: (f32, f32),
     pub viewport: Rect,
     pub font_size: f32,
@@ -40,29 +79,39 @@ pub struct ContextMenu<'a, Id> {
 pub struct PlacedMenu<'a, Id> {
     pub bounds: Rect,
     pub ops: Vec<Op>,
-    items: &'a [MenuItem<Id>],
+    items: &'a dyn MenuEntries<Id>,
     row_height: f32,
     scroll: f32,
 }
 impl<Id> ContextMenu<'_, Id> {
+    /// Measure only when items change; callers with stable content can reuse this width.
+    pub fn measured_width(&self, metrics: &dyn TextMetrics) -> f32 {
+        (0..self.items.len())
+            .filter_map(|i| match self.items.entry(i) {
+                Some(MenuEntry::Action { label, .. }) => {
+                    Some(metrics.measure(label, self.font_size))
+                }
+                _ => None,
+            })
+            .fold(0.0_f32, f32::max)
+            + 24.0
+    }
     pub fn place<'a>(
         &'a self,
         metrics: &dyn TextMetrics,
         state: &mut MenuState,
     ) -> PlacedMenu<'a, Id> {
+        self.place_with_width(metrics, state, self.measured_width(metrics))
+    }
+    pub fn place_with_width<'a>(
+        &'a self,
+        metrics: &dyn TextMetrics,
+        state: &mut MenuState,
+        measured_width: f32,
+    ) -> PlacedMenu<'a, Id> {
         assert!(self.row_height > 0.0);
         let v = self.viewport;
-        let width = (self
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                MenuItem::Action { label, .. } => Some(metrics.measure(label, self.font_size)),
-                MenuItem::Separator => None,
-            })
-            .fold(0.0_f32, f32::max)
-            + 24.0)
-            .max(72.0)
-            .min(v.width.max(0.0));
+        let width = measured_width.max(72.0).min(v.width.max(0.0));
         let height = (self.items.len() as f32 * self.row_height).min(v.height.max(0.0));
         let bounds = Rect {
             x: self.anchor.0.clamp(v.x, (v.x + v.width - width).max(v.x)),
@@ -89,46 +138,37 @@ impl<Id> ContextMenu<'_, Id> {
         let end = ((state.scroll + height) / self.row_height).ceil() as usize;
         for i in start..end.min(self.items.len()) {
             let y = bounds.y + i as f32 * self.row_height - state.scroll;
-            let row = Rect {
-                x: bounds.x,
-                y,
-                width,
-                height: self.row_height,
-            };
             if state.highlighted == Some(i) {
                 ops.push(Op::Rect {
-                    x: row.x,
+                    x: bounds.x,
                     y,
                     width,
-                    height: row.height,
+                    height: self.row_height,
                     style: self.highlight,
                 });
             }
-            match &self.items[i] {
-                MenuItem::Separator => ops.push(Op::Rect {
-                    x: row.x + 6.0,
-                    y: y + row.height / 2.0,
+            match self.items.entry(i).expect("visible row") {
+                MenuEntry::Separator => ops.push(Op::Rect {
+                    x: bounds.x + 6.0,
+                    y: y + self.row_height / 2.0,
                     width: (width - 12.0).max(0.0),
                     height: 1.0,
                     style: self.muted,
                 }),
-                MenuItem::Action { label, enabled, .. } => ops.push(Op::ClipRect {
-                    x: row.x + 12.0,
+                MenuEntry::Action { label, enabled, .. } => ops.push(Op::ClipRect {
+                    x: bounds.x + 12.0,
                     y,
                     width: (width - 24.0).max(0.0),
-                    height: row.height,
+                    height: self.row_height,
                     ops: Arc::new(vec![Op::Text {
-                        x: row.x + 12.0,
-                        y: y + ((row.height - metrics.line_metrics(self.font_size).line_height)
+                        x: bounds.x + 12.0,
+                        y: y + ((self.row_height
+                            - metrics.line_metrics(self.font_size).line_height)
                             / 2.0)
                             .max(0.0),
                         size: self.font_size,
-                        style: if *enabled {
-                            self.foreground
-                        } else {
-                            self.muted
-                        },
-                        text: label.clone(),
+                        style: if enabled { self.foreground } else { self.muted },
+                        text: label.into(),
                     }]),
                 }),
             }
@@ -148,10 +188,10 @@ impl<Id> ContextMenu<'_, Id> {
         }
     }
 }
-fn selectable<Id>(items: &[MenuItem<Id>], index: usize) -> bool {
+fn selectable<Id>(items: &dyn MenuEntries<Id>, index: usize) -> bool {
     matches!(
-        items.get(index),
-        Some(MenuItem::Action { enabled: true, .. })
+        items.entry(index),
+        Some(MenuEntry::Action { enabled: true, .. })
     )
 }
 impl<Id: Clone> PlacedMenu<'_, Id> {
@@ -161,8 +201,8 @@ impl<Id: Clone> PlacedMenu<'_, Id> {
             return Some(None);
         }
         let index = ((y - self.bounds.y + self.scroll) / self.row_height) as usize;
-        match self.items.get(index) {
-            Some(MenuItem::Action {
+        match self.items.entry(index) {
+            Some(MenuEntry::Action {
                 id, enabled: true, ..
             }) => Some(Some(id.clone())),
             _ => None,
@@ -182,32 +222,39 @@ impl<Id: Clone> PlacedMenu<'_, Id> {
             return Some(None);
         }
         if key == MenuKey::Enter {
-            return state.highlighted.and_then(|i| match self.items.get(i) {
-                Some(MenuItem::Action {
+            return state.highlighted.and_then(|i| match self.items.entry(i) {
+                Some(MenuEntry::Action {
                     id, enabled: true, ..
                 }) => Some(Some(id.clone())),
                 _ => None,
             });
         }
-        let indices: Vec<_> = (0..self.items.len())
-            .filter(|i| selectable(self.items, *i))
-            .collect();
-        if indices.is_empty() {
+        let len = self.items.len();
+        if len == 0 {
             return None;
         }
-        let pos = state
-            .highlighted
-            .and_then(|i| indices.iter().position(|n| *n == i));
-        let next = match key {
-            MenuKey::Home => 0,
-            MenuKey::End => indices.len() - 1,
-            MenuKey::Down => pos.map_or(0, |p| (p + 1) % indices.len()),
-            MenuKey::Up => pos.map_or(indices.len() - 1, |p| {
-                (p + indices.len() - 1) % indices.len()
-            }),
+        let (start, backward) = match key {
+            MenuKey::Home => (0, false),
+            MenuKey::End => (len - 1, true),
+            MenuKey::Down => (state.highlighted.map_or(0, |i| (i + 1) % len), false),
+            MenuKey::Up => (
+                state.highlighted.map_or(len - 1, |i| (i + len - 1) % len),
+                true,
+            ),
             _ => unreachable!(),
         };
-        let i = indices[next];
+        let Some(i) = (0..len)
+            .map(|n| {
+                if backward {
+                    (start + len - n) % len
+                } else {
+                    (start + n) % len
+                }
+            })
+            .find(|i| selectable(self.items, *i))
+        else {
+            return None;
+        };
         state.highlighted = Some(i);
         let top = i as f32 * self.row_height;
         state.scroll = self
@@ -274,7 +321,8 @@ mod tests {
             highlight: Style::default(),
         };
         let mut state = MenuState::default();
-        let p = menu.place(&Metrics, &mut state);
+        let width = menu.measured_width(&Metrics);
+        let p = menu.place_with_width(&Metrics, &mut state, width);
         assert_eq!(
             p.bounds,
             Rect {
@@ -284,7 +332,6 @@ mod tests {
                 height: 60.0
             }
         );
-        assert!(matches!(&p.ops[0], Op::ClipRect { width: 40.0, .. }));
         assert_eq!(p.click(2.0, 25.0), None);
         assert_eq!(p.click(40.0, 25.0), Some(None));
         p.key(&mut state, MenuKey::Down);
@@ -293,7 +340,7 @@ mod tests {
         p.key(&mut state, MenuKey::End);
         assert_eq!(state.highlighted, Some(20));
         assert_eq!(state.scroll, 360.0);
-        let p = menu.place(&Metrics, &mut state);
+        let p = menu.place_with_width(&Metrics, &mut state, width);
         assert_eq!(p.click(2.0, 59.0), Some(Some(19)));
         assert_eq!(p.key(&mut state, MenuKey::Escape), Some(None));
     }

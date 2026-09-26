@@ -465,6 +465,17 @@ impl InteractionMap {
             .find(|hit| hit.contains(x, y))
             .map(|hit| hit.control.clone())
     }
+    pub(super) fn control_bounds(&self, control: &Control) -> Option<misa_pixel_ui::Rect> {
+        self.hits
+            .iter()
+            .find(|hit| &hit.control == control)
+            .map(|hit| misa_pixel_ui::Rect {
+                x: hit.x,
+                y: hit.y,
+                width: hit.width,
+                height: hit.height,
+            })
+    }
     pub(super) fn control_center(&self, control: &Control) -> Option<(f32, f32)> {
         self.hits
             .iter()

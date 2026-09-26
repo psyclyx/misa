@@ -3,8 +3,8 @@
 use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
 use misa_pixel_ui::{
-    ContextMenu, FieldViewport, FlowViewport, MenuItem, MenuKey, MenuState, Op, Rect, Scene,
-    TextMetrics,
+    ComboBox, ComboOption, ComboResult, ComboState, ContextMenu, FieldViewport, FlowViewport,
+    MenuEntries, MenuEntry, MenuItem, MenuKey, MenuState, Op, Rect, Scene, TextMetrics,
 };
 use misa_proto::sync::{StreamUpdate, ViewOp};
 #[cfg(test)]
@@ -82,15 +82,31 @@ enum MenuAction {
     SelectAll,
     Toggle(String),
 }
+pub(super) struct ChoiceRows<'a>(pub &'a [misa_proto::view::Choice]);
+impl MenuEntries<String> for ChoiceRows<'_> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn entry(&self, i: usize) -> Option<MenuEntry<'_, String>> {
+        self.0.get(i).map(|o| MenuEntry::Action {
+            id: &o.value,
+            label: &o.label,
+            enabled: true,
+        })
+    }
+}
 struct DocumentMenu {
     anchor: (f32, f32),
     items: Vec<MenuItem<MenuAction>>,
+    width: f32,
     state: MenuState,
     previous_focus: Option<Control>,
     field: Option<Control>,
 }
 pub struct DocumentUi {
     menu: Option<DocumentMenu>,
+    choice: Option<(Control, ComboState)>,
+    choice_options: Vec<ComboOption<String>>,
     size: Size,
     light: bool,
     metrics: Arc<dyn TextMetrics>,
@@ -106,6 +122,8 @@ impl DocumentUi {
     pub fn new(view: Node, metrics: Arc<dyn TextMetrics>) -> Self {
         let mut app = Self {
             menu: None,
+            choice: None,
+            choice_options: Vec::new(),
             size: Size {
                 width: 0,
                 height: 0,
@@ -136,6 +154,7 @@ impl DocumentUi {
                 output.redraw = true;
             }
             Event::ContextMenu { x, y } => {
+                self.choice = None;
                 self.open_menu(x, y);
                 output.redraw = true;
             }
@@ -239,6 +258,7 @@ impl DocumentUi {
         };
         let anchor = flow::ResetAnchor::capture(&self.document, &self.viewport, &theme);
         self.menu = None;
+        self.choice = None;
         misa_proto::sync::address(&mut view);
         let keys = self.drafts.reset(&view);
         if self.overlays.saving() {
@@ -359,10 +379,23 @@ impl DocumentUi {
                 self.set_view_with_streams((*tree).clone(), streams);
             }
             DocumentUpdate::Changed { tree, .. } => {
+                let changes = self.document.observe(update)?;
+                // Only a transaction touching the popup's field owner can invalidate its rows.
+                if let Some((Control::Field { node, field }, _)) = &self.choice {
+                    if changes.full
+                        || changes.retired.contains(node)
+                        || !self.document.field(node, field).is_some_and(|f| {
+                            matches!(f.kind, misa_proto::view::FieldKind::Choice { .. })
+                                && !f.read_only
+                                && !f.secret
+                        })
+                    {
+                        self.choice = None;
+                    }
+                }
                 if !tree.is_empty() {
                     self.menu = None;
                 }
-                let changes = self.document.observe(update)?;
                 if !tree.is_empty() {
                     self.refresh_tree_fields(tree);
                 }
@@ -430,9 +463,91 @@ impl DocumentUi {
             }
         }
     }
+    fn choice_widget(
+        &self,
+        control: &Control,
+    ) -> Option<misa_pixel_ui::PlacedComboBox<'_, String>> {
+        let Control::Field { node, field } = control else {
+            return None;
+        };
+        let model = self.document.field(node, field)?;
+        if !matches!(model.kind, misa_proto::view::FieldKind::Choice { .. })
+            || model.read_only
+            || model.secret
+        {
+            return None;
+        }
+        let bounds = self.interaction.control_bounds(control)?;
+        // The option model is built on opening, not per frame.
+        let selected = self
+            .drafts
+            .text(node, field)
+            .unwrap_or(&model.value)
+            .to_string();
+        let colors = crate::appearance::Palette::new(self.light);
+        Some(
+            ComboBox {
+                options: &self.choice_options,
+                selected: Some(&selected),
+                bounds,
+                viewport: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: self.size.width as f32,
+                    height: self.size.height as f32,
+                },
+                font_size: FONT_SIZE,
+                row_height: 28.0,
+                focused: self.interaction.focused(control),
+                enabled: true,
+                background: colors.field,
+                foreground: colors.text,
+                muted: colors.muted,
+                border: colors.border,
+                highlight: colors.accent,
+            }
+            .place(self.metrics.as_ref()),
+        )
+    }
+    fn open_choice(&mut self, control: Control, key: MenuKey) -> bool {
+        if let Control::Field { node, field } = &control {
+            if let Some(model) = self.document.field(node, field)
+                && let misa_proto::view::FieldKind::Choice { options, .. } = &model.kind
+                && !model.secret
+                && !model.read_only
+            {
+                self.choice_options = options
+                    .iter()
+                    .map(|o| ComboOption {
+                        value: o.value.clone(),
+                        label: o.label.clone(),
+                        enabled: true,
+                    })
+                    .collect();
+            }
+        }
+        let Some(widget) = self.choice_widget(&control) else {
+            return false;
+        };
+        let mut state = ComboState::default();
+        let result = widget.key(self.metrics.as_ref(), &mut state, key);
+        self.finish_choice(control, state, result);
+        true
+    }
+    fn finish_choice(&mut self, control: Control, state: ComboState, result: ComboResult<String>) {
+        if let ComboResult::Selected(value) = &result {
+            if let Control::Field { node, field } = &control {
+                self.drafts.set_choice(node, field, value);
+                self.invalidate(node);
+            }
+        }
+        if state.open {
+            self.choice = Some((control, state));
+        }
+    }
     fn menu_widget<'a>(
         &self,
-        items: &'a [MenuItem<MenuAction>],
+        items: &'a Vec<MenuItem<MenuAction>>,
         anchor: (f32, f32),
     ) -> ContextMenu<'a, MenuAction> {
         let colors = crate::appearance::Palette::new(self.light);
@@ -511,6 +626,9 @@ impl DocumentUi {
         if !items.is_empty() {
             self.menu = Some(DocumentMenu {
                 anchor: (x, y),
+                width: self
+                    .menu_widget(&items, (x, y))
+                    .measured_width(self.metrics.as_ref()),
                 items,
                 state: MenuState::default(),
                 previous_focus: self.interaction.focus().cloned(),
@@ -565,9 +683,17 @@ impl DocumentUi {
         }
     }
     pub fn scroll(&mut self, delta: f32) {
+        if let Some((control, mut state)) = self.choice.take() {
+            if let Some(widget) = self.choice_widget(&control) {
+                widget.wheel(self.metrics.as_ref(), &mut state, delta);
+                self.choice = Some((control, state));
+            }
+            return;
+        }
         if let Some(mut menu) = self.menu.take() {
             let widget = self.menu_widget(&menu.items, menu.anchor);
-            let placed = widget.place(self.metrics.as_ref(), &mut menu.state);
+            let placed =
+                widget.place_with_width(self.metrics.as_ref(), &mut menu.state, menu.width);
             placed.wheel(&mut menu.state, delta);
             self.menu = Some(menu);
             return;
@@ -588,6 +714,17 @@ impl DocumentUi {
         self.sync_visible_moving();
     }
     pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
+        if let Some((control, mut state)) = self.choice.take() {
+            if !dragging {
+                if let Some(widget) = self.choice_widget(&control) {
+                    let result = widget.click(self.metrics.as_ref(), &mut state, x, y);
+                    self.finish_choice(control, state, result);
+                }
+            } else {
+                self.choice = Some((control, state));
+            }
+            return vec![];
+        }
         if self.menu.is_some() {
             if dragging {
                 return vec![];
@@ -595,7 +732,7 @@ impl DocumentUi {
             let mut menu = self.menu.take().unwrap();
             let result = self
                 .menu_widget(&menu.items, menu.anchor)
-                .place(self.metrics.as_ref(), &mut menu.state)
+                .place_with_width(self.metrics.as_ref(), &mut menu.state, menu.width)
                 .click(x, y);
             return self.finish_menu(menu, result);
         }
@@ -656,7 +793,13 @@ impl DocumentUi {
         match control {
             Control::Disclosure(id) => self.interaction.toggle_disclosure(&id),
             Control::Field { node, field } => {
-                self.drafts.cycle(&node, &field, &self.document);
+                let control = Control::Field {
+                    node: node.clone(),
+                    field: field.clone(),
+                };
+                if !self.open_choice(control, MenuKey::Enter) {
+                    self.drafts.cycle(&node, &field, &self.document);
+                }
             }
             Control::Action { node, action } if action == "attachment.save" => {
                 let decision = self.overlays.open_save(node);
@@ -716,6 +859,24 @@ impl DocumentUi {
         }
     }
     pub fn key(&mut self, key: Key) -> Vec<Command> {
+        if let Some((control, mut state)) = self.choice.take() {
+            let mapped = match key {
+                Key::Escape => Some(MenuKey::Escape),
+                Key::Up => Some(MenuKey::Up),
+                Key::Down => Some(MenuKey::Down),
+                Key::Home => Some(MenuKey::Home),
+                Key::End => Some(MenuKey::End),
+                Key::Enter { .. } => Some(MenuKey::Enter),
+                _ => None,
+            };
+            if let Some(widget) = self.choice_widget(&control) {
+                let result = mapped.map_or(ComboResult::Handled, |k| {
+                    widget.key(self.metrics.as_ref(), &mut state, k)
+                });
+                self.finish_choice(control, state, result);
+            }
+            return vec![];
+        }
         if self.menu.is_some() {
             let mut menu = self.menu.take().unwrap();
             let result = if let Some(k) = match key {
@@ -728,7 +889,7 @@ impl DocumentUi {
                 _ => None,
             } {
                 self.menu_widget(&menu.items, menu.anchor)
-                    .place(self.metrics.as_ref(), &mut menu.state)
+                    .place_with_width(self.metrics.as_ref(), &mut menu.state, menu.width)
                     .key(&mut menu.state, k)
             } else {
                 None
@@ -763,7 +924,7 @@ impl DocumentUi {
     }
     /// Committed text is handled separately from physical and special keys.
     fn text(&mut self, text: &str) -> Vec<Command> {
-        if self.menu.is_some() {
+        if self.menu.is_some() || self.choice.is_some() {
             return vec![];
         }
         self.invalidate_focus();
@@ -846,6 +1007,21 @@ impl DocumentUi {
         if matches!(key, Key::Escape) {
             self.interaction.clear_selection();
             return vec![];
+        }
+        if let Some(control @ Control::Field { .. }) = self.interaction.focus().cloned() {
+            let combo_key = match key {
+                Key::Up => Some(MenuKey::Up),
+                Key::Down => Some(MenuKey::Down),
+                Key::Home => Some(MenuKey::Home),
+                Key::End => Some(MenuKey::End),
+                Key::Enter { newline: false } => Some(MenuKey::Enter),
+                _ => None,
+            };
+            if let Some(k) = combo_key
+                && self.open_choice(control, k)
+            {
+                return vec![];
+            }
         }
         if let Key::Enter { newline } = key {
             if let Some(Control::Field { node, field }) = self.interaction.focus().cloned() {

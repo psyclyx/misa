@@ -216,6 +216,11 @@ impl Drafts {
             .field(node, field)
             .is_some_and(|value| matches!(value.kind, FieldKind::Bool | FieldKind::Choice { .. }))
     }
+    pub fn set_choice(&mut self, node: &str, field: &str, value: &str) {
+        if let Some(editor) = self.editor_mut(node, field) {
+            editor.set_text(value);
+        }
+    }
     pub fn cycle(&mut self, node: &str, field: &str, document: &DocumentStore) {
         self.clear_selection();
         let kind = document.field(node, field).map(|value| &value.kind);
@@ -226,13 +231,17 @@ impl Drafts {
                 } else {
                     "true"
                 }),
-                Some(FieldKind::Choice { options, .. }) if !options.is_empty() => {
-                    let next = options
-                        .iter()
-                        .position(|option| option.value == editor.text())
-                        .map(|index| (index + 1) % options.len())
-                        .unwrap_or(0);
-                    editor.set_text(&options[next].value);
+                Some(FieldKind::Choice { options, .. })
+                    if document.field(node, field).is_some_and(|f| f.secret) =>
+                {
+                    if let Some(next) = options.get(
+                        options
+                            .iter()
+                            .position(|option| option.value == editor.text())
+                            .map_or(0, |i| (i + 1) % options.len()),
+                    ) {
+                        editor.set_text(&next.value);
+                    }
                 }
                 _ => {}
             }

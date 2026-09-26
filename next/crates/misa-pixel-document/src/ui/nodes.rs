@@ -2,7 +2,7 @@
 use super::layout::LayoutBuilder;
 use super::retained::indicator_value;
 use super::{Control, FONT_SIZE, Hit};
-use misa_pixel_ui::{Button, Checkbox, Op, ProgressBar, Rect, Scene, TextFlow};
+use misa_pixel_ui::{Button, Checkbox, ComboBox, Op, ProgressBar, Rect, Scene, TextFlow};
 use misa_proto::view::{FieldKind, Kind, Node};
 use misa_render::Theme;
 use misa_style::Style;
@@ -299,10 +299,17 @@ impl LayoutBuilder<'_> {
                         vec![(theme.role("field.label"), field.label.clone())],
                     );
                     *y += 22.0;
+                    let default = match &field.kind {
+                        FieldKind::Choice {
+                            selected: Some(value),
+                            ..
+                        } => value,
+                        _ => &field.value,
+                    };
                     let value = self
                         .drafts
                         .text(&node.id, &field.id)
-                        .unwrap_or(&field.value)
+                        .unwrap_or(default)
                         .to_string();
                     // Keep the form's label row and spacing. A boolean's value is
                     // painted by the control, not by an editor with a fake glyph.
@@ -341,6 +348,53 @@ impl LayoutBuilder<'_> {
                                 control: placed.id,
                             });
                         }
+                        scene.ops.extend(placed.ops);
+                        *y += height + 9.0;
+                        continue;
+                    }
+                    if let FieldKind::Choice { options, .. } = &field.kind
+                        && !field.secret
+                        && !field.read_only
+                    {
+                        let control = Control::Field {
+                            node: node.id.clone(),
+                            field: field.id.clone(),
+                        };
+                        let height = (self.line_height() + 12.0).max(32.0);
+                        let choices = super::ChoiceRows(options);
+                        let placed = ComboBox {
+                            options: &choices,
+                            selected: Some(&value),
+                            bounds: Rect {
+                                x,
+                                y: *y,
+                                width,
+                                height,
+                            },
+                            viewport: Rect {
+                                x: 0.0,
+                                y: 0.0,
+                                width,
+                                height: 0.0,
+                            },
+                            font_size: FONT_SIZE,
+                            row_height: 28.0,
+                            focused: self.interaction.focused(&control),
+                            enabled: true,
+                            background: self.colors.field,
+                            foreground: self.colors.text,
+                            muted: self.colors.muted,
+                            border: self.colors.border,
+                            highlight: self.colors.accent,
+                        }
+                        .place(self.metrics);
+                        self.interaction.add_hit(Hit {
+                            x,
+                            y: *y,
+                            width,
+                            height,
+                            control,
+                        });
                         scene.ops.extend(placed.ops);
                         *y += height + 9.0;
                         continue;
