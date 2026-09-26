@@ -116,6 +116,28 @@ impl DocumentStore {
     pub fn streams_empty(&self) -> bool {
         self.streams.is_empty()
     }
+    /// Install already-projected, owner-scoped resources in a private measurement store.
+    /// No live stream source text or markdown parser state is copied.
+    pub(super) fn install_measurement_resources(
+        &mut self,
+        streams: Vec<Node>,
+        images: BTreeMap<String, Arc<image::RgbaImage>>,
+    ) {
+        self.images = images;
+        for node in streams {
+            let id = node.id.clone();
+            self.streams.insert(
+                id.clone(),
+                LiveStream {
+                    role: node.role.clone(),
+                    text: String::new(),
+                    parsed: None,
+                    node,
+                },
+            );
+            self.insert_stream_key(&id);
+        }
+    }
     pub fn image_ref(&self, hash: &str) -> Option<&Arc<image::RgbaImage>> {
         self.images.get(hash)
     }
