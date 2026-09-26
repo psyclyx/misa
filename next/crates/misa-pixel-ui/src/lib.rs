@@ -7,6 +7,8 @@ pub mod flow;
 pub use flow::{
     Constraints as FlowConstraints, FlowPlacement, FlowPosition, FlowSource, FlowViewport,
 };
+mod context_menu;
+pub use context_menu::{ContextMenu, MenuItem, MenuKey, MenuState, PlacedMenu};
 mod field;
 pub use field::{FieldInsets, FieldMode, FieldViewport, PlacedField, TextField};
 mod text;

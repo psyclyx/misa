@@ -2,7 +2,10 @@
 //! this module until the person activates an action the session advertised.
 use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
-use misa_pixel_ui::{FieldViewport, Op, Scene, TextMetrics, Viewport};
+use misa_pixel_ui::{
+    ContextMenu, FieldViewport, MenuItem, MenuKey, MenuState, Op, Rect, Scene, TextMetrics,
+    Viewport,
+};
 use misa_proto::sync::{StreamUpdate, ViewOp};
 #[cfg(test)]
 use misa_proto::view::FieldKind;
@@ -69,7 +72,22 @@ pub enum Control {
     Text(usize),
     LoadImage(misa_proto::view::BlobRef),
 }
+#[derive(Clone, Debug, PartialEq)]
+enum MenuAction {
+    Copy,
+    SelectAll,
+    Toggle(String),
+}
+struct DocumentMenu {
+    anchor: (f32, f32),
+    items: Vec<MenuItem<MenuAction>>,
+    state: MenuState,
+    previous_focus: Option<Control>,
+    field: Option<Control>,
+}
 pub struct DocumentUi {
+    menu: Option<DocumentMenu>,
+    size: Size,
     light: bool,
     metrics: Arc<dyn TextMetrics>,
     document: document::DocumentStore,
@@ -83,6 +101,11 @@ pub struct DocumentUi {
 impl DocumentUi {
     pub fn new(view: Node, metrics: Arc<dyn TextMetrics>) -> Self {
         let mut app = Self {
+            menu: None,
+            size: Size {
+                width: 0,
+                height: 0,
+            },
             document: document::DocumentStore::new(Node::section("session")),
             retained: retained::RetainedScenes::default(),
             light: false,
@@ -108,6 +131,10 @@ impl DocumentUi {
                 output.commands = self.text(&text);
                 output.redraw = true;
             }
+            Event::ContextMenu { x, y } => {
+                self.open_menu(x, y);
+                output.redraw = true;
+            }
             Event::Pointer { x, y, dragging } => {
                 output.commands = self.pointer(x, y, dragging);
                 output.redraw = true;
@@ -116,7 +143,10 @@ impl DocumentUi {
                 self.scroll(delta);
                 output.redraw = true;
             }
-            Event::Resize(_) => output.redraw = true,
+            Event::Resize(size) => {
+                self.size = size;
+                output.redraw = true;
+            }
             Event::Theme { light } => {
                 self.set_light(light);
                 output.redraw = true;
@@ -205,6 +235,7 @@ impl DocumentUi {
         self.set_view_with_streams(view, &[]);
     }
     fn set_view_with_streams(&mut self, mut view: Node, streams: &[misa_proto::sync::Stream]) {
+        self.menu = None;
         misa_proto::sync::address(&mut view);
         let keys = self.drafts.reset(&view);
         if self.overlays.saving() {
@@ -272,6 +303,9 @@ impl DocumentUi {
                 self.set_view_with_streams((*tree).clone(), streams);
             }
             DocumentUpdate::Changed { tree, .. } => {
+                if !tree.is_empty() {
+                    self.menu = None;
+                }
                 let changes = self.document.observe(update)?;
                 if !tree.is_empty() {
                     self.refresh_tree_fields(tree);
@@ -306,13 +340,164 @@ impl DocumentUi {
     pub fn pin_to_top(&mut self) {
         self.viewport.pin_to_top();
     }
+    fn menu_widget<'a>(
+        &self,
+        items: &'a [MenuItem<MenuAction>],
+        anchor: (f32, f32),
+    ) -> ContextMenu<'a, MenuAction> {
+        let colors = crate::appearance::Palette::new(self.light);
+        ContextMenu {
+            items,
+            anchor,
+            viewport: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: self.size.width as f32,
+                height: self.size.height as f32,
+            },
+            font_size: FONT_SIZE,
+            row_height: 28.0,
+            background: colors.surface,
+            foreground: colors.text,
+            muted: colors.muted,
+            highlight: colors.accent,
+        }
+    }
+    fn open_menu(&mut self, x: f32, y: f32) {
+        if self.overlays.pointer_blocked() || self.overlays.saving() {
+            return;
+        }
+        let target = self.interaction.hit_at(x, y);
+        let mut items = Vec::new();
+        let mut field = None;
+        match target {
+            Some(control @ Control::Field { .. }) => {
+                if let Control::Field { node, field: name } = &control {
+                    if self.drafts.contains(node, name)
+                        && !self.drafts.discrete(node, name, &self.document)
+                    {
+                        let content = self.drafts.text(node, name).unwrap_or("");
+                        items.push(MenuItem::Action {
+                            id: MenuAction::Copy,
+                            label: "Copy field".into(),
+                            enabled: !content.is_empty()
+                                && !self.document.field(node, name).is_some_and(|f| f.secret),
+                        });
+                        items.push(MenuItem::Action {
+                            id: MenuAction::SelectAll,
+                            label: "Select all in field".into(),
+                            enabled: !content.is_empty(),
+                        });
+                        field = Some(control);
+                    }
+                }
+            }
+            Some(Control::Disclosure(id)) => {
+                let label = if self.interaction.is_expanded(&id) {
+                    "Collapse"
+                } else {
+                    "Expand"
+                };
+                items.push(MenuItem::Action {
+                    id: MenuAction::Toggle(id),
+                    label: label.into(),
+                    enabled: true,
+                });
+            }
+            _ => {
+                let selected = self.selected_text();
+                items.push(MenuItem::Action {
+                    id: MenuAction::Copy,
+                    label: "Copy selection".into(),
+                    enabled: !selected.is_empty(),
+                });
+                items.push(MenuItem::Action {
+                    id: MenuAction::SelectAll,
+                    label: "Select all text".into(),
+                    enabled: true,
+                });
+            }
+        }
+        if !items.is_empty() {
+            self.menu = Some(DocumentMenu {
+                anchor: (x, y),
+                items,
+                state: MenuState::default(),
+                previous_focus: self.interaction.focus().cloned(),
+                field,
+            });
+        }
+    }
+    fn finish_menu(
+        &mut self,
+        menu: DocumentMenu,
+        result: Option<Option<MenuAction>>,
+    ) -> Vec<Command> {
+        let Some(action) = result else {
+            self.menu = Some(menu);
+            return vec![];
+        };
+        self.interaction.set_focus(menu.previous_focus);
+        self.drafts.focus_changed(self.interaction.focus());
+        match action {
+            Some(MenuAction::Copy) => {
+                let text = match menu.field {
+                    Some(Control::Field { node, field }) => {
+                        self.drafts.text(&node, &field).unwrap_or("").to_owned()
+                    }
+                    _ => self.selected_text(),
+                };
+                if text.is_empty() {
+                    vec![]
+                } else {
+                    vec![Command::Copy(text)]
+                }
+            }
+            Some(MenuAction::SelectAll) => {
+                if let Some(Control::Field { node, field }) = menu.field {
+                    self.interaction.set_focus(Some(Control::Field {
+                        node: node.clone(),
+                        field: field.clone(),
+                    }));
+                    self.drafts.select_all(&node, &field);
+                } else {
+                    self.interaction.select_all();
+                }
+                vec![]
+            }
+            Some(MenuAction::Toggle(id)) => {
+                self.invalidate(&id);
+                self.interaction.toggle_disclosure(&id);
+                vec![]
+            }
+            None => vec![],
+        }
+    }
     pub fn scroll(&mut self, delta: f32) {
+        if let Some(mut menu) = self.menu.take() {
+            let widget = self.menu_widget(&menu.items, menu.anchor);
+            let placed = widget.place(self.metrics.as_ref(), &mut menu.state);
+            placed.wheel(&mut menu.state, delta);
+            self.menu = Some(menu);
+            return;
+        }
         if self.overlays.scroll(delta) {
             return;
         }
         self.viewport.scroll(delta);
     }
     pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
+        if self.menu.is_some() {
+            if dragging {
+                return vec![];
+            }
+            let mut menu = self.menu.take().unwrap();
+            let result = self
+                .menu_widget(&menu.items, menu.anchor)
+                .place(self.metrics.as_ref(), &mut menu.state)
+                .click(x, y);
+            return self.finish_menu(menu, result);
+        }
         if self.overlays.pointer_blocked() {
             return vec![];
         }
@@ -404,6 +589,45 @@ impl DocumentUi {
         }
     }
     pub fn key(&mut self, key: Key) -> Vec<Command> {
+        if self.menu.is_some() {
+            let mut menu = self.menu.take().unwrap();
+            let result = if let Some(k) = match key {
+                Key::Escape => Some(MenuKey::Escape),
+                Key::Up => Some(MenuKey::Up),
+                Key::Down => Some(MenuKey::Down),
+                Key::Home => Some(MenuKey::Home),
+                Key::End => Some(MenuKey::End),
+                Key::Enter { .. } => Some(MenuKey::Enter),
+                _ => None,
+            } {
+                self.menu_widget(&menu.items, menu.anchor)
+                    .place(self.metrics.as_ref(), &mut menu.state)
+                    .key(&mut menu.state, k)
+            } else {
+                None
+            };
+            return self.finish_menu(menu, result);
+        }
+        if key == Key::Menu {
+            if !self.overlays.pointer_blocked() && !self.overlays.saving() {
+                let (x, y) = self
+                    .interaction
+                    .focus()
+                    .and_then(|c| self.interaction.control_center(c))
+                    .unwrap_or((20.0, 20.0));
+                self.open_menu(x, y);
+                if self.menu.is_none() && !self.selected_text().is_empty() {
+                    self.open_menu(20.0, 20.0);
+                }
+                if let Some(menu) = &mut self.menu {
+                    menu.state.highlighted = menu
+                        .items
+                        .iter()
+                        .position(|item| matches!(item, MenuItem::Action { enabled: true, .. }));
+                }
+            }
+            return vec![];
+        }
         self.invalidate_focus();
         let commands = self.key_inner(key);
         self.invalidate_focus();
@@ -412,6 +636,9 @@ impl DocumentUi {
     }
     /// Committed text is handled separately from physical and special keys.
     fn text(&mut self, text: &str) -> Vec<Command> {
+        if self.menu.is_some() {
+            return vec![];
+        }
         self.invalidate_focus();
         let commands = self.text_inner(text);
         self.invalidate_focus();
@@ -454,6 +681,11 @@ impl DocumentUi {
             self.drafts.clear_selection();
         }
         if matches!(key, Key::Copy) {
+            if matches!(self.interaction.focus(), Some(Control::Field { node, field })
+                if self.document.field(node, field).is_some_and(|value| value.secret))
+            {
+                return vec![];
+            }
             let text = if let Some(edit) = self.editor() {
                 edit.text().to_string()
             } else {

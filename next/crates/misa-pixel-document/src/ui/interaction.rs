@@ -302,6 +302,13 @@ impl InteractionMap {
         }
     }
     /// Lookup only: hosts need a pointer target, not mutable access to frame maps.
+    pub(super) fn hit_at(&self, x: f32, y: f32) -> Option<Control> {
+        self.hits
+            .iter()
+            .rev()
+            .find(|hit| hit.contains(x, y))
+            .map(|hit| hit.control.clone())
+    }
     pub(super) fn control_center(&self, control: &Control) -> Option<(f32, f32)> {
         self.hits
             .iter()

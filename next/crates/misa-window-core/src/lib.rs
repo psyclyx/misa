@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Key {
     Commands,
+    Menu,
     Up,
     Down,
     Backspace,
@@ -36,6 +37,11 @@ pub enum Event {
         x: f32,
         y: f32,
         dragging: bool,
+    },
+    /// Normalized context request in physical window pixels (pointer or keyboard).
+    ContextMenu {
+        x: f32,
+        y: f32,
     },
     /// Positive scroll moves content down (in physical pixels).
     Wheel {

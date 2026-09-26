@@ -98,6 +98,8 @@ impl Host {
                 self.redraw();
                 return;
             }
+            WinitKey::Named(NamedKey::ContextMenu) => Event::Key(Key::Menu),
+            WinitKey::Named(NamedKey::F10) if self.modifiers.shift_key() => Event::Key(Key::Menu),
             WinitKey::Named(NamedKey::Enter) => Event::Key(Key::Enter {
                 newline: self.modifiers.shift_key(),
             }),
@@ -197,7 +199,17 @@ impl ApplicationHandler for Host {
                     dragging: false,
                 });
             }
-            WindowEvent::MouseWheel { delta, .. } if self.fixtures.mode == Mode::Semantic => {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                self.input(Event::ContextMenu {
+                    x: self.cursor.0,
+                    y: self.cursor.1,
+                });
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -y * 60.0,
                     MouseScrollDelta::PixelDelta(position) => -position.y as f32,

@@ -271,6 +271,16 @@ impl ApplicationHandler<Update> for Host {
                     });
                 }
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                self.input(Event::ContextMenu {
+                    x: self.cursor.0,
+                    y: self.cursor.1,
+                });
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -y * 60.0,
@@ -307,6 +317,10 @@ impl ApplicationHandler<Update> for Host {
                         } else {
                             self.key(Key::Commands)
                         }
+                    }
+                    WinitKey::Named(NamedKey::ContextMenu) => self.key(Key::Menu),
+                    WinitKey::Named(NamedKey::F10) if self.modifiers.shift_key() => {
+                        self.key(Key::Menu)
                     }
                     WinitKey::Named(NamedKey::ArrowUp) => self.key(Key::Up),
                     WinitKey::Named(NamedKey::ArrowDown) => self.key(Key::Down),

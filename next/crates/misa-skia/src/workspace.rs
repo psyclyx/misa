@@ -622,6 +622,16 @@ impl Local {
             .commands;
         Some(self.convert(commands))
     }
+    pub fn context_menu(&mut self, x: f32, y: f32) -> Option<Vec<Action>> {
+        let commands = self
+            .app()?
+            .drive(
+                misa_window_core::Event::ContextMenu { x, y },
+                std::time::Duration::ZERO,
+            )
+            .commands;
+        Some(self.convert(commands))
+    }
     pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Option<Vec<Action>> {
         let commands = self.app()?.pointer(x, y, dragging);
         Some(self.convert(commands))

@@ -103,6 +103,7 @@ impl DocumentUi {
     /// Render at a caller-provided elapsed time. Repaints within a phase retain the
     /// same display lists; only the animated indicator's owner and ancestors change.
     pub fn frame_at(&mut self, width: u32, height: u32, elapsed: Duration) -> Scene {
+        self.size = misa_window_core::Size { width, height };
         self.retained.begin_frame(width, elapsed);
         // Reconciliation mutates DocumentUi's viewport. The builder sees snapshots of that
         // small value while it borrows the other owners for the whole frame.
@@ -135,6 +136,14 @@ impl DocumentUi {
             scene = builder.layout(width, height).0;
         }
         builder.paint_report(&mut scene, width, height);
+        if let Some(mut menu) = self.menu.take() {
+            scene.ops.extend(
+                self.menu_widget(&menu.items, menu.anchor)
+                    .place(self.metrics.as_ref(), &mut menu.state)
+                    .ops,
+            );
+            self.menu = Some(menu);
+        }
         scene
     }
 }

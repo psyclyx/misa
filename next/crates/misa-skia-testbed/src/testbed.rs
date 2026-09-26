@@ -110,6 +110,9 @@ impl Fixtures {
         match event {
             Event::Key(key) => self.key_at(key, elapsed),
             Event::Text(text) => {
+                if self.mode == Mode::Native && self.native.menu_open() {
+                    return;
+                }
                 if self.mode == Mode::Native {
                     if self.native.note_focused() {
                         self.native.insert_note(&text);
@@ -138,8 +141,12 @@ impl Fixtures {
                     );
                 }
             }
+            Event::ContextMenu { x, y } if self.mode == Mode::Native => {
+                self.native.context_menu(x, y)
+            }
             Event::Wheel { delta } if self.mode == Mode::Native => self.native.scroll(delta),
             Event::Pointer { .. }
+            | Event::ContextMenu { .. }
             | Event::Wheel { .. }
             | Event::Resize(_)
             | Event::Theme { .. }
@@ -157,14 +164,39 @@ impl Fixtures {
     }
     fn key_at(&mut self, key: Key, elapsed: Duration) {
         match self.mode {
-            Mode::Native => match key {
-                Key::Backspace => self.native.backspace_note(),
-                Key::Enter { newline: true } if self.native.note_focused() => {
-                    self.native.insert_note("\n")
+            Mode::Native => {
+                let menu_key = match key {
+                    Key::Escape => Some(misa_pixel_ui::MenuKey::Escape),
+                    Key::Up => Some(misa_pixel_ui::MenuKey::Up),
+                    Key::Down => Some(misa_pixel_ui::MenuKey::Down),
+                    Key::Home => Some(misa_pixel_ui::MenuKey::Home),
+                    Key::End => Some(misa_pixel_ui::MenuKey::End),
+                    Key::Enter { .. } => Some(misa_pixel_ui::MenuKey::Enter),
+                    _ => None,
+                };
+                if menu_key.is_some_and(|k| self.native.menu_key(k, 500, self.metrics.as_ref())) {
+                    return;
                 }
-                Key::Enter { .. } if !self.native.note_focused() => self.native.toggle(),
-                _ => {}
-            },
+                if self.native.menu_open() && key != Key::Menu {
+                    return;
+                }
+                match key {
+                    Key::Menu => {
+                        self.native.context_menu(40.0, 150.0);
+                        self.native.menu_key(
+                            misa_pixel_ui::MenuKey::Home,
+                            500,
+                            self.metrics.as_ref(),
+                        );
+                    }
+                    Key::Backspace => self.native.backspace_note(),
+                    Key::Enter { newline: true } if self.native.note_focused() => {
+                        self.native.insert_note("\n")
+                    }
+                    Key::Enter { .. } if !self.native.note_focused() => self.native.toggle(),
+                    _ => {}
+                }
+            }
             Mode::Semantic => self.semantic_input(Event::Key(key), elapsed),
         }
     }

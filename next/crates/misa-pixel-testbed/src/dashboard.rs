@@ -1,7 +1,8 @@
 //! Toolkit-owned scene: no semantic tree or protocol types involved.
 use misa_pixel_ui::{
-    Button, Checkbox, FieldInsets, FieldMode, FieldViewport, ListBox, ListBoxState, ListKey,
-    PlacedField, PlacedListBox, ProgressBar, Rect, TextField, TextFlow, TextMetrics,
+    Button, Checkbox, ContextMenu, FieldInsets, FieldMode, FieldViewport, ListBox, ListBoxState,
+    ListKey, MenuItem, MenuKey, MenuState, PlacedField, PlacedListBox, ProgressBar, Rect,
+    TextField, TextFlow, TextMetrics,
 };
 use misa_pixel_ui::{Op, Scene};
 use misa_style::Style;
@@ -34,6 +35,7 @@ pub struct Dashboard {
     note_focused: bool,
     checked: bool,
     note_viewport: FieldViewport,
+    menu: Option<((f32, f32), MenuState)>,
 }
 
 impl Default for Dashboard {
@@ -49,6 +51,7 @@ impl Default for Dashboard {
             note_focused: false,
             checked: false,
             note_viewport: FieldViewport::default(),
+            menu: None,
         }
     }
 }
@@ -56,13 +59,104 @@ impl Default for Dashboard {
 const ROW_HEIGHT: f32 = 26.0;
 
 impl Dashboard {
+    fn menu_items(&self) -> Vec<MenuItem<u8>> {
+        vec![
+            MenuItem::Action {
+                id: 0,
+                label: "Toggle selection".into(),
+                enabled: true,
+            },
+            MenuItem::Action {
+                id: 1,
+                label: "Toggle option".into(),
+                enabled: true,
+            },
+            MenuItem::Separator,
+            MenuItem::Action {
+                id: 2,
+                label: "Clear note".into(),
+                enabled: !self.note.is_empty(),
+            },
+            MenuItem::Action {
+                id: 3,
+                label: "Append row".into(),
+                enabled: true,
+            },
+        ]
+    }
+    fn menu_widget<'a>(
+        &self,
+        items: &'a [MenuItem<u8>],
+        anchor: (f32, f32),
+        width: u32,
+    ) -> ContextMenu<'a, u8> {
+        ContextMenu {
+            items,
+            anchor,
+            viewport: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: width as f32,
+                height: self.last_height as f32,
+            },
+            font_size: 14.0,
+            row_height: 25.0,
+            background: Style::rgb(35, 40, 48),
+            foreground: Style::rgb(230, 232, 236),
+            muted: Style::rgb(100, 110, 120),
+            highlight: Style::rgb(45, 105, 150),
+        }
+    }
+    fn menu_action(&mut self, id: u8) {
+        match id {
+            0 => self.toggle(),
+            1 => self.checked = !self.checked,
+            2 => {
+                self.note.clear();
+                self.note_cursor = 0;
+            }
+            3 => self.append_row(),
+            _ => unreachable!(),
+        }
+    }
+    pub fn context_menu(&mut self, x: f32, y: f32) {
+        self.menu = Some(((x, y), MenuState::default()));
+    }
+    pub fn menu_key(&mut self, key: MenuKey, width: u32, metrics: &dyn TextMetrics) -> bool {
+        let Some((anchor, mut state)) = self.menu else {
+            return false;
+        };
+        let items = self.menu_items();
+        let result = self
+            .menu_widget(&items, anchor, width)
+            .place(metrics, &mut state)
+            .key(&mut state, key);
+        self.menu = result.is_none().then_some((anchor, state));
+        if let Some(Some(id)) = result {
+            self.menu_action(id);
+        }
+        true
+    }
+    pub fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
     pub fn scroll(&mut self, delta: f32) {
+        if let Some((anchor, mut state)) = self.menu {
+            if delta.is_finite() {
+                state.scroll = (state.scroll + delta).max(0.0);
+            }
+            self.menu = Some((anchor, state));
+            return;
+        }
         if delta.is_finite() {
             self.list_state.scroll = (self.list_state.scroll + delta).max(0.0);
         }
         // Placement reconciles the offset with the current viewport.
     }
 
+    pub fn row_count(&self) -> usize {
+        self.rows
+    }
     pub fn append_row(&mut self) {
         self.rows += 1;
     }
@@ -261,6 +355,18 @@ impl Dashboard {
     }
 
     pub fn click(&mut self, x: f32, y: f32, width: u32, metrics: &dyn TextMetrics) -> bool {
+        if let Some((anchor, mut state)) = self.menu {
+            let items = self.menu_items();
+            let result = self
+                .menu_widget(&items, anchor, width)
+                .place(metrics, &mut state)
+                .click(x, y);
+            self.menu = result.is_none().then_some((anchor, state));
+            if let Some(Some(id)) = result {
+                self.menu_action(id);
+            }
+            return true;
+        }
         self.note_focused = self.note_field(width, metrics).bounds.contains(x, y);
         self.focus = self.note_focused.then_some(Focus::Note);
         if self.checkbox(width, metrics).click(x, y).is_some() {
@@ -338,7 +444,7 @@ impl Dashboard {
             24.0,
             height as f32 - 48.0,
             14.0,
-            "Enter / Space or click the button to toggle",
+            "Right-click / Menu for local actions · Escape closes",
         );
         for (line, runs) in description_rows.into_iter().enumerate() {
             // Reserve the footer even when the window is too short to show the
@@ -361,6 +467,15 @@ impl Dashboard {
         scene
             .ops
             .extend(self.list(width, height, metrics).widget.ops);
+        if let Some((anchor, mut state)) = self.menu {
+            let items = self.menu_items();
+            scene.ops.extend(
+                self.menu_widget(&items, anchor, width)
+                    .place(metrics, &mut state)
+                    .ops,
+            );
+            self.menu = Some((anchor, state));
+        }
         scene
     }
 }

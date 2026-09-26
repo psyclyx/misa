@@ -284,6 +284,38 @@ impl SessionViews {
                     }
                 }
             }
+            Event::ContextMenu { x, y } => {
+                if let Some(commands) = self.local.context_menu(x, y) {
+                    commands
+                } else if y >= self.panel_top {
+                    self.panel_focus = true;
+                    self.panels
+                        .get_mut(&self.panel)
+                        .map(|panel| {
+                            panel
+                                .drive(
+                                    Event::ContextMenu {
+                                        x,
+                                        y: y - self.panel_top,
+                                    },
+                                    elapsed,
+                                )
+                                .commands
+                                .into_iter()
+                                .map(Action::Ui)
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    self.panel_focus = false;
+                    self.app
+                        .drive(Event::ContextMenu { x, y }, elapsed)
+                        .commands
+                        .into_iter()
+                        .map(Action::Ui)
+                        .collect()
+                }
+            }
             Event::Wheel { delta } => {
                 if !self.local.scroll(delta) {
                     if cursor.1 >= self.panel_top {

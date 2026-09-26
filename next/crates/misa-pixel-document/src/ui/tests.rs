@@ -1467,6 +1467,79 @@ fn pointer_selection_uses_measured_unicode_boundaries() {
     assert_eq!(app.selected_text(), "h");
 }
 #[test]
+fn context_menu_selection_keyboard_and_outside_preserve_focus() {
+    let mut app = DocumentUi::new(Node::text("text", [Span::plain("界hi")]), test_metrics());
+    app.frame(400, 200);
+    app.pointer(38.1, 25.0, false);
+    app.pointer(47.1, 25.0, true);
+    assert_eq!(app.selected_text(), "h");
+    app.drive(Event::ContextMenu { x: 40.0, y: 25.0 }, Duration::ZERO);
+    assert!(app.menu.is_some());
+    assert_eq!(
+        app.key(Key::Enter { newline: false }),
+        Vec::<Command>::new()
+    ); // no highlight yet
+    app.key(Key::Down);
+    assert_eq!(
+        app.key(Key::Enter { newline: false }),
+        vec![Command::Copy("h".into())]
+    );
+    assert!(app.menu.is_none());
+    app.key(Key::Menu);
+    assert!(app.menu.is_some());
+    app.key(Key::End);
+    app.key(Key::Enter { newline: false });
+    assert_eq!(app.selected_text(), "界hi");
+    app.key(Key::Menu);
+    app.pointer(399.0, 199.0, false);
+    assert!(app.menu.is_none());
+    assert_eq!(app.selected_text(), "界hi");
+}
+#[test]
+fn context_menu_field_and_disclosure_are_local() {
+    let mut app = DocumentUi::new(form("one", FieldKind::Inline), test_metrics());
+    app.frame(400, 200);
+    let control = Control::Field {
+        node: "one".into(),
+        field: "value".into(),
+    };
+    let (x, y) = app.control_center(&control).unwrap();
+    app.focus_control(Some(control.clone()));
+    app.drive(Event::Text("draft".into()), Duration::ZERO);
+    app.drive(Event::ContextMenu { x, y }, Duration::ZERO);
+    app.key(Key::Down);
+    assert_eq!(
+        app.key(Key::Enter { newline: false }),
+        vec![Command::Copy("draft".into())]
+    );
+    assert_eq!(app.interaction.focus(), Some(&control));
+    app.drive(Event::ContextMenu { x, y }, Duration::ZERO);
+    app.key(Key::End);
+    app.key(Key::Enter { newline: false });
+    assert_eq!(app.interaction.focus(), Some(&control));
+    let view = Node::new(
+        "tool",
+        Kind::Collapsible {
+            summary: vec![Span::plain("Details")],
+        },
+    )
+    .id("tool");
+    let mut app = DocumentUi::new(view, test_metrics());
+    app.frame(400, 200);
+    let (x, y) = app
+        .control_center(&Control::Disclosure("tool".into()))
+        .unwrap();
+    app.drive(Event::ContextMenu { x, y }, Duration::ZERO);
+    app.key(Key::Home);
+    app.key(Key::Enter { newline: false });
+    assert!(app.interaction.is_expanded("tool"));
+    app.report("Local report".into(), Value::str("content"));
+    app.drive(Event::ContextMenu { x, y }, Duration::ZERO);
+    assert!(app.menu.is_none(), "report overlay owns context input");
+    app.key(Key::Menu);
+    assert!(app.menu.is_none());
+}
+#[test]
 fn blank_text_row_accepts_pointer_selection_across_its_width() {
     let mut app = DocumentUi::new(
         Node::text("text", [Span::plain("first\n\nlast")]),
@@ -2397,6 +2470,27 @@ fn clearing_secret_erases_its_viewport_and_only_invalidates_its_owner() {
     app.drive(Event::Text("secret".repeat(30)), Duration::ZERO);
     app.frame(180, 400);
     assert!(app.drafts.viewport("private", "value").x > 0.0);
+    assert!(
+        app.key(Key::Copy).is_empty(),
+        "password fields must not copy plaintext"
+    );
+    let (x, y) = app
+        .control_center(&Control::Field {
+            node: "private".into(),
+            field: "value".into(),
+        })
+        .unwrap();
+    app.drive(Event::ContextMenu { x, y }, Duration::ZERO);
+    assert!(matches!(
+        app.menu.as_ref().unwrap().items.first(),
+        Some(MenuItem::Action {
+            id: MenuAction::Copy,
+            enabled: false,
+            ..
+        })
+    ));
+    assert!(app.key(Key::Enter { newline: false }).is_empty());
+    app.key(Key::Escape);
     let unrelated = app.retained.cached("other").ops.clone();
     app.clear_secret_drafts();
     assert_eq!(app.field_text("private", "value"), Some(""));

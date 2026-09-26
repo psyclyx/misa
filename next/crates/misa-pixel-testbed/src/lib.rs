@@ -3,7 +3,7 @@ mod dashboard;
 pub use dashboard::Dashboard;
 pub mod flow_demo;
 
-use misa_pixel_ui::{ListKey, Scene, TextMetrics};
+use misa_pixel_ui::{ListKey, MenuKey, Scene, TextMetrics};
 use misa_skia_vulkan::Renderer;
 use misa_style::Color;
 use misa_window_core::{Event, Key, Size};
@@ -47,7 +47,44 @@ impl Headless {
     /// Only normalized physical-pixel events are accepted. Text space is the
     /// window adapter's representation of the Space key.
     pub fn input(&mut self, event: Event) {
+        if let Event::Key(ref key) = event {
+            if let Some(menu_key) = match key {
+                Key::Escape => Some(MenuKey::Escape),
+                Key::Up => Some(MenuKey::Up),
+                Key::Down => Some(MenuKey::Down),
+                Key::Home => Some(MenuKey::Home),
+                Key::End => Some(MenuKey::End),
+                Key::Enter { .. } => Some(MenuKey::Enter),
+                _ => None,
+            } {
+                if self
+                    .dashboard
+                    .menu_key(menu_key, self.size.width, self.metrics.as_ref())
+                {
+                    return;
+                }
+            }
+        }
+        if self.dashboard.menu_open()
+            && !matches!(
+                event,
+                Event::Pointer {
+                    dragging: false,
+                    ..
+                } | Event::ContextMenu { .. }
+                    | Event::Wheel { .. }
+                    | Event::Resize(_)
+            )
+        {
+            return;
+        }
         match event {
+            Event::ContextMenu { x, y } => self.dashboard.context_menu(x, y),
+            Event::Key(Key::Menu) => {
+                self.dashboard.context_menu(40.0, 150.0);
+                self.dashboard
+                    .menu_key(MenuKey::Home, self.size.width, self.metrics.as_ref());
+            }
             Event::Key(Key::Backspace) => self.dashboard.backspace_note(),
             Event::Key(Key::Enter { newline: true }) if self.dashboard.note_focused() => {
                 self.dashboard.insert_note("\n")
@@ -171,6 +208,34 @@ mod tests {
         &snapshot.pixels[offset..offset + 4]
     }
 
+    #[test]
+    fn context_menu_gpu_edge_keyboard_disabled_and_outside() {
+        let _gpu = GPU.lock().unwrap();
+        let mut host = Headless::new(Size {
+            width: 130,
+            height: 300,
+        })
+        .expect("GPU readback required");
+        let initial = host.frame().unwrap();
+        host.input(Event::ContextMenu { x: 125.0, y: 285.0 });
+        let open = host.frame().unwrap();
+        assert_ne!(pixel(&initial, 10, 190), pixel(&open, 10, 190));
+        host.input(Event::Key(Key::End));
+        host.input(Event::Key(Key::Enter { newline: false })); // append row
+        assert_eq!(host.dashboard.row_count(), 21);
+        let closed = host.frame().unwrap();
+        assert_eq!(pixel(&initial, 10, 190), pixel(&closed, 10, 190));
+        host.input(Event::ContextMenu { x: 125.0, y: 285.0 });
+        host.input(Event::Pointer {
+            x: 1.0,
+            y: 1.0,
+            dragging: false,
+        });
+        assert!(!host.dashboard.menu_open());
+        host.input(Event::ContextMenu { x: 125.0, y: 285.0 });
+        host.input(Event::Key(Key::Escape));
+        assert!(!host.dashboard.menu_open());
+    }
     #[test]
     fn editable_note_uses_gpu_caret_clip_and_resize() {
         let _gpu = GPU.lock().unwrap();
