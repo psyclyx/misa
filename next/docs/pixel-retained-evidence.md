@@ -95,9 +95,22 @@ per phase) yielded:
 |  1,000 | unchanged     |           0.035 / 0.033 |            2.226 / 2.077 |
 |  1,000 | replace owner |           5.277 / 5.038 |            2.307 / 2.115 |
 
-Measured cold/changed layout costs more than the previous guessed-width layout;
-unchanged frames still reuse display lists and row geometry. Different layout
-and scene content, single-session samples and software Vulkan do not establish
-an A/B performance win or native-window latency. Readback and swapchain
-presentation have different costs. Measure native frame-to-present before
-claiming a user-visible win.
+After the retained scene and field-widget split, a further release run of the
+same offscreen harness on lavapipe at 800×600 yielded (median/best ms, 12 samples
+per phase; stable same-device pixel readbacks and a visible edit verified):
+
+| Owners | Phase         | DocumentUi frame/layout | Vulkan render + readback |
+| -----: | ------------- | ----------------------: | -----------------------: |
+|     10 | cold          |           0.075 / 0.073 |            0.880 / 0.769 |
+|     10 | unchanged     |           0.018 / 0.017 |            1.054 / 0.948 |
+|     10 | replace owner |           0.030 / 0.029 |            1.102 / 0.974 |
+|  1,000 | cold          |           4.759 / 4.467 |            2.322 / 2.120 |
+|  1,000 | unchanged     |           0.036 / 0.034 |            2.255 / 2.066 |
+|  1,000 | replace owner |           0.299 / 0.229 |            2.271 / 2.100 |
+
+Measured cold layout costs more than the older guessed-width layout;
+unchanged frames reuse display lists and row geometry. These are distinct
+code revisions with different scene composition and single-session samples,
+not an interleaved A/B comparison or a native-window latency measurement.
+Readback and swapchain presentation have different costs. Measure native
+frame-to-present before claiming a user-visible win.

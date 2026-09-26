@@ -59,7 +59,7 @@ impl<Id> TextField<Id> {
         // A changed or shortened value may invalidate an old viewport even when
         // this field no longer owns focus. Never leave its surviving text hidden.
         viewport.line = viewport.line.min(lines.len() - 1);
-        if !self.focused || self.cursor.is_none() {
+        if viewport.x > 0.0 && (!self.focused || self.cursor.is_none()) {
             let width = metrics.measure(lines[viewport.line], self.font_size);
             if viewport.x >= width {
                 viewport.x = 0.0;
