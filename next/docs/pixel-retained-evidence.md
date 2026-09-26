@@ -108,9 +108,22 @@ per phase; stable same-device pixel readbacks and a visible edit verified):
 |  1,000 | unchanged     |           0.036 / 0.034 |            2.255 / 2.066 |
 |  1,000 | replace owner |           0.299 / 0.229 |            2.271 / 2.100 |
 
-Measured cold layout costs more than the older guessed-width layout;
-unchanged frames reuse display lists and row geometry. These are distinct
-code revisions with different scene composition and single-session samples,
-not an interleaved A/B comparison or a native-window latency measurement.
-Readback and swapchain presentation have different costs. Measure native
-frame-to-present before claiming a user-visible win.
+With exact tail/anchor placement, a later release run on the same lavapipe
+setup yielded (median/best ms, 12 samples per phase):
+
+| Owners | Phase         | DocumentUi frame/layout | Vulkan render + readback |
+| -----: | ------------- | ----------------------: | -----------------------: |
+|     10 | cold          |           0.079 / 0.077 |            0.783 / 0.742 |
+|     10 | unchanged     |           0.025 / 0.025 |            0.776 / 0.738 |
+|     10 | replace owner |           0.035 / 0.033 |            0.796 / 0.734 |
+|  1,000 | cold          |           0.130 / 0.122 |            1.219 / 1.066 |
+|  1,000 | unchanged     |           0.031 / 0.029 |            1.131 / 0.983 |
+|  1,000 | replace owner |           0.042 / 0.039 |            1.110 / 0.984 |
+
+The 10,000-owner invariant test also bounds cold tail, backward-wheel, resize,
+and disclosure work to fewer than 32 measured/placed owners. These are separate
+code revisions with different scene composition and single-session samples, not
+an interleaved A/B comparison or native-window latency. Readback and swapchain
+presentation have different costs. Measure native frame-to-present before
+claiming a user-visible win. Offscreen height backfilling is not implemented;
+seeking into unknown content still measures exact owners synchronously.

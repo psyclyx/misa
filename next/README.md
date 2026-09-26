@@ -152,8 +152,9 @@ The offline fixture event loop lives in `misa-tui-testbed`; `misa-lines` supplie
 a `PhysicalRow` implementation for semantic lines, while the core also accepts
 owned `StyledRow` values without a semantic document. Pixel input/clock
 lives in the zero-dependency `misa-window-core`; protocol-free scene, font
-measurement, button, text-field, text-flow and viewport primitives live in
-`misa-pixel-ui`. Skia canvas
+measurement, anchored nested flows, component clips and hits, text fields, buttons,
+checkboxes, radio buttons, combo boxes, list boxes, progress bars, labels and context
+menus live in `misa-pixel-ui`. Skia canvas
 painting and font resolution live in `misa-skia-paint`; `misa-skia-vulkan`
 uses that same painter for both offscreen readback and native swapchain presentation.
 The connected hosts (`misa-tui`, `misa-skia`) and standalone fixture apps
@@ -168,11 +169,18 @@ separate interactive _semantic_ document fixture (Semantic/Structured/Form) usin
 `misa-pixel-testbed` is native-only: its Dashboard, normalized input driver and
 Vulkan readback have no protocol/tree/kit/render dependency. Its clipped list uses the
 shared pixel viewport for wheel scrolling, resize clamping and following appended rows;
-its locally editable note uses the same measured, clipped field and caret widget as
-`DocumentUi`. `misa-skia-testbed` uses that Dashboard for Ctrl+1 and keeps its separate semantic
+its locally editable, soft-wrapped note uses the same measured, clipped field and
+caret widget as `DocumentUi`. `misa-pixel-testbed --nested-flow` exercises independent
+nested anchors, clipping, hit testing and wheel bubbling. `misa-skia-testbed` uses
+that Dashboard for Ctrl+1 and keeps its separate semantic
 `misa-proto` fixture. All semantic
 pixel views, including PNG exports, use the same `DocumentUi` layout; its text positions,
 wrapping, caret and selection use measurements from the font used for painting.
+Live pixel streams use the same incremental `misa-markdown::document` parser as the
+terminal, keeping stable block IDs until the settled view replaces the stream.
+Ordinary documents place only visible measured owners from a tail or reading anchor;
+list items and table rows are independently measured. Editable block fields soft-wrap;
+the shared editor stores text in a `String`, not a rope.
 
 The window supports typed fields, disclosure toggles, tables, meters, images, text selection and
 clipboard copy. Alt-/ opens the declared command picker: type to filter, use arrows to select,
