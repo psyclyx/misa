@@ -271,6 +271,44 @@ fn frame_renders_quote_rule_meter_and_fact() {
 }
 
 #[test]
+fn meter_widget_clips_bounded_fill_and_uses_palette_in_both_themes() {
+    for (value, max, expected) in [
+        (2.0, 4.0, 0.5),
+        (-2.0, 4.0, 0.0),
+        (8.0, 4.0, 1.0),
+        (2.0, 0.0, 0.0),
+        (f64::NAN, 4.0, 0.0),
+    ] {
+        let view = Node::new(
+            "value.meter",
+            Kind::Meter {
+                label: "budget".into(),
+                value,
+                max,
+            },
+        )
+        .id("meter");
+        let mut app = DocumentUi::new(view, test_metrics());
+        for light in [false, true] {
+            app.set_light(light);
+            let scene = app.frame(200, 120);
+            let palette = crate::appearance::Palette::new(light);
+            assert!(any_op(&scene.ops, |op| matches!(op, Op::Text { text, .. }
+                if text.starts_with("budget: "))));
+            assert!(any_op(
+                &scene.ops,
+                |op| matches!(op, Op::ClipRect { width: 160.0, height: 10.0, ops, .. }
+                if matches!(&ops[0], Op::Rect { width: 160.0, style, .. } if *style == palette.meter)
+                    && if expected == 0.0 { ops.len() == 1 } else {
+                        matches!(&ops[1], Op::Rect { width, style, .. }
+                            if *width == 160.0 * expected && *style == palette.accent)
+                    })
+            ));
+        }
+    }
+}
+
+#[test]
 fn frame_theme_changes_styles_without_changing_the_view() {
     let mut app = DocumentUi::new(scene_view(), test_metrics());
     let dark = app.frame_at(800, 600, Duration::ZERO);
@@ -1172,6 +1210,115 @@ fn boolean_keyboard_input_cannot_produce_invalid_values() {
     app.drive(Event::Text(" ".into()), Duration::ZERO).commands;
     assert_eq!(app.field_text("one", "value"), Some("false"));
 }
+#[test]
+fn boolean_widget_uses_draft_hit_focus_and_existing_cycle_policy() {
+    let mut view = form("one", FieldKind::Bool);
+    let Kind::Fields { fields } = &mut view.kind else {
+        unreachable!()
+    };
+    fields[0].value = "true".into();
+    let mut app = DocumentUi::new(view.clone(), test_metrics());
+    let control = Control::Field {
+        node: "one".into(),
+        field: "value".into(),
+    };
+    let scene = app.frame(400, 240);
+    let hit = app
+        .interaction
+        .hits()
+        .iter()
+        .find(|hit| hit.control == control)
+        .unwrap();
+    let (x, y) = app.control_center(&control).unwrap();
+    assert_eq!((x, y), (hit.x + hit.width / 2.0, hit.y + hit.height / 2.0));
+    // One clipped checkbox, not an editor with a glyph or caret.
+    assert!(any_op(
+        &scene.ops,
+        |op| matches!(op, Op::ClipRect { width, height, ops, .. }
+        if *width == hit.width && *height == hit.height
+            && matches!(&ops[..], [Op::Rect { .. }, Op::Rect { .. }, Op::Rect { .. }]))
+    ));
+    assert!(!any_op(
+        &scene.ops,
+        |op| matches!(op, Op::Text { text, .. } if text.contains("[✓]"))
+    ));
+    assert_eq!(app.field_text("one", "value"), Some("true"));
+    assert!(app.pointer(x, y, false).is_empty());
+    assert_eq!(app.interaction.focus(), Some(&control));
+    assert_eq!(app.field_text("one", "value"), Some("false"));
+    let off = app.frame(400, 240);
+    assert_ne!(scene.ops, off.ops);
+    assert!(
+        app.drive(Event::Text(" ".into()), Duration::ZERO)
+            .commands
+            .is_empty()
+    );
+    assert_eq!(app.field_text("one", "value"), Some("true"));
+    assert!(
+        app.drive(Event::Text("invalid".into()), Duration::ZERO)
+            .commands
+            .is_empty()
+    );
+    assert_eq!(app.field_text("one", "value"), Some("true"));
+    assert!(matches!(&app.submit("one", "answer")[..],
+        [Command::Intent(Intent::Action { fields, .. })] if fields[0].value == "true"));
+    view.kind = Kind::Fields {
+        fields: vec![Field {
+            id: "value".into(),
+            label: "Value".into(),
+            value: "false".into(),
+            hint: None,
+            kind: FieldKind::Bool,
+            read_only: false,
+            secret: false,
+        }],
+    };
+    app.set_view(view);
+    assert_eq!(app.field_text("one", "value"), Some("true"));
+    app.frame(400, 240);
+    app.pointer(x, y, false);
+    assert_eq!(app.field_text("one", "value"), Some("false"));
+    assert!(matches!(&app.submit("one", "answer")[..],
+        [Command::Intent(Intent::Action { fields, .. })] if fields[0].value == "false"));
+}
+
+#[test]
+fn read_only_boolean_has_no_hit_and_secret_boolean_stays_masked() {
+    let mut view = form("one", FieldKind::Bool);
+    let Kind::Fields { fields } = &mut view.kind else {
+        unreachable!()
+    };
+    fields[0].value = "true".into();
+    fields[0].read_only = true;
+    let mut app = DocumentUi::new(view.clone(), test_metrics());
+    app.frame(400, 240);
+    assert!(
+        app.control_center(&Control::Field {
+            node: "one".into(),
+            field: "value".into()
+        })
+        .is_none()
+    );
+    assert!(app.pointer(40.0, 70.0, false).is_empty());
+    assert!(matches!(&app.submit("one", "answer")[..],
+        [Command::Intent(Intent::Action { fields, .. })] if fields[0].value == "true"));
+    let Kind::Fields { fields } = &mut view.kind else {
+        unreachable!()
+    };
+    fields[0].read_only = false;
+    fields[0].secret = true;
+    app.set_view(view);
+    let scene = app.frame(400, 240);
+    assert!(any_op(
+        &scene.ops,
+        |op| matches!(op, Op::Text { text, .. } if text == "••••")
+    ));
+    assert!(!any_op(
+        &scene.ops,
+        |op| matches!(op, Op::Text { text, .. } if text == "true")
+    ));
+}
+
 #[test]
 fn disclosure_state_and_unicode_copy_are_local() {
     let view = Node::new(

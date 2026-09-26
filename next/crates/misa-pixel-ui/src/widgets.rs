@@ -101,6 +101,7 @@ impl<Id> Checkbox<Id> {
             width: (b.width - side - 12.0).max(0.0),
             height: b.height,
         };
+        let has_label = !self.label.is_empty();
         let (label_width, label) = text(
             label_bounds,
             self.label,
@@ -141,7 +142,9 @@ impl<Id> Checkbox<Id> {
                 },
             });
         }
-        ops.push(label);
+        if has_label {
+            ops.push(label);
+        }
         PlacedCheckbox {
             widget: PlacedWidget {
                 id: self.id,
@@ -281,29 +284,27 @@ impl<Id> ProgressBar<Id> {
         } else {
             self.fraction.clamp(0.0, 1.0)
         };
+        let mut ops = vec![Op::Rect {
+            x: b.x,
+            y: b.y,
+            width: b.width,
+            height: b.height,
+            style: self.background,
+        }];
+        if fraction > 0.0 {
+            ops.push(Op::Rect {
+                x: b.x,
+                y: b.y,
+                width: b.width.max(0.0) * fraction,
+                height: b.height,
+                style: self.foreground,
+            });
+        }
         PlacedWidget {
             id: self.id,
             bounds: b,
             label_width: 0.0,
-            ops: clip(
-                b,
-                vec![
-                    Op::Rect {
-                        x: b.x,
-                        y: b.y,
-                        width: b.width,
-                        height: b.height,
-                        style: self.background,
-                    },
-                    Op::Rect {
-                        x: b.x,
-                        y: b.y,
-                        width: b.width.max(0.0) * fraction,
-                        height: b.height,
-                        style: self.foreground,
-                    },
-                ],
-            ),
+            ops: clip(b, ops),
         }
     }
 }

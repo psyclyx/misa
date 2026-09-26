@@ -2,7 +2,7 @@
 use super::layout::LayoutBuilder;
 use super::retained::indicator_value;
 use super::{Control, FONT_SIZE, Hit};
-use misa_pixel_ui::{Button, Op, Rect, Scene};
+use misa_pixel_ui::{Button, Checkbox, Op, ProgressBar, Rect, Scene};
 use misa_proto::view::{FieldKind, Kind, Node};
 use misa_render::Theme;
 use misa_style::Style;
@@ -239,13 +239,51 @@ impl LayoutBuilder<'_> {
                         .text(&node.id, &field.id)
                         .unwrap_or(&field.value)
                         .to_string();
+                    // Keep the form's label row and spacing. A boolean's value is
+                    // painted by the control, not by an editor with a fake glyph.
+                    // Secret fields still take the masked text path below.
+                    if field.kind == FieldKind::Bool && !field.secret {
+                        let control = Control::Field {
+                            node: node.id.clone(),
+                            field: field.id.clone(),
+                        };
+                        let height = (self.line_height() + 12.0).max(32.0);
+                        let focused = !field.read_only && self.interaction.focused(&control);
+                        let placed = Checkbox {
+                            id: control,
+                            bounds: Rect {
+                                x,
+                                y: *y,
+                                width,
+                                height,
+                            },
+                            label: String::new(), // Already painted above as a form label.
+                            checked: value == "true",
+                            focused,
+                            font_size: FONT_SIZE,
+                            background: self.colors.field,
+                            foreground: self.colors.text,
+                            accent: self.colors.accent,
+                        }
+                        .place(self.metrics)
+                        .widget;
+                        if !field.read_only {
+                            self.interaction.add_hit(Hit {
+                                x: placed.bounds.x,
+                                y: placed.bounds.y,
+                                width: placed.bounds.width,
+                                height: placed.bounds.height,
+                                control: placed.id,
+                            });
+                        }
+                        scene.ops.extend(placed.ops);
+                        *y += height + 9.0;
+                        continue;
+                    }
                     let display = if field.secret {
                         "•".repeat(value.chars().count())
                     } else {
                         match &field.kind {
-                            FieldKind::Bool => {
-                                format!("[{}]", if value == "true" { "✓" } else { " " })
-                            }
                             FieldKind::Choice { options, .. } => format!(
                                 "{} ▾",
                                 options
@@ -337,25 +375,27 @@ impl LayoutBuilder<'_> {
                     )],
                 );
                 *y += 24.0;
-                scene.ops.push(Op::Rect {
-                    x,
-                    y: *y,
-                    width,
-                    height: 10.0,
-                    style: self.colors.meter,
-                });
-                scene.ops.push(Op::Rect {
-                    x,
-                    y: *y,
-                    width: width
-                        * if *max > 0.0 {
-                            (value / max).clamp(0.0, 1.0) as f32
-                        } else {
-                            0.0
+                let fraction = if max.is_finite() && *max > 0.0 && value.is_finite() {
+                    (value / max).clamp(0.0, 1.0) as f32
+                } else {
+                    0.0
+                };
+                scene.ops.extend(
+                    ProgressBar {
+                        id: node.id.clone(),
+                        bounds: Rect {
+                            x,
+                            y: *y,
+                            width,
+                            height: 10.0,
                         },
-                    height: 10.0,
-                    style: self.colors.accent,
-                });
+                        fraction,
+                        background: self.colors.meter,
+                        foreground: self.colors.accent,
+                    }
+                    .place()
+                    .ops,
+                );
                 *y += 22.0;
             }
             Kind::Table { head, rows, .. } => {
