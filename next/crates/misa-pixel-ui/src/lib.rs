@@ -1,6 +1,12 @@
 //! Protocol-free pixel drawing and measured interactive primitives.
 use misa_style::Style;
 
+pub mod component;
+pub use component::PlacedComponent;
+pub mod flow;
+pub use flow::{
+    Constraints as FlowConstraints, FlowPlacement, FlowPosition, FlowSource, FlowViewport,
+};
 mod field;
 pub use field::{FieldInsets, FieldMode, FieldViewport, PlacedField, TextField};
 mod text;

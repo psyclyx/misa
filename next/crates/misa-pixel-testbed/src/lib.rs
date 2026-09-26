@@ -1,6 +1,7 @@
 //! Native pixel fixture. No semantic tree, protocol, or kit is constructed here.
 mod dashboard;
 pub use dashboard::Dashboard;
+pub mod flow_demo;
 
 use misa_pixel_ui::{ListKey, Scene, TextMetrics};
 use misa_skia_vulkan::Renderer;
