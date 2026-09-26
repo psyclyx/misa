@@ -1,52 +1,27 @@
 //! Keyboard and local animation remain live while the session has nothing to send.
-use crate::{ConnectedScreen, KeyOut, Session};
+#[cfg(test)]
+use crate::KeyOut;
+use crate::{ConnectedScreen, Session};
+mod input;
+mod paint;
 mod scopes;
-use crate::{SessionReply, SessionRequest as Request};
-use crossterm::event::{self, Event, KeyEventKind};
-use scopes::{Change, Scopes};
+mod updates;
+use crate::SessionRequest as Request;
+#[cfg(test)]
+use crossterm::event;
+use crossterm::event::Event;
+#[cfg(test)]
+use input::offered_actions;
+use input::{InputOutcome, handle_input};
+use paint::ConnectedPainter;
+use scopes::Scopes;
 use std::io::Write;
 #[cfg(test)]
 use std::sync::{Arc, atomic::Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use updates::handle_update;
 
-fn offered_actions(
-    view: &misa_proto::Node,
-    contributions: &std::collections::BTreeMap<String, crate::retained::Retained>,
-) -> std::collections::BTreeMap<String, (String, String, String)> {
-    fn visit(
-        node: &misa_proto::Node,
-        origin: &str,
-        actions: &mut std::collections::BTreeMap<String, (String, String, String)>,
-    ) {
-        for action in &node.actions {
-            actions.insert(
-                action.id.clone(),
-                (
-                    node.id.clone(),
-                    action.label.clone().unwrap_or_else(|| action.id.clone()),
-                    origin.into(),
-                ),
-            );
-        }
-        for child in &node.children {
-            visit(child, origin, actions);
-        }
-        if let misa_proto::view::Kind::List { items, .. } = &node.kind {
-            for item in items {
-                for child in item {
-                    visit(child, origin, actions);
-                }
-            }
-        }
-    }
-    let mut actions = std::collections::BTreeMap::new();
-    visit(view, "Conversation", &mut actions);
-    for (id, document) in contributions {
-        visit(&document.interaction(), id, &mut actions);
-    }
-    actions
-}
 pub async fn run(session: &mut dyn Session) -> Result<(), String> {
     let mut screen = ConnectedScreen::durable();
     screen.declare(&session.catalog());
@@ -99,9 +74,7 @@ async fn drive_with_clipboard(
     clipboard: &mut dyn crate::clipboard::Source,
 ) -> Result<(), String> {
     let mut scopes = Scopes::new(screen);
-    // Content addressed: downloads remain requested across scope switches.
-    let mut requested = std::collections::HashSet::<String>::new();
-    let mut images_dirty = true;
+    let mut painter = ConnectedPainter::new();
     // The owner serializes work; the UI must not turn that serialization into dropped input.
     let (commands, requests) = mpsc::unbounded_channel();
     // A presentation is a fact the UI has to observe eventually. Letting the update pipe
@@ -110,524 +83,47 @@ async fn drive_with_clipboard(
     let (updates, mut incoming) = mpsc::unbounded_channel();
     let driver = requests_loop(session, requests, updates);
     tokio::pin!(driver);
-    let mut output = misa_terminal_ui::output::Output::default();
-    let animations = misa_render::animations::Registry::stock();
     let mut animation = tokio::time::interval(Duration::from_millis(90));
     animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut frame = 0usize;
-    let mut redraw = true;
     loop {
-        // Fetch any image the tree names but the cache does not hold yet. This
-        // walks once per document update, never per painted frame, and the
-        // placeholder stays until the bytes arrive.
-        if images_dirty {
-            images_dirty = false;
-            if screen.ui.graphics.enabled() {
-                let blobs = scopes.image_blobs();
-                for blob in blobs {
-                    if screen.ui.graphics.has(&blob.hash) || requested.contains(&blob.hash) {
-                        continue;
-                    }
-                    requested.insert(blob.hash.clone());
-                    enqueue(&commands, Request::Download { reference: blob }, screen);
-                }
-            }
+        // Keep discovery and paint ahead of select, including request send timing.
+        for blob in painter.downloads(&scopes, screen) {
+            enqueue(&commands, Request::Download { reference: blob }, screen);
         }
-        if redraw {
-            let staging =
-                (!scopes.active.pending.is_empty() || scopes.active.uploads > 0).then(|| {
-                    match (scopes.active.uploads > 0, scopes.active.pending.is_empty()) {
-                        (true, true) => "Loading image…".to_string(),
-                        (true, false) => "Loading image…\nRemove last attachment".to_string(),
-                        (false, false) => "Remove last attachment".to_string(),
-                        (false, true) => {
-                            unreachable!("staging exists only for uploads or attachments")
-                        }
-                    }
-                });
-            let mut extra_document = vec![];
-            let mut extra_footer = vec![];
-            for contribution in scopes.active.contributions.values_mut() {
-                contribution.local(&screen.ui);
-                let (document, footer) = contribution.placed_lines(screen.ui.height as usize);
-                extra_document.extend(document);
-                extra_footer.extend(footer);
-            }
-            screen.refresh_dialog_surface();
-            let rendered = scopes.active.retained.frame_with(
-                &screen.ui,
-                staging.as_deref(),
-                &extra_document,
-                &extra_footer,
-            );
-            // The viewport resolved a physical first row from the semantic anchor; keep
-            // `scroll` at that row so the next reader delta is relative to what was shown,
-            // and mirror back whether a scroll reached the tail and resumed following.
-            screen.ui.viewport_resolved(
-                scopes.active.retained.resolved_scroll(),
-                scopes.active.retained.following(),
-            );
-            let mut rendered = rendered;
-            let lines = &mut rendered.lines;
-            if scopes.active.retained.has_turn() {
-                // Activity owns the working animation. The frames are registered data;
-                // the client only supplies the tick.
-                if let Some(line) = lines
-                    .iter_mut()
-                    .find(|line| line.node.as_deref() == Some("indicators"))
-                {
-                    let selected = misa_lines::components::animation_for(
-                        screen.ui.component_settings(),
-                        "activity",
-                    )
-                    .as_deref()
-                    .and_then(|id| animations.frame(id, true, frame as u64));
-                    if let Some(selected) = selected
-                        && let Some((_, text)) = line.spans.iter_mut().find(|(_, text)| text == "●")
-                    {
-                        *text = selected.to_string();
-                    }
-                }
-            }
-            crate::terminal_loop::paint(writer, &mut output, &screen.ui, rendered)?;
-        }
+        painter.paint(&mut scopes, screen, writer)?;
         let event = tokio::select! {
             result = &mut driver => return result,
             update = incoming.recv() => {
-                let mut change = Change::Redraw;
-                match update {
-                    Some(Update::View(crate::Presentation::Forget(id))) => {
-                        change = scopes.forget(&id, screen);
-                    },
-                    Some(Update::View(crate::Presentation::Documents(documents))) => {
-                        for (id,update) in documents {
-                            if id.is_empty() {
-                                crate::document_adapter::observed(&mut scopes.active.retained, &update,&screen.ui)?;
-                            } else if let misa_client::document::Update::Unavailable(fault)=&update {
-                                scopes.active.contributions.remove(&id);screen.ui.notice=Some(format!("{id}: {}",fault.message));
-                            } else {
-                                let contribution=scopes.active.contributions.entry(id).or_insert_with(||crate::retained::Retained::new(misa_proto::Node::section("presentation").id("presentation"),&screen.ui));
-                                crate::document_adapter::observed(contribution, &update,&screen.ui)?;
-                            }
-                        }
-                        images_dirty = true;
-                    },
-                    Some(Update::View(crate::Presentation::Activate(next))) => {
-                        change = scopes.activate(next, screen);
-                    },
-                    Some(Update::View(crate::Presentation::Contribution { id, update })) => {
-                        match &update {
-                            misa_client::document::Update::Unavailable(fault) => { scopes.active.contributions.remove(&id); screen.ui.notice = Some(format!("{id}: {}", fault.message)); },
-                            _ => {
-                                let contribution = scopes.active.contributions.entry(id).or_insert_with(|| crate::retained::Retained::new(misa_proto::Node::section("presentation").id("presentation"), &screen.ui));
-                                crate::document_adapter::observed(contribution, &update, &screen.ui)?;
-                                images_dirty = true;
-                            },
-                        }
-                    },
-                    Some(Update::View(crate::Presentation::Attention{id,generation})) => {screen.dialogs.focus_request(id,generation);enqueue(&commands,Request::RefreshRequests,screen);},
-                    Some(Update::View(crate::Presentation::Reply(SessionReply::Request { id, generation, model }))) => screen.dialogs.update(id, generation, model),
-                    Some(Update::View(crate::Presentation::Reply(SessionReply::Report(report)))) => screen.dialogs.report(report),
-                    Some(Update::View(crate::Presentation::Reply(SessionReply::DaemonForm{daemon,scope,form,drafts}))) => screen.dialogs.daemon_form(daemon,scope,form,drafts),
-                    Some(Update::View(crate::Presentation::Reply(SessionReply::Form(form)))) => screen.dialogs.form(form),
-                    Some(Update::View(crate::Presentation::TurnOutput(_))) => {},
-                    Some(Update::View(crate::Presentation::Declaration{catalog,location})) => {
-                        screen.declare(&catalog); screen.ui.location = location;
-                    }
-                    Some(Update::View(crate::Presentation::Candidates { source, items, truncated })) => screen.ui.candidates(&source, items, truncated),
-                    Some(Update::View(crate::Presentation::Snapshot(next))) => {
-                        scopes.active.retained = crate::retained::Retained::new(next, &screen.ui);
-                        images_dirty = true;
-                    },
-                    Some(Update::View(crate::Presentation::Document(update))) => {
-                        match &update {
-                            misa_client::document::Update::Unavailable(fault) => screen.ui.notice = Some(fault.message.clone()),
-                            // Status is a semantic indicator rendered by the retained
-                            // status owner. Turning it into a debug notice duplicates the
-                            // status bar and makes normal activity look like an error.
-                            misa_client::document::Update::Status(_) => {},
-                            _ => {},
-                        }
-                        crate::document_adapter::observed(&mut scopes.active.retained, &update, &screen.ui)?;
-                        images_dirty = true;
-                    }
-                    Some(Update::View(crate::Presentation::Reply(SessionReply::Complete { source, prefix, result }))) => match result {
-                        Ok((items, truncated)) => {
-                            screen.ui.completion(&source, &prefix, items, truncated);
-                        }
-                        Err(error) => {
-                            screen.ui.completion_failed(&source);
-                            screen.ui.notice = Some(error);
-                        }
-                    },
-                    Some(Update::View(crate::Presentation::Reply(SessionReply::Notice(notice)))) => screen.ui.notice = Some(notice),
-                    Some(Update::View(crate::Presentation::Reply(SessionReply::Uploaded { generation: reply_generation, result }))) => {
-                        if let Some(outcome) = scopes.uploaded(reply_generation, result) {
-                            screen.ui.notice = Some(match outcome {
-                                Ok(()) => "Image attached; Enter sends the prompt".into(),
-                                Err(error) => error,
-                            });
-                        }
-                    }
-                    Some(Update::View(crate::Presentation::Reply(SessionReply::Downloaded { reference, result }))) => {
-                        match result {
-                            Ok(bytes) => match image::load_from_memory(&bytes) {
-                                Ok(image) => screen.ui.graphics.insert(&reference.hash, image.into_rgba8()),
-                                Err(error) => screen.ui.notice = Some(format!("Image decode failed: {error}")),
-                            },
-                            Err(error) => screen.ui.notice = Some(error),
-                        }
-                    }
-                    Some(Update::View(crate::Presentation::Reply(SessionReply::Sent { draft, result }))) => match result {
-                        Ok(()) => screen.ui.notice = None,
-                        Err(error) => {
-                            if let Some((text, attachments)) = draft {
-                                screen.ui.composer.prepend(&text);
-                                scopes.active.pending.extend(attachments);
-                            }
-                            screen.ui.notice = Some(error);
-                        }
-                    },
+                match handle_update(update, &mut scopes, screen, &commands)? {
+                    Some(change) => painter.changed(change),
                     None => return Ok(()),
                 }
-                images_dirty |= change.images();
-                redraw = change.redraw();
                 continue;
             }
             _ = animation.tick(), if scopes.active.retained.has_turn() => {
-                frame = frame.wrapping_add(1); redraw = true; continue;
+                painter.tick(); continue;
             }
             event = events.recv() => match event { Some(event) => event?, None => return Ok(()) },
         };
-        redraw = true;
-        let view = scopes.active.retained.interaction();
-        let out = match event {
-            Event::Resize(width, height) => {
-                screen.ui.width = width;
-                screen.ui.height = height;
-                scopes.active.retained.local(&screen.ui);
-                output.invalidate();
-                continue;
-            }
-            Event::Paste(text) => {
-                if screen.dialogs.paste(&text) {
-                } else if crate::panel_of(&view).is_some() {
-                    for character in text.chars() {
-                        screen.ui.panel_key(&view, &crate::Key::Char(character));
-                    }
-                } else {
-                    paste(screen, &text, &commands);
-                }
-                scopes.active.retained.local(&screen.ui);
-                continue;
-            }
-            Event::Mouse(mouse) => {
-                // The wheel is transcript scroll, three rows per notch, through the
-                // same handler the keyboard scroll actions use.
-                match mouse.kind {
-                    event::MouseEventKind::ScrollUp => {
-                        let _ = screen.ui.key(crate::Key::ScrollPage(-3));
-                    }
-                    event::MouseEventKind::ScrollDown => {
-                        let _ = screen.ui.key(crate::Key::ScrollPage(3));
-                    }
-                    _ => continue,
-                }
-                scopes.active.retained.local(&screen.ui);
-                continue;
-            }
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if key.code == event::KeyCode::Char('v')
-                    && key.modifiers.contains(event::KeyModifiers::CONTROL)
-                {
-                    if key.modifiers.contains(event::KeyModifiers::ALT) {
-                        scopes.discard_attachments();
-                        screen.ui.notice = Some("Clipboard attachments discarded".into());
-                        continue;
-                    }
-                    match clipboard.read() {
-                        Ok(crate::clipboard::Contents::Text(text)) => {
-                            if screen.dialogs.paste(&text) {
-                            } else if crate::panel_of(&view).is_some() {
-                                for character in text.chars() {
-                                    screen.ui.panel_key(&view, &crate::Key::Char(character));
-                                }
-                            } else {
-                                paste(screen, &text, &commands);
-                            }
-                        }
-                        Ok(crate::clipboard::Contents::Image {
-                            width,
-                            height,
-                            rgba,
-                        }) => {
-                            if screen.dialogs.focused() || crate::panel_of(&view).is_some() {
-                                screen.ui.notice = Some(
-                                    "Close the input form to attach an image to the prompt".into(),
-                                );
-                                continue;
-                            }
-                            if scopes.active.pending.len() + scopes.active.uploads >= 16 {
-                                screen.ui.notice = Some(
-                                    "Send or discard staged attachments before adding more".into(),
-                                );
-                                continue;
-                            }
-                            match crate::clipboard::png(width, height, rgba) {
-                                Ok(bytes) => {
-                                    if enqueue(
-                                        &commands,
-                                        Request::Upload {
-                                            generation: scopes.active.generation,
-                                            bytes,
-                                            media: "image/png".into(),
-                                        },
-                                        screen,
-                                    ) {
-                                        scopes.active.uploads += 1;
-                                    }
-                                }
-                                Err(error) => screen.ui.notice = Some(error),
-                            }
-                        }
-                        Err(error) => screen.ui.notice = Some(error),
-                    }
-                    scopes.active.retained.local(&screen.ui);
-                    continue;
-                }
-                if key.code == event::KeyCode::Enter
-                    && !screen.dialogs.focused()
-                    && !key.modifiers.contains(event::KeyModifiers::SHIFT)
-                    && scopes.active.uploads > 0
-                {
-                    screen.ui.notice = Some("Wait for the attachment upload before sending".into());
-                    continue;
-                }
-                let queued = view.children.iter().any(|node| node.id == "queue");
-                if key.code == event::KeyCode::Enter
-                    && !screen.dialogs.focused()
-                    && screen.ui.composer.text().is_empty()
-                    && crate::panel_of(&view).is_none()
-                    && !key.modifiers.contains(event::KeyModifiers::SHIFT)
-                    && (queued || !scopes.active.pending.is_empty())
-                {
-                    if key.modifiers.contains(event::KeyModifiers::ALT) && queued {
-                        KeyOut::Intent(misa_kit::intent::Intent::Action {
-                            node: "queue".into(),
-                            action: "queue.steer".into(),
-                            args: misa_value::Value::Null,
-                            fields: vec![],
-                        })
-                    } else if key.modifiers.contains(event::KeyModifiers::ALT) {
-                        KeyOut::Intent(misa_kit::intent::Intent::Interrupt {
-                            text: String::new(),
-                            attachments: vec![],
-                        })
-                    } else {
-                        KeyOut::Intent(misa_kit::intent::Intent::Prompt {
-                            text: String::new(),
-                            attachments: vec![],
-                        })
-                    }
-                } else {
-                    let Some(key) = crate::translate(key.code, key.modifiers, screen.ui.keymap())
-                    else {
-                        continue;
-                    };
-                    // Ctrl-C has the reference's two meanings: while a turn is
-                    // active it asks the owner to cancel; while the composer is
-                    // otherwise idle it discards the local draft. The distinction
-                    // belongs to this input router because only it has both the
-                    // rendered session actions and the terminal-local draft.
-                    if key == crate::Key::Interrupt
-                        && !screen.ui.composer.has_picker()
-                        && !screen.dialogs.focused()
-                        && !screen.ui.panel_active()
-                        && !screen.ui.has_selection()
-                        && !has_action(&view, "turn.cancel")
-                    {
-                        screen.ui.composer.set_text("");
-                        screen.ui.notice = None;
-                        continue;
-                    }
-                    if matches!(key, crate::Key::QueueEdit)
-                        && !screen.dialogs.focused()
-                        && crate::panel_of(&view).is_none()
-                        && view.children.iter().any(|node| {
-                            node.id == "queue"
-                                && node.actions.iter().any(|action| action.id == "queue.edit")
-                        })
-                    {
-                        KeyOut::Intent(misa_kit::intent::Intent::Action {
-                            node: "queue".into(),
-                            action: "queue.edit".into(),
-                            args: misa_value::Value::Null,
-                            fields: vec![],
-                        })
-                    } else {
-                        let dialog_keys = screen.ui.dialog_settings().clone();
-                        match screen.dialogs.key(&key, &dialog_keys) {
-                            Some(crate::dialogs::DialogOut::Ui(out)) => out,
-                            Some(crate::dialogs::DialogOut::DaemonInvoke {
-                                daemon,
-                                scope,
-                                command,
-                                input,
-                            }) => {
-                                enqueue(
-                                    &commands,
-                                    Request::DaemonInvoke {
-                                        daemon,
-                                        scope,
-                                        command,
-                                        input,
-                                    },
-                                    screen,
-                                );
-                                scopes.active.retained.local(&screen.ui);
-                                continue;
-                            }
-                            None => crate::terminal_loop::route_key(
-                                &mut screen.ui,
-                                &mut scopes.active.retained,
-                                &view,
-                                key,
-                            ),
-                        }
-                    }
-                }
-            }
-            _ => continue,
-        };
-        match out {
-            KeyOut::Invoke { command, input } => {
-                enqueue(&commands, Request::Invoke { command, input }, screen);
-            }
-            KeyOut::Local => {}
-            KeyOut::Quit => return Ok(()),
-            KeyOut::Intent(mut intent) => {
-                if matches!(&intent,misa_kit::intent::Intent::Command{name,..} if name=="actions") {
-                    let actions = offered_actions(&view, &scopes.active.contributions);
-                    let mut picker = crate::Picker::new("Document actions", crate::Accept::Run);
-                    picker.set_items(
-                        actions
-                            .iter()
-                            .map(|(id, (_, label, origin))| misa_proto::view::Choice {
-                                value: format!("/action {id}"),
-                                label: label.clone(),
-                                detail: Some(origin.clone()),
-                                metadata: None,
-                            })
-                            .collect(),
-                        false,
-                    );
-                    screen.ui.composer.open_host_picker(picker, ":");
-                    continue;
-                }
-                if let misa_kit::intent::Intent::Command { name, args } = &intent
-                    && name == "action"
-                {
-                    let actions = offered_actions(&view, &scopes.active.contributions);
-                    let id = args
-                        .get("action")
-                        .and_then(misa_value::Value::as_str)
-                        .unwrap_or("");
-                    let Some((node, _, _)) = actions.get(id) else {
-                        screen.ui.notice =
-                            Some("Action is no longer offered by a visible document".into());
-                        continue;
-                    };
-                    intent = misa_kit::intent::Intent::Action {
-                        node: node.clone(),
-                        action: id.into(),
-                        args: misa_value::Value::Null,
-                        fields: vec![],
-                    };
-                }
-                if matches!(&intent, misa_kit::intent::Intent::Command { name, .. } if name == "operations")
-                {
-                    screen.dialogs.open();
-                    enqueue(&commands, Request::RefreshRequests, screen);
-                    continue;
-                }
-                let draft = match &mut intent {
-                    misa_kit::intent::Intent::Prompt { text, attachments }
-                    | misa_kit::intent::Intent::Interrupt { text, attachments } => {
-                        attachments.extend(scopes.active.pending.iter().cloned());
-                        Some(text.clone())
-                    }
-                    _ => None,
-                };
-                if enqueue(&commands, Request::Intent(intent), screen) {
-                    if draft.is_some() {
-                        scopes.active.pending.clear();
-                    }
-                } else if let Some(text) = draft {
-                    screen.ui.composer.set_text(text);
-                }
-            }
-            KeyOut::Complete { source, prefix } => {
-                enqueue(&commands, Request::Complete { source, prefix }, screen);
-            }
-            KeyOut::Submitted(text) => match crate::save::parse(&text) {
-                Some(Ok(request)) => match crate::save::target(&view, &request) {
-                    Ok(node) => {
-                        enqueue(
-                            &commands,
-                            Request::Save {
-                                node: node.into(),
-                                destination: request.destination,
-                            },
-                            screen,
-                        );
-                    }
-                    Err(error) => screen.ui.notice = Some(error),
-                },
-                Some(Err(error)) => {
-                    screen.ui.composer.set_text(text);
-                    screen.ui.save();
-                    screen.ui.notice = Some(error);
-                }
-                None => screen.ui.notice = Some("Unknown host command".into()),
-            },
-            KeyOut::Copy(text) => {
-                misa_terminal_ui::clipboard::write(writer, &text)
-                    .map_err(|error| error.to_string())?;
-            }
-            KeyOut::StartSelection => {
-                // Selection needs the retained document's rendered geometry;
-                // keep that operation at the client/view boundary rather than
-                // smuggling a second document copy into the UI screen.
-                let _ = scopes
-                    .active
-                    .retained
-                    .selection_key(&mut screen.ui, &crate::Key::StartSelection);
-            }
+        if handle_input(
+            event,
+            &mut scopes,
+            screen,
+            &commands,
+            writer,
+            clipboard,
+            &mut painter,
+        )? == InputOutcome::Quit
+        {
+            return Ok(());
         }
-        scopes.active.retained.local(&screen.ui);
     }
-}
-
-fn has_action(node: &misa_proto::Node, id: &str) -> bool {
-    node.actions.iter().any(|action| action.id == id)
-        || node.children.iter().any(|child| has_action(child, id))
-        || match &node.kind {
-            misa_proto::view::Kind::List { items, .. } => {
-                items.iter().flatten().any(|child| has_action(child, id))
-            }
-            _ => false,
-        }
 }
 
 // The session is borrowed by this future, not by the keyboard branch. Dropping the drive
 // future cancels outstanding UI waits.
 enum Update {
     View(crate::Presentation),
-}
-fn paste(screen: &mut ConnectedScreen, text: &str, commands: &mpsc::UnboundedSender<Request>) {
-    if let KeyOut::Complete { source, prefix } = screen.ui.paste(text) {
-        enqueue(commands, Request::Complete { source, prefix }, screen);
-    }
 }
 fn enqueue(
     sender: &mpsc::UnboundedSender<Request>,
