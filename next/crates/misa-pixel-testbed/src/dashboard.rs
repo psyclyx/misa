@@ -1,39 +1,53 @@
 //! Toolkit-owned scene: no semantic tree or protocol types involved.
 use misa_pixel_ui::{
-    Button, FieldInsets, FieldMode, FieldViewport, PlacedField, Rect, TextField, TextFlow,
-    TextMetrics, Viewport,
+    Button, Checkbox, FieldInsets, FieldMode, FieldViewport, ListBox, ListBoxState, ListKey,
+    PlacedField, PlacedListBox, ProgressBar, Rect, TextField, TextFlow, TextMetrics,
 };
 use misa_pixel_ui::{Op, Scene};
 use misa_style::Style;
-use std::sync::Arc;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NativeAction {
     Toggle,
     Note,
+    Check,
+    List,
+    Progress,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Focus {
+    Note,
+    Button,
+    Check,
+    List,
 }
 
 pub struct Dashboard {
     pub selected: bool,
-    viewport: Viewport,
+    list_state: ListBoxState,
     rows: usize,
+    last_height: u32,
+    focus: Option<Focus>,
     note: String,
     note_cursor: usize,
     note_focused: bool,
+    checked: bool,
     note_viewport: FieldViewport,
 }
 
 impl Default for Dashboard {
     fn default() -> Self {
-        let mut viewport = Viewport::new(0.0, 0.0);
-        viewport.pin_to_top();
         Self {
             selected: false,
-            viewport,
+            list_state: ListBoxState::default(),
             rows: 20,
+            last_height: 480,
+            focus: None,
             note: String::new(),
             note_cursor: 0,
             note_focused: false,
+            checked: false,
             note_viewport: FieldViewport::default(),
         }
     }
@@ -43,12 +57,10 @@ const ROW_HEIGHT: f32 = 26.0;
 
 impl Dashboard {
     pub fn scroll(&mut self, delta: f32) {
-        self.viewport.scroll(delta);
-    }
-
-    /// Resume following new rows, rather than changing the scroll offset directly.
-    pub fn follow_tail(&mut self) {
-        self.viewport.follow_tail();
+        if delta.is_finite() {
+            self.list_state.scroll = (self.list_state.scroll + delta).max(0.0);
+        }
+        // Placement reconciles the offset with the current viewport.
     }
 
     pub fn append_row(&mut self) {
@@ -56,7 +68,45 @@ impl Dashboard {
     }
 
     pub fn offset(&self) -> f32 {
-        self.viewport.offset()
+        self.list_state.scroll
+    }
+    pub fn list_selection(&self) -> Option<usize> {
+        self.list_state.selected
+    }
+    pub fn checked(&self) -> bool {
+        self.checked
+    }
+
+    pub fn key(&mut self, key: ListKey, width: u32, height: u32, metrics: &dyn TextMetrics) {
+        if self.focus == Some(Focus::List) {
+            let list = self.list(width, height, metrics);
+            list.key(&mut self.list_state, key);
+        } else if key == ListKey::Enter && self.focus == Some(Focus::Button) {
+            self.toggle();
+        }
+    }
+
+    pub fn space(&mut self) {
+        match self.focus {
+            Some(Focus::Check) => self.checked = !self.checked,
+            Some(Focus::Button) => self.toggle(),
+            _ => {}
+        }
+    }
+
+    pub fn tab(&mut self, backward: bool) {
+        let next = match (self.focus, backward) {
+            (None, false) | (Some(Focus::List), false) => Focus::Note,
+            (Some(Focus::Note), false) => Focus::Check,
+            (Some(Focus::Check), false) => Focus::Button,
+            (Some(Focus::Button), false) => Focus::List,
+            (None, true) | (Some(Focus::Note), true) => Focus::List,
+            (Some(Focus::List), true) => Focus::Button,
+            (Some(Focus::Button), true) => Focus::Check,
+            (Some(Focus::Check), true) => Focus::Note,
+        };
+        self.focus = Some(next);
+        self.note_focused = next == Focus::Note;
     }
 
     pub fn toggle(&mut self) {
@@ -146,19 +196,90 @@ impl Dashboard {
         .place(metrics)
     }
 
-    pub fn click(&mut self, x: f32, y: f32, width: u32, metrics: &dyn TextMetrics) -> bool {
-        let note = self.note_field(width, metrics);
-        self.note_focused = note.bounds.contains(x, y);
-        let button = self.button(width, metrics);
-        if button.bounds.contains(x, y) {
-            self.toggle();
-            true
-        } else {
-            self.note_focused
+    fn checkbox(
+        &self,
+        width: u32,
+        metrics: &dyn TextMetrics,
+    ) -> misa_pixel_ui::PlacedCheckbox<NativeAction> {
+        Checkbox {
+            id: NativeAction::Check,
+            bounds: Rect {
+                x: 36.0,
+                y: 125.0,
+                width: (width as f32 - 72.0).max(1.0),
+                height: 22.0,
+            },
+            label: "Enable local option".into(),
+            checked: self.checked,
+            focused: self.focus == Some(Focus::Check),
+            font_size: 14.0,
+            background: Style::rgb(35, 40, 48),
+            foreground: Style::rgb(230, 232, 236),
+            accent: Style::rgb(45, 105, 150),
+        }
+        .place(metrics)
+    }
+
+    fn list_bounds(&self, width: u32, height: u32, metrics: &dyn TextMetrics) -> Rect {
+        let flow = TextFlow::new(metrics, 15.0);
+        let card_width = (width as f32 - 40.0).max(1.0);
+        let rows = flow.wrap(
+            vec![(
+                Style::rgb(230, 232, 236),
+                "This card is built from Scene / Op, not misa-proto.".into(),
+            )],
+            (card_width - 32.0).max(0.0),
+        );
+        let top = 205.0 + rows.len() as f32 * flow.line_height() + 16.0;
+        Rect {
+            x: 36.0,
+            y: top,
+            width: (width as f32 - 72.0).max(1.0),
+            height: (height as f32 - top - 60.0).max(0.0),
         }
     }
 
+    fn list(
+        &mut self,
+        width: u32,
+        height: u32,
+        metrics: &dyn TextMetrics,
+    ) -> PlacedListBox<NativeAction> {
+        ListBox {
+            id: NativeAction::List,
+            bounds: self.list_bounds(width, height, metrics),
+            count: self.rows,
+            label: |i| format!("Local item {}", i + 1),
+            font_size: 14.0,
+            row_height: ROW_HEIGHT,
+            focused: self.focus == Some(Focus::List),
+            background: Style::rgb(35, 40, 48),
+            foreground: Style::rgb(230, 232, 236),
+            highlight: Style::rgb(45, 105, 150),
+        }
+        .place(metrics, &mut self.list_state)
+    }
+
+    pub fn click(&mut self, x: f32, y: f32, width: u32, metrics: &dyn TextMetrics) -> bool {
+        self.note_focused = self.note_field(width, metrics).bounds.contains(x, y);
+        self.focus = self.note_focused.then_some(Focus::Note);
+        if self.checkbox(width, metrics).click(x, y).is_some() {
+            self.checked = !self.checked;
+            self.focus = Some(Focus::Check);
+        } else if self.button(width, metrics).bounds.contains(x, y) {
+            self.toggle();
+            self.focus = Some(Focus::Button);
+        } else {
+            let list = self.list(width, self.last_height, metrics);
+            if list.click(&mut self.list_state, x, y).is_some() {
+                self.focus = Some(Focus::List);
+            }
+        }
+        self.focus.is_some()
+    }
+
     pub fn frame(&mut self, width: u32, height: u32, metrics: &dyn TextMetrics) -> Scene {
+        self.last_height = height;
         let button = self.button(width, metrics);
         let card_width = (width as f32 - 40.0).max(1.0);
         let flow = TextFlow::new(metrics, 15.0);
@@ -183,6 +304,26 @@ impl Dashboard {
         };
         scene.ops.extend(button.ops);
         scene.ops.extend(self.note_field(width, metrics).ops);
+        scene.ops.extend(self.checkbox(width, metrics).widget.ops);
+        scene.ops.extend(
+            ProgressBar {
+                id: NativeAction::Progress,
+                bounds: Rect {
+                    x: 36.0,
+                    y: 195.0,
+                    width: (width as f32 - 72.0).max(1.0),
+                    height: 5.0,
+                },
+                fraction: self
+                    .list_state
+                    .selected
+                    .map_or(0.0, |i| (i + 1) as f32 / self.rows as f32),
+                background: Style::rgb(65, 74, 86),
+                foreground: Style::rgb(45, 105, 150),
+            }
+            .place()
+            .ops,
+        );
         let mut text = |x, y, size, content: &str| {
             scene.ops.push(Op::Text {
                 x,
@@ -216,45 +357,10 @@ impl Dashboard {
                 &mut scene.ops,
             );
         }
-        // The list lives in its own clipped card. Width and height are measured
-        // anew each frame, while the viewport retains the wheel/follow policy.
-        let list_height = (height as f32 - list_top - 60.0).max(0.0);
-        let list_width = (width as f32 - 72.0).max(1.0);
-        self.viewport
-            .reconcile(self.rows as f32 * ROW_HEIGHT, list_height, 0.0);
-        let mut rows = Vec::new();
-        for index in 0..self.rows {
-            let top = index as f32 * ROW_HEIGHT;
-            if !self.viewport.visible(top, top + ROW_HEIGHT) {
-                continue;
-            }
-            let y = list_top + self.viewport.position(top);
-            rows.push(Op::Rect {
-                x: 36.0,
-                y,
-                width: list_width,
-                height: ROW_HEIGHT,
-                style: if index % 2 == 0 {
-                    Style::rgb(45, 105, 150)
-                } else {
-                    Style::rgb(65, 74, 86)
-                },
-            });
-            rows.push(Op::Text {
-                x: 40.0,
-                y: y + 3.0,
-                size: 14.0,
-                style: Style::rgb(230, 232, 236),
-                text: format!("Local item {}", index + 1),
-            });
-        }
-        scene.ops.push(Op::ClipRect {
-            x: 36.0,
-            y: list_top,
-            width: list_width,
-            height: list_height,
-            ops: Arc::new(rows),
-        });
+        // The list owns the shared paint/hit clip and its scroll viewport.
+        scene
+            .ops
+            .extend(self.list(width, height, metrics).widget.ops);
         scene
     }
 }

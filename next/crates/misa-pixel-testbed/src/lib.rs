@@ -2,7 +2,7 @@
 mod dashboard;
 pub use dashboard::Dashboard;
 
-use misa_pixel_ui::{Scene, TextMetrics};
+use misa_pixel_ui::{ListKey, Scene, TextMetrics};
 use misa_skia_vulkan::Renderer;
 use misa_style::Color;
 use misa_window_core::{Event, Key, Size};
@@ -51,11 +51,39 @@ impl Headless {
             Event::Key(Key::Enter { newline: true }) if self.dashboard.note_focused() => {
                 self.dashboard.insert_note("\n")
             }
-            Event::Key(Key::Enter { .. }) if !self.dashboard.note_focused() => {
-                self.dashboard.toggle()
-            }
+            Event::Key(Key::Enter { .. }) => self.dashboard.key(
+                ListKey::Enter,
+                self.size.width,
+                self.size.height,
+                self.metrics.as_ref(),
+            ),
+            Event::Key(Key::Up) => self.dashboard.key(
+                ListKey::Up,
+                self.size.width,
+                self.size.height,
+                self.metrics.as_ref(),
+            ),
+            Event::Key(Key::Down) => self.dashboard.key(
+                ListKey::Down,
+                self.size.width,
+                self.size.height,
+                self.metrics.as_ref(),
+            ),
+            Event::Key(Key::Home) => self.dashboard.key(
+                ListKey::Home,
+                self.size.width,
+                self.size.height,
+                self.metrics.as_ref(),
+            ),
+            Event::Key(Key::End) => self.dashboard.key(
+                ListKey::End,
+                self.size.width,
+                self.size.height,
+                self.metrics.as_ref(),
+            ),
+            Event::Key(Key::Tab { backward }) => self.dashboard.tab(backward),
             Event::Text(text) if !self.dashboard.note_focused() && text == " " => {
-                self.dashboard.toggle()
+                self.dashboard.space()
             }
             Event::Text(text) => self.dashboard.insert_note(&text),
             Event::Pointer {
@@ -96,18 +124,18 @@ pub fn run() -> Result<(), String> {
     })?;
     println!("Native headless Vulkan/Ganesh: {}", host.device_name());
     let initial = host.frame()?;
-    host.input(Event::Key(Key::Enter { newline: false }));
-    let selected = host.frame()?;
-    if initial.pixels == selected.pixels {
-        return Err("key input did not alter GPU readback".into());
-    }
     host.input(Event::Pointer {
         x: 40.0,
         y: 155.0,
         dragging: false,
     });
+    let selected = host.frame()?;
+    if initial.pixels == selected.pixels {
+        return Err("pointer input did not alter GPU readback".into());
+    }
+    host.input(Event::Text(" ".into()));
     if host.frame()?.pixels != initial.pixels {
-        return Err("pointer input did not restore GPU readback".into());
+        return Err("keyboard activation did not restore GPU readback".into());
     }
     host.input(Event::Resize(Size {
         width: 600,
@@ -135,6 +163,8 @@ pub fn run() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The Vulkan/Ganesh device is shared by the process; don't race readbacks.
+    static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fn pixel(snapshot: &Snapshot, x: usize, y: usize) -> &[u8] {
         let offset = (y * snapshot.size.width as usize + x) * 4;
         &snapshot.pixels[offset..offset + 4]
@@ -142,6 +172,7 @@ mod tests {
 
     #[test]
     fn editable_note_uses_gpu_caret_clip_and_resize() {
+        let _gpu = GPU.lock().unwrap();
         let mut host = Headless::new(Size {
             width: 130,
             height: 300,
@@ -201,54 +232,110 @@ mod tests {
     }
 
     #[test]
-    fn wheel_resize_and_follow_change_real_gpu_pixels() {
+    fn list_keyboard_wheel_pointer_and_progress_gpu_readback() {
+        let _gpu = GPU.lock().unwrap();
         let mut host = Headless::new(Size {
             width: 500,
             height: 500,
         })
         .expect("Vulkan ICD and GPU readback required; configure VK_ICD_FILENAMES");
         let top = host.frame().unwrap();
-        let (list_top, visible) = match top.scene.ops.last().unwrap() {
-            misa_pixel_ui::Op::ClipRect { y, height, .. } => (*y as usize, *height),
+        let list_top = match top.scene.ops.last().unwrap() {
+            misa_pixel_ui::Op::ClipRect { y, .. } => *y as usize,
             _ => panic!("list clip missing"),
         };
+        host.input(Event::Pointer {
+            x: 40.0,
+            y: list_top as f32 + 5.0,
+            dragging: false,
+        });
+        let selected = host.frame().unwrap();
+        assert_eq!(host.dashboard.list_selection(), Some(0));
+        assert_ne!(pixel(&top, 40, 197), pixel(&selected, 40, 197));
+        host.input(Event::Key(Key::End));
+        let end = host.frame().unwrap();
+        assert!(host.dashboard.offset() > 0.0);
+        assert_ne!(
+            pixel(&selected, 40, list_top + 5),
+            pixel(&end, 40, list_top + 5)
+        );
+        host.input(Event::Key(Key::Enter { newline: false }));
+        let committed = host.frame().unwrap();
+        assert_eq!(host.dashboard.list_selection(), Some(19));
+        assert_ne!(pixel(&selected, 80, 197), pixel(&committed, 80, 197));
+        host.input(Event::Key(Key::Home));
+        host.frame().unwrap();
         assert_eq!(host.dashboard.offset(), 0.0);
         host.input(Event::Wheel { delta: 26.0 });
-        let scrolled = host.frame().unwrap();
+        let wheel = host.frame().unwrap();
         assert_eq!(host.dashboard.offset(), 26.0);
-        assert_ne!(
-            pixel(&top, 38, list_top + 5),
-            pixel(&scrolled, 38, list_top + 5)
-        );
-        host.input(Event::Wheel { delta: 100_000.0 });
-        let end = host.frame().unwrap();
-        assert_eq!(host.dashboard.offset(), 20.0 * 26.0 - visible);
-        assert_ne!(scrolled.pixels, end.pixels);
+        assert_ne!(top.pixels, wheel.pixels);
         host.input(Event::Resize(Size {
-            width: 500,
-            height: 1000,
+            width: 130,
+            height: 300,
         }));
-        let taller = host.frame().unwrap();
-        assert_eq!(host.dashboard.offset(), 0.0);
-        assert_eq!(
-            pixel(&taller, 38, list_top + 5),
-            pixel(&top, 38, list_top + 5)
-        );
-        host.dashboard.follow_tail();
-        host.input(Event::Resize(Size {
+        let narrow = host.frame().unwrap();
+        assert_eq!(narrow.pixels.len(), 130 * 300 * 4);
+        assert_eq!(host.dashboard.offset(), 26.0); // retained offset stays clamped
+        assert!(matches!(
+            narrow.scene.ops.last(),
+            Some(misa_pixel_ui::Op::ClipRect {
+                width: 58.0,
+                height: 0.0,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn checkbox_focus_space_hit_and_narrow_clip_on_gpu() {
+        let _gpu = GPU.lock().unwrap();
+        let mut host = Headless::new(Size {
             width: 500,
             height: 500,
+        })
+        .expect("Vulkan ICD and GPU readback required; configure VK_ICD_FILENAMES");
+        let initial = host.frame().unwrap();
+        host.input(Event::Key(Key::Tab { backward: false })); // note
+        host.input(Event::Key(Key::Tab { backward: false })); // checkbox
+        let focused = host.frame().unwrap();
+        assert_ne!(pixel(&initial, 37, 128), pixel(&focused, 37, 128));
+        host.input(Event::Text(" ".into()));
+        let checked = host.frame().unwrap();
+        assert!(host.dashboard.checked());
+        assert_ne!(pixel(&focused, 47, 135), pixel(&checked, 47, 135));
+        host.input(Event::Resize(Size {
+            width: 130,
+            height: 300,
         }));
-        host.frame().unwrap();
-        assert_eq!(host.dashboard.offset(), 20.0 * 26.0 - visible);
-        host.dashboard.append_row();
-        let appended = host.frame().unwrap();
-        assert_eq!(host.dashboard.offset(), 21.0 * 26.0 - visible);
-        assert_ne!(end.pixels, appended.pixels);
+        let narrow = host.frame().unwrap();
+        assert!(narrow.scene.ops.iter().any(|op| matches!(
+            op,
+            misa_pixel_ui::Op::ClipRect {
+                x: 36.0,
+                y: 125.0,
+                width: 58.0,
+                ..
+            }
+        )));
+        host.input(Event::Pointer {
+            x: 94.0,
+            y: 135.0,
+            dragging: false,
+        });
+        assert!(host.dashboard.checked()); // half-open hit bound
+        host.input(Event::Pointer {
+            x: 40.0,
+            y: 135.0,
+            dragging: false,
+        });
+        assert!(!host.dashboard.checked());
+        assert_ne!(narrow.pixels, host.frame().unwrap().pixels);
     }
 
     #[test]
     fn native_gpu_input_and_resize_without_display() {
+        let _gpu = GPU.lock().unwrap();
         let mut host = Headless::new(Size {
             width: 500,
             height: 320,
@@ -257,7 +344,11 @@ mod tests {
         let initial = host.frame().unwrap();
         assert_eq!(pixel(&initial, 0, 0), [20, 22, 26, 255]);
         assert_eq!(pixel(&initial, 50, 160), [65, 74, 86, 255]);
-        host.input(Event::Key(Key::Enter { newline: false }));
+        host.input(Event::Pointer {
+            x: 40.0,
+            y: 155.0,
+            dragging: false,
+        });
         let keyed = host.frame().unwrap();
         assert_eq!(pixel(&keyed, 50, 160), [45, 105, 150, 255]);
         assert_ne!(initial.pixels, keyed.pixels);
