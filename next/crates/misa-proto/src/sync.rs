@@ -150,6 +150,22 @@ impl IndexedTree {
     pub fn parent(&self, id: &str) -> Option<&str> {
         self.nodes.get(id)?.parent.as_deref()
     }
+    /// The first child of `id`, if any. Returns an id borrowed from the index.
+    pub fn first_child(&self, id: &str) -> Option<&str> {
+        self.nodes.get(id)?.first.as_deref()
+    }
+    /// The last child of `id`, if any. Returns an id borrowed from the index.
+    pub fn last_child(&self, id: &str) -> Option<&str> {
+        self.nodes.get(id)?.last.as_deref()
+    }
+    /// The sibling immediately after `id`, if any.
+    pub fn next_sibling(&self, id: &str) -> Option<&str> {
+        self.nodes.get(id)?.next.as_deref()
+    }
+    /// The sibling immediately before `id`, if any.
+    pub fn previous_sibling(&self, id: &str) -> Option<&str> {
+        self.nodes.get(id)?.previous.as_deref()
+    }
     pub fn children(&self, id: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut cursor = self.nodes.get(id).and_then(|entry| entry.first.as_deref());
@@ -307,6 +323,122 @@ impl IndexedTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_links(tree: &IndexedTree, parent: &str, expected: &[&str]) {
+        assert_eq!(tree.first_child(parent), expected.first().copied());
+        assert_eq!(tree.last_child(parent), expected.last().copied());
+        assert_eq!(tree.children(parent), expected);
+        for (index, &id) in expected.iter().enumerate() {
+            assert_eq!(tree.parent(id), Some(parent));
+            assert_eq!(
+                tree.previous_sibling(id),
+                index.checked_sub(1).map(|i| expected[i])
+            );
+            assert_eq!(tree.next_sibling(id), expected.get(index + 1).copied());
+        }
+        let mut forward = Vec::new();
+        let mut cursor = tree.first_child(parent);
+        while let Some(id) = cursor {
+            forward.push(id);
+            cursor = tree.next_sibling(id);
+        }
+        assert_eq!(forward, expected);
+        let mut backward = Vec::new();
+        let mut cursor = tree.last_child(parent);
+        while let Some(id) = cursor {
+            backward.push(id);
+            cursor = tree.previous_sibling(id);
+        }
+        assert_eq!(backward, expected.iter().rev().copied().collect::<Vec<_>>());
+    }
+
+    fn assert_absent(tree: &IndexedTree, id: &str) {
+        assert!(!tree.contains(id));
+        assert_eq!(tree.first_child(id), None);
+        assert_eq!(tree.last_child(id), None);
+        assert_eq!(tree.next_sibling(id), None);
+        assert_eq!(tree.previous_sibling(id), None);
+    }
+
+    #[test]
+    fn linked_traversal_tracks_inserts_removes_and_nested_replacements() {
+        let mut tree = IndexedTree::new(Node::section("root").id("root"));
+        assert_links(&tree, "root", &[]);
+        assert_eq!(tree.previous_sibling("root"), None);
+        assert_eq!(tree.next_sibling("root"), None);
+        assert_absent(&tree, "missing");
+
+        for (id, before, expected) in [
+            ("a", None, vec!["a"]),                     // append to empty parent
+            ("c", None, vec!["a", "c"]),                // append to nonempty parent
+            ("b", Some("c"), vec!["a", "b", "c"]),      // insert in middle
+            ("z", Some("a"), vec!["z", "a", "b", "c"]), // insert at head
+            ("d", None, vec!["z", "a", "b", "c", "d"]), // append at tail
+        ] {
+            tree.apply(&ViewOp::Insert {
+                parent: "root".into(),
+                before: before.map(str::to_owned),
+                node: Node::section(id).id(id),
+            })
+            .unwrap();
+            assert_links(&tree, "root", &expected);
+            assert_links(&tree, id, &[]);
+        }
+        for (id, expected) in [
+            ("z", vec!["a", "b", "c", "d"]), // remove head
+            ("b", vec!["a", "c", "d"]),      // remove middle
+            ("d", vec!["a", "c"]),           // remove tail
+        ] {
+            tree.apply(&ViewOp::Remove { id: id.into() }).unwrap();
+            assert_links(&tree, "root", &expected);
+            assert_absent(&tree, id);
+        }
+
+        tree.apply(&ViewOp::Replace {
+            id: "a".into(),
+            node: Node::section("a")
+                .id("a")
+                .child(Node::section("u").id("u"))
+                .child(Node::section("v").id("v")),
+        })
+        .unwrap();
+        assert_links(&tree, "root", &["a", "c"]);
+        assert_links(&tree, "a", &["u", "v"]);
+        tree.apply(&ViewOp::Insert {
+            parent: "a".into(),
+            before: Some("v".into()),
+            node: Node::section("w").id("w"),
+        })
+        .unwrap();
+        tree.apply(&ViewOp::Insert {
+            parent: "a".into(),
+            before: None,
+            node: Node::section("x").id("x"),
+        })
+        .unwrap();
+        assert_links(&tree, "a", &["u", "w", "v", "x"]);
+        tree.apply(&ViewOp::Replace {
+            id: "v".into(),
+            node: Node::section("v").id("v").child(Node::section("q").id("q")),
+        })
+        .unwrap();
+        assert_links(&tree, "a", &["u", "w", "v", "x"]);
+        assert_links(&tree, "v", &["q"]);
+        tree.apply(&ViewOp::Remove { id: "v".into() }).unwrap();
+        assert_links(&tree, "a", &["u", "w", "x"]);
+        for id in ["v", "q"] {
+            assert_absent(&tree, id);
+        }
+        tree.apply(&ViewOp::Remove { id: "a".into() }).unwrap();
+        assert_links(&tree, "root", &["c"]);
+        for id in ["a", "u", "w", "x"] {
+            assert_absent(&tree, id);
+        }
+        tree.apply(&ViewOp::Remove { id: "c".into() }).unwrap();
+        assert_links(&tree, "root", &[]);
+        assert_absent(&tree, "c");
+    }
+
     #[test]
     fn indexed_siblings_keep_order_after_insert_remove_and_replace() {
         let mut tree = IndexedTree::new(
