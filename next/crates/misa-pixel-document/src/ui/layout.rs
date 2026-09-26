@@ -1,7 +1,7 @@
 use super::flow::FlowId;
 use super::{Control, DocumentUi, FONT_SIZE, FieldViewport, PULSE_PERIOD, text};
 use misa_pixel_ui::{FieldMode, FlowConstraints, FlowViewport, Op, Scene};
-use misa_proto::view::{FieldKind, Node};
+use misa_proto::view::{FieldKind, Kind, Node};
 use misa_render::Theme;
 use misa_style::Style;
 use std::sync::Arc;
@@ -20,6 +20,7 @@ pub(super) struct LayoutBuilder<'a> {
     pub(super) theme: Arc<Theme>,
     pub(super) prefixes: Vec<(Style, String)>,
     retain_only: bool,
+    pub(super) row_content_index: Option<usize>,
     viewport_effects: Vec<(Control, FieldViewport)>,
 }
 
@@ -46,6 +47,7 @@ impl<'a> LayoutBuilder<'a> {
             theme: Arc::new(if light { Theme::light() } else { Theme::dark() }),
             prefixes: Vec::new(),
             retain_only: false,
+            row_content_index: None,
             viewport_effects: Vec::new(),
         }
     }
@@ -60,6 +62,173 @@ impl<'a> LayoutBuilder<'a> {
         self.retain_only = false;
         self.viewport_effects.clear();
         cached.map(|group| group.height)
+    }
+
+    pub(super) fn measure_flow(&mut self, flow: &FlowId, width: f32, theme: &Theme) -> Option<f32> {
+        #[cfg(test)]
+        self.retained.owner_measured();
+        self.retain_only = true;
+        let cached = self.retain_flow(flow, width, theme);
+        self.retain_only = false;
+        self.viewport_effects.clear();
+        cached.map(|group| group.height)
+    }
+
+    fn retain_flow(
+        &mut self,
+        flow: &FlowId,
+        width: f32,
+        theme: &Theme,
+    ) -> Option<Arc<super::retained::Cached>> {
+        let owner = match flow {
+            FlowId::Node(id) | FlowId::Row(id, _) | FlowId::End(id) | FlowId::Stream(id) => id,
+            _ => return None,
+        };
+        if self.document.row_count(owner).is_none() || matches!(flow, FlowId::Stream(_)) {
+            return self.retain_owner(owner, width, theme);
+        }
+        let key = flow.cache_key();
+        if let Some(cached) = self.retained.get(&key, width) {
+            return Some(cached);
+        }
+        let node = self.document.node(owner)?;
+        let outer = self.interaction.take_group();
+        self.interaction.begin_owner(&key);
+        self.retained.begin_group();
+        let effect_start = self.viewport_effects.len();
+        let mut scene = Scene::default();
+        let mut height = 0.0;
+        match flow {
+            FlowId::Node(_) => {
+                if let Some(label) = &node.label {
+                    self.row(
+                        &mut scene,
+                        0.0,
+                        height,
+                        width,
+                        vec![(theme.role(&node.role), label.clone())],
+                    );
+                    height += 25.0;
+                }
+            }
+            FlowId::Row(_, index) => match &node.kind {
+                Kind::List {
+                    ordered,
+                    items,
+                    markers,
+                } => self.list_item(
+                    node,
+                    *ordered,
+                    markers
+                        .get(self.row_content_index.unwrap_or(*index))
+                        .copied()
+                        .flatten(),
+                    *index,
+                    items.get(self.row_content_index.unwrap_or(*index))?,
+                    0.0,
+                    &mut height,
+                    width,
+                    theme,
+                    &mut scene,
+                ),
+                Kind::Table { head, rows, .. } => {
+                    let actual = self.row_content_index.unwrap_or(*index);
+                    let row = if actual == 0 {
+                        head
+                    } else {
+                        rows.get(actual - 1)?
+                    };
+                    self.table_row(
+                        row,
+                        *index,
+                        self.document.table_columns(owner),
+                        0.0,
+                        &mut height,
+                        width,
+                        theme,
+                        &mut scene,
+                    );
+                }
+                _ => return None,
+            },
+            FlowId::End(_) => {
+                // Non-indexed children and actions still follow the rows.
+                for child in self.document.children(owner) {
+                    self.present(&child, 0.0, &mut height, width, theme, &mut scene);
+                }
+                for child in &node.children {
+                    self.node_uncached(child, 0.0, &mut height, width, theme, &mut scene);
+                }
+                if owner == self.document.stream_parent()
+                    && !self.document.visible_streams().is_empty()
+                {
+                    self.present("streams", 0.0, &mut height, width, theme, &mut scene);
+                }
+                self.paint_self_actions(node, 0.0, &mut height, width, &mut scene);
+                height += 5.0;
+            }
+            _ => unreachable!(),
+        }
+        // Each visible slice carries the outer card; adjacent surfaces meet
+        // without painting over content in the preceding fragment.
+        let painted_height = if matches!(flow, FlowId::End(_)) {
+            height - 5.0
+        } else {
+            height
+        };
+        if painted_height > 0.0 {
+            if let Some((_, rail)) = theme.rail(&node.role) {
+                let trailing = !node.actions.is_empty()
+                    || self.document.tree.first_child(owner).is_some()
+                    || !node.children.is_empty()
+                    || (owner == self.document.stream_parent()
+                        && !self.document.visible_streams().is_empty());
+                let first = matches!(flow, FlowId::Node(_))
+                    || matches!(flow, FlowId::Row(_, 0) if node.label.is_none())
+                    || matches!(flow, FlowId::End(_) if node.label.is_none() && self.document.row_count(owner) == Some(0));
+                let last = matches!(flow, FlowId::End(_))
+                    || matches!(flow, FlowId::Node(_) if self.document.row_count(owner) == Some(0) && !trailing)
+                    || matches!(flow, FlowId::Row(_, index) if index + 1 == self.document.row_count(owner).unwrap_or(0) && !trailing);
+                let top = if first { 4.0 } else { 0.0 };
+                let bottom = if last { 4.0 } else { 0.0 };
+                let mut at = 0;
+                if let Some(surface) = theme.surface(&node.role)
+                    && surface.bg != misa_style::Color::Default
+                {
+                    scene.ops.insert(
+                        at,
+                        Op::Rect {
+                            x: -6.0,
+                            y: -top,
+                            width: width + 12.0,
+                            height: painted_height + top + bottom,
+                            style: Style::fg(surface.bg),
+                        },
+                    );
+                    at += 1;
+                }
+                scene.ops.insert(
+                    at,
+                    Op::Rect {
+                        x: -4.0,
+                        y: 0.0,
+                        width: 2.0,
+                        height: painted_height,
+                        style: rail,
+                    },
+                );
+            }
+        }
+        let geometry = self.interaction.restore_group(outer);
+        Some(self.retained.finish_group(
+            &key,
+            width,
+            height,
+            scene.ops,
+            geometry,
+            false,
+            self.viewport_effects[effect_start..].to_vec(),
+        ))
     }
 
     fn retain_owner(
@@ -103,6 +272,36 @@ impl<'a> LayoutBuilder<'a> {
             )
         };
         Some(cached)
+    }
+
+    pub(super) fn present_flow(
+        &mut self,
+        flow: &FlowId,
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        theme: &Theme,
+        scene: &mut Scene,
+    ) {
+        let Some(cached) = self.retain_flow(flow, width, theme) else {
+            return;
+        };
+        let key = flow.cache_key();
+        #[cfg(test)]
+        self.retained.owner_placed();
+        self.retained.place(&key, &cached, *y);
+        for (control, viewport) in &cached.viewport_effects {
+            if let Control::Field { node, field } = control {
+                self.drafts.set_viewport(node, field, *viewport);
+            }
+        }
+        scene.ops.push(Op::Group {
+            x,
+            y: *y,
+            ops: cached.ops.clone(),
+        });
+        self.interaction.place_group(&cached.geometry, x, *y);
+        *y += cached.height;
     }
 
     pub(super) fn present(
@@ -253,9 +452,16 @@ impl LayoutBuilder<'_> {
         let theme = Arc::clone(&self.theme);
         for placement in viewport.visible() {
             match &placement.id {
-                FlowId::Node(id) | FlowId::Stream(id) => {
+                FlowId::Node(_) | FlowId::Row(_, _) | FlowId::End(_) | FlowId::Stream(_) => {
                     let mut y = placement.y;
-                    self.present(id, 20.0, &mut y, content_width, &theme, &mut scene);
+                    self.present_flow(
+                        &placement.id,
+                        20.0,
+                        &mut y,
+                        content_width,
+                        &theme,
+                        &mut scene,
+                    );
                     debug_assert_eq!(y, placement.y + placement.height);
                 }
                 FlowId::Top | FlowId::Close(_) | FlowId::StreamClose | FlowId::Bottom => {}

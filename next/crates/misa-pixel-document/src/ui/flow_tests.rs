@@ -115,12 +115,25 @@ fn wrapped_table_cell_copies_contiguous_source_and_measures_like_placement() {
         false,
     );
     assert_eq!(
-        builder.measure_owner("table", 60.0, &theme),
-        Some(app.retained.cached("table").height)
+        builder.measure_flow(&FlowId::Row("table".into(), 1), 60.0, &theme),
+        Some(
+            app.retained
+                .cached(&FlowId::Row("table".into(), 1).cache_key())
+                .height
+        )
     );
     assert_eq!(
-        builder.retained.cached("table").geometry.rows().len(),
-        app.retained.cached("table").geometry.rows().len()
+        builder
+            .retained
+            .cached(&FlowId::Row("table".into(), 1).cache_key())
+            .geometry
+            .rows()
+            .len(),
+        app.retained
+            .cached(&FlowId::Row("table".into(), 1).cache_key())
+            .geometry
+            .rows()
+            .len()
     );
     assert!(builder.interaction.hits().is_empty());
 }
@@ -437,6 +450,241 @@ fn ten_thousand_transcript_tail_frames_visit_only_visible_owners() {
     );
     assert!(app.retained.owner_counts().1 < 32);
     assert!(matches!(app.viewport.position, FlowPosition::Anchor { .. }));
+}
+
+fn long_fragment(kind: &str, count: usize) -> Node {
+    let node = match kind {
+        "list" => Node::new(
+            "list",
+            Kind::List {
+                ordered: true,
+                items: (0..count)
+                    .map(|i| {
+                        vec![
+                            Node::text("text", [Span::plain(format!("entry {i}"))])
+                                .id(format!("embedded.{i}")),
+                        ]
+                    })
+                    .collect(),
+                markers: vec![],
+            },
+        ),
+        "table" => Node::new(
+            "table",
+            Kind::Table {
+                head: vec![vec![Span::plain("heading")]],
+                rows: (0..count - 1)
+                    .map(|i| vec![vec![Span::plain(format!("entry {i}"))]])
+                    .collect(),
+                align: vec![],
+            },
+        ),
+        _ => unreachable!(),
+    };
+    Node::section("session")
+        .id("session")
+        .child(node.id("long"))
+}
+
+#[test]
+fn ten_thousand_list_and_table_rows_have_bounded_tail_and_reflow() {
+    for kind in ["list", "table"] {
+        let mut app = DocumentUi::new(long_fragment(kind, 10_000), super::tests::test_metrics());
+        app.frame(640, 240);
+        assert!(
+            app.retained.owner_counts().0 < 32,
+            "{kind}: measured history"
+        );
+        assert!(app.retained.owner_counts().1 < 32, "{kind}: placed history");
+        assert!(
+            app.retained.rendered_nodes() < 32,
+            "{kind}: painted history"
+        );
+        assert!(
+            !app.retained
+                .contains(&FlowId::Row("long".into(), 0).cache_key())
+        );
+        let tail = FlowId::Row("long".into(), 9_999);
+        let placed = app
+            .viewport
+            .visible()
+            .iter()
+            .find(|p| p.id == tail)
+            .unwrap();
+        let snapshot = super::measurement::HeightSnapshot::capture(&app, &tail, 600.0).unwrap();
+        assert_eq!(
+            super::measurement::measure(snapshot, super::tests::test_metrics()),
+            placed.height,
+            "{kind}: background height disagrees with placement"
+        );
+        app.frame(640, 240);
+        assert_eq!(app.retained.owner_counts().0, 0);
+        app.scroll(-120.0);
+        app.frame(640, 240);
+        assert!(
+            app.retained.owner_counts().0 < 32,
+            "{kind}: wheel measured history"
+        );
+        assert!(
+            app.viewport
+                .visible()
+                .iter()
+                .any(|p| matches!(&p.id, FlowId::Row(id, i) if id == "long" && *i < 9_999)),
+            "{kind}: wheel did not reveal older rows"
+        );
+        let anchor = app
+            .viewport
+            .visible()
+            .iter()
+            .find(|p| matches!(p.id, FlowId::Row(_, _)))
+            .unwrap()
+            .clone();
+        app.viewport.anchor(anchor.id.clone(), 0.0, anchor.y);
+        app.frame(510, 240);
+        let resized = app
+            .viewport
+            .visible()
+            .iter()
+            .find(|p| p.id == anchor.id)
+            .unwrap();
+        assert_eq!(resized.y, anchor.y, "{kind}: unchanged row moved on resize");
+        assert!(
+            app.retained.owner_counts().0 < 32,
+            "{kind}: resize measured history"
+        );
+        assert!(app.retained.owner_counts().1 < 32);
+    }
+}
+
+#[test]
+fn fragmented_list_preserves_the_outer_rail_and_surface_at_the_tail() {
+    let mut view = long_fragment("list", 10_000);
+    view.children[0].role = "message.user".into();
+    let mut app = DocumentUi::new(view, super::tests::test_metrics());
+    app.frame(640, 240);
+    let tail = app
+        .retained
+        .cached(&FlowId::Row("long".into(), 9_999).cache_key());
+    assert!(
+        matches!(tail.ops.first(), Some(Op::Rect { x, .. }) if *x == -6.0),
+        "outer surface"
+    );
+    assert!(
+        matches!(tail.ops.get(1), Some(Op::Rect { x, width, .. }) if *x == -4.0 && *width == 2.0),
+        "outer rail"
+    );
+    assert!(app.retained.owner_counts().0 < 32);
+}
+
+#[test]
+fn removed_then_inserted_owner_retires_rows_without_a_live_row_count() {
+    let mut app = DocumentUi::new(long_fragment("list", 1), super::tests::test_metrics());
+    app.frame(640, 180);
+    let key = FlowId::Row("long".into(), 0).cache_key();
+    assert!(app.retained.contains(&key));
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Remove { id: "long".into() }],
+        live: &[],
+        reset_live: false,
+    })
+    .unwrap();
+    assert!(!app.retained.contains(&key));
+    let replacement = Node::new(
+        "list",
+        Kind::List {
+            ordered: false,
+            items: vec![vec![
+                Node::text("text", [Span::plain("fresh")]).id("fresh.row"),
+            ]],
+            markers: vec![],
+        },
+    )
+    .id("long");
+    app.observed(&DocumentUpdate::Changed {
+        tree: &[ViewOp::Insert {
+            parent: "session".into(),
+            before: None,
+            node: replacement,
+        }],
+        live: &[],
+        reset_live: false,
+    })
+    .unwrap();
+    app.frame(640, 180);
+    assert!(
+        app.interaction
+            .rows()
+            .iter()
+            .any(|row| row.geometry.text == "fresh")
+    );
+}
+
+#[test]
+fn replaced_fragment_owner_does_not_reuse_removed_row_cache() {
+    let mut app = DocumentUi::new(long_fragment("list", 1), super::tests::test_metrics());
+    app.frame(640, 180);
+    let key = FlowId::Row("long".into(), 0).cache_key();
+    assert!(app.retained.contains(&key));
+    for node in [
+        Node::text("text", [Span::plain("replacement")]).id("long"),
+        Node::new(
+            "list",
+            Kind::List {
+                ordered: false,
+                items: vec![vec![
+                    Node::text("text", [Span::plain("different")]).id("replacement.row"),
+                ]],
+                markers: vec![],
+            },
+        )
+        .id("long"),
+    ] {
+        app.observed(&DocumentUpdate::Changed {
+            tree: &[ViewOp::Replace {
+                id: "long".into(),
+                node,
+            }],
+            live: &[],
+            reset_live: false,
+        })
+        .unwrap();
+        app.frame(640, 180);
+    }
+    assert!(app.retained.contains(&key));
+    assert!(
+        app.interaction
+            .rows()
+            .iter()
+            .any(|row| row.geometry.text == "different")
+    );
+}
+
+#[test]
+fn positional_list_row_anchor_has_deterministic_reset_fallback() {
+    let mut app = DocumentUi::new(long_fragment("list", 8), super::tests::test_metrics());
+    app.frame(640, 180);
+    app.viewport
+        .anchor(FlowId::Row("long".into(), 5), 0.0, 20.0);
+    let mut inserted = long_fragment("list", 9);
+    if let Kind::List { items, .. } = &mut inserted.children[0].kind {
+        items.insert(
+            0,
+            vec![Node::text("text", [Span::plain("inserted")]).id("inserted")],
+        );
+        items.pop();
+    }
+    app.set_view(inserted);
+    app.frame(640, 180);
+    // No wire-level row ID survives insert-before: index 5 deliberately means
+    // the new row at index 5, not a guessed content identity at index 6.
+    assert!(
+        matches!(&app.viewport.position, FlowPosition::Anchor { id: FlowId::Row(id, 5), .. } if id == "long")
+    );
+    app.set_view(long_fragment("list", 2));
+    app.frame(640, 180);
+    assert!(
+        matches!(&app.viewport.position, FlowPosition::Anchor { id: FlowId::Row(id, i), .. } if id == "long" && *i < 2)
+    );
 }
 
 fn transcript(prefix: &str, count: usize) -> Node {
@@ -865,7 +1113,7 @@ fn embedded_list_field_edit_invalidates_exact_owner_height() {
         .viewport
         .visible()
         .iter()
-        .find(|p| p.id == FlowId::Node("list".into()))
+        .find(|p| p.id == FlowId::Row("list".into(), 0))
         .unwrap()
         .height;
     app.focus_control(Some(Control::Field {
@@ -881,10 +1129,271 @@ fn embedded_list_field_edit_invalidates_exact_owner_height() {
         .viewport
         .visible()
         .iter()
-        .find(|p| p.id == FlowId::Node("list".into()))
+        .find(|p| p.id == FlowId::Row("list".into(), 0))
         .unwrap()
         .height;
     assert!(changed > height);
+}
+
+#[test]
+fn fragmented_root_projects_live_streams_in_its_end() {
+    for kind in ["list", "table"] {
+        let root = long_fragment(kind, 1).children.remove(0).id("root");
+        let mut app = DocumentUi::new(root, super::tests::test_metrics());
+        let view = app.document.snapshot();
+        app.observed(&DocumentUpdate::Reset {
+            tree: &view,
+            streams: &[Stream {
+                id: "live.text".into(),
+                role: "message.assistant".into(),
+                text: "live body".into(),
+            }],
+        })
+        .unwrap();
+        app.frame(640, 480);
+        assert!(
+            app.interaction
+                .rows()
+                .iter()
+                .any(|row| row.geometry.text.contains("live body")),
+            "{kind}"
+        );
+        assert!(
+            app.viewport
+                .visible()
+                .iter()
+                .any(|p| p.id == FlowId::End("root".into()))
+        );
+        let snapshot =
+            super::measurement::HeightSnapshot::capture(&app, &FlowId::End("root".into()), 600.0)
+                .unwrap();
+        let end = app
+            .viewport
+            .visible()
+            .iter()
+            .find(|p| p.id == FlowId::End("root".into()))
+            .unwrap();
+        assert_eq!(
+            super::measurement::measure(snapshot, super::tests::test_metrics()),
+            end.height
+        );
+        let row_key = FlowId::Row("root".into(), 0).cache_key();
+        let original = app.retained.cached(&row_key).ops.clone();
+        app.observed(&DocumentUpdate::Changed {
+            tree: &[],
+            live: &[StreamUpdate::Append {
+                id: "live.text".into(),
+                text: " extended".into(),
+                offset: 9,
+            }],
+            reset_live: false,
+        })
+        .unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &original,
+            &app.retained.cached(&row_key).ops
+        ));
+        app.frame(640, 480);
+        assert!(
+            app.interaction
+                .rows()
+                .iter()
+                .any(|row| row.geometry.text.contains("extended"))
+        );
+    }
+}
+
+#[test]
+fn empty_labelled_fragment_keeps_card_bottom_surface() {
+    for kind in ["list", "table"] {
+        let mut root = long_fragment(kind, 1).children.remove(0);
+        if let Kind::List { items, .. } = &mut root.kind {
+            items.clear();
+        }
+        if let Kind::Table { head, rows, .. } = &mut root.kind {
+            head.clear();
+            rows.clear();
+        }
+        root.role = "message.user".into();
+        root.label = Some("empty".into());
+        let mut app = DocumentUi::new(root, super::tests::test_metrics());
+        app.frame(640, 180);
+        let group = app.retained.cached("long");
+        let extra = if kind == "list" { 8.0 } else { 4.0 };
+        assert!(
+            matches!(group.ops.first(), Some(Op::Rect { y, height, .. }) if *y == -4.0 && *height == group.height + extra),
+            "{kind}"
+        );
+        assert!(
+            matches!(group.ops.get(1), Some(Op::Rect { height, .. }) if *height == group.height),
+            "{kind}"
+        );
+        if kind == "table" {
+            let row = app
+                .retained
+                .cached(&FlowId::Row("long".into(), 0).cache_key());
+            assert!(
+                matches!(row.ops.first(), Some(Op::Rect { height, .. }) if *height == row.height + 4.0)
+            );
+        }
+    }
+}
+
+#[test]
+fn cross_fragment_rows_copy_in_document_order() {
+    let mut app = DocumentUi::new(long_fragment("list", 2), super::tests::test_metrics());
+    app.frame(640, 480);
+    select(&mut app, "entry 0", 0, "entry 1", 7);
+    assert_eq!(
+        app.key(Key::Copy),
+        vec![Command::Copy("entry 0\n2.\nentry 1".into())]
+    );
+}
+
+#[test]
+fn ten_thousand_list_field_edits_do_not_walk_index_or_other_rows() {
+    let mut view = long_fragment("list", 10_000);
+    if let Kind::List { items, .. } = &mut view.children[0].kind {
+        items[9_999] = vec![
+            Node::new(
+                "form",
+                Kind::Fields {
+                    fields: vec![Field {
+                        id: "body".into(),
+                        label: "Body".into(),
+                        value: String::new(),
+                        hint: None,
+                        kind: FieldKind::Block,
+                        read_only: false,
+                        secret: false,
+                    }],
+                },
+            )
+            .id("last.field"),
+        ];
+    }
+    let mut app = DocumentUi::new(view, super::tests::test_metrics());
+    app.frame(640, 220);
+    let visits = app.document.index_visits();
+    app.focus_control(Some(Control::Field {
+        node: "last.field".into(),
+        field: "body".into(),
+    }));
+    for _ in 0..5 {
+        app.drive(
+            misa_window_core::Event::Text("more".into()),
+            std::time::Duration::ZERO,
+        );
+        app.frame(640, 220);
+        assert_eq!(app.document.index_visits(), visits);
+        assert!(app.retained.owner_counts().0 < 32);
+    }
+}
+
+#[test]
+fn unrelated_changes_do_not_recount_huge_tables() {
+    let mut app = DocumentUi::new(
+        Node::section("session")
+            .id("session")
+            .child(long_fragment("table", 10_000).children.remove(0))
+            .child(Node::text("text", [Span::plain("old")]).id("other")),
+        super::tests::test_metrics(),
+    );
+    let (before, tables) = app.document.index_visits();
+    for i in 0..5 {
+        app.observed(&DocumentUpdate::Changed {
+            tree: &[ViewOp::Replace {
+                id: "other".into(),
+                node: Node::text("text", [Span::plain(format!("new {i}"))]).id("other"),
+            }],
+            live: &[],
+            reset_live: false,
+        })
+        .unwrap();
+    }
+    assert_eq!(app.document.index_visits(), (before + 5, tables));
+    assert_eq!(app.document.table_columns("long"), 1);
+}
+
+#[test]
+fn list_shaped_registered_status_stays_atomic_and_animates() {
+    let status = Node::new(
+        "status.indicators",
+        Kind::List {
+            ordered: false,
+            items: vec![
+                vec![
+                    Node::new(
+                        "indicator.activity",
+                        Kind::Status {
+                            text: "running".into(),
+                        },
+                    )
+                    .id("activity"),
+                ],
+                vec![
+                    Node::new(
+                        "indicator.model",
+                        Kind::Status {
+                            text: "model name".into(),
+                        },
+                    )
+                    .id("model"),
+                ],
+            ],
+            markers: vec![],
+        },
+    )
+    .id("status");
+    let mut app = DocumentUi::new(status, super::tests::test_metrics());
+    let scene = app.frame(640, 180);
+    assert!(
+        app.viewport
+            .visible()
+            .iter()
+            .any(|p| p.id == FlowId::Node("status".into()))
+    );
+    assert!(
+        !app.viewport
+            .visible()
+            .iter()
+            .any(|p| matches!(p.id, FlowId::Row(_, _)))
+    );
+    assert!(
+        app.interaction
+            .rows()
+            .iter()
+            .any(|row| row.geometry.text.contains("model name"))
+    );
+    assert!(!scene.ops.is_empty());
+    assert!(!app.retained.placed_indicators().is_empty());
+    for role in ["message.group.footer", "queue"] {
+        let mut app = DocumentUi::new(
+            Node::new(
+                role,
+                Kind::List {
+                    ordered: false,
+                    items: vec![vec![Node::text("entry", [Span::plain("one")]).id("item")]],
+                    markers: vec![],
+                },
+            )
+            .id("composite"),
+            super::tests::test_metrics(),
+        );
+        app.frame(640, 180);
+        assert!(
+            app.viewport
+                .visible()
+                .iter()
+                .any(|p| p.id == FlowId::Node("composite".into()))
+        );
+        assert!(
+            !app.viewport
+                .visible()
+                .iter()
+                .any(|p| matches!(p.id, FlowId::Row(_, _) | FlowId::End(_)))
+        );
+    }
 }
 
 #[test]

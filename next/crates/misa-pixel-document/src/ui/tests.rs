@@ -158,7 +158,7 @@ fn every_kind_retains_the_same_owner_when_measured_without_placement() {
             false,
         );
         assert_eq!(
-            builder.measure_owner("owner", 600.0, &theme),
+            builder.measure_flow(&super::flow::FlowId::Node("owner".into()), 600.0, &theme),
             Some(expected.height),
             "kind {index}"
         );
@@ -177,7 +177,7 @@ fn every_kind_retains_the_same_owner_when_measured_without_placement() {
             "kind {index}"
         );
         assert_eq!(
-            builder.measure_owner("owner", 600.0, &theme),
+            builder.measure_flow(&super::flow::FlowId::Node("owner".into()), 600.0, &theme),
             Some(expected.height)
         );
         let retained_ops = builder.retained.cached("owner").ops.clone();

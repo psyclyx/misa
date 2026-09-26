@@ -11,6 +11,9 @@ use std::collections::HashSet;
 pub(super) enum FlowId {
     Top,
     Node(String),
+    /// Positional row identity: the wire format has no stable item/row IDs.
+    Row(String, usize),
+    End(String),
     Close(String),
     Stream(String),
     StreamClose,
@@ -31,6 +34,20 @@ impl DocumentStore {
                 )
         })
     }
+    pub(super) fn row_count(&self, id: &str) -> Option<usize> {
+        let node = self.node(id)?;
+        if matches!(
+            node.role.as_str(),
+            "status.indicators" | "message.group.footer" | "queue"
+        ) {
+            return None;
+        }
+        match &node.kind {
+            Kind::List { items, .. } => Some(items.len()),
+            Kind::Table { rows, .. } => Some(rows.len() + 1), // header is row zero
+            _ => None,
+        }
+    }
     fn first_flow(&self, id: &str, theme: &Theme) -> FlowId {
         if self.structural(id, theme) {
             if let Some(child) = self.tree.first_child(id) {
@@ -49,6 +66,8 @@ impl DocumentStore {
     fn last_flow(&self, id: &str, theme: &Theme) -> FlowId {
         if self.structural(id, theme) {
             FlowId::Close(id.to_owned())
+        } else if self.row_count(id).is_some() {
+            FlowId::End(id.to_owned())
         } else {
             FlowId::Node(id.to_owned())
         }
@@ -85,6 +104,15 @@ impl DocumentStore {
             FlowId::Top => None,
             FlowId::Bottom => Some(self.last_flow(self.root(), theme)),
             FlowId::Node(id) => Some(self.before_flow(id, theme)),
+            FlowId::Row(id, index) => Some(if *index == 0 {
+                FlowId::Node(id.clone())
+            } else {
+                FlowId::Row(id.clone(), index - 1)
+            }),
+            FlowId::End(id) => Some(self.row_count(id).filter(|count| *count > 0).map_or_else(
+                || FlowId::Node(id.clone()),
+                |count| FlowId::Row(id.clone(), count - 1),
+            )),
             FlowId::Close(id) => {
                 if id == self.stream_parent() && self.first_stream().is_some() {
                     return Some(FlowId::StreamClose);
@@ -109,7 +137,22 @@ impl DocumentStore {
             FlowId::Top => Some(self.first_flow(self.root(), theme)),
             FlowId::Bottom => None,
             FlowId::StreamClose => Some(FlowId::Close(self.stream_parent().to_owned())),
-            FlowId::Node(id) | FlowId::Close(id) => Some(self.after_flow(id, theme)),
+            FlowId::Node(id) => Some(self.row_count(id).map_or_else(
+                || self.after_flow(id, theme),
+                |count| {
+                    if count == 0 {
+                        FlowId::End(id.clone())
+                    } else {
+                        FlowId::Row(id.clone(), 0)
+                    }
+                },
+            )),
+            FlowId::Row(id, index) => Some(if index + 1 < self.row_count(id)? {
+                FlowId::Row(id.clone(), index + 1)
+            } else {
+                FlowId::End(id.clone())
+            }),
+            FlowId::End(id) | FlowId::Close(id) => Some(self.after_flow(id, theme)),
             FlowId::Stream(id) => Some(
                 self.next_stream(id)
                     .map_or_else(|| FlowId::StreamClose, FlowId::Stream),
@@ -165,6 +208,11 @@ impl DocumentStore {
         match id {
             FlowId::Top | FlowId::Bottom => true,
             FlowId::Node(id) => self.contains(id) && !self.structural(id, theme),
+            FlowId::Row(id, index) => {
+                self.row_count(id).is_some_and(|count| *index < count)
+                    && !self.structural(id, theme)
+            }
+            FlowId::End(id) => self.row_count(id).is_some() && !self.structural(id, theme),
             FlowId::Close(id) => self.contains(id) && self.structural(id, theme),
             FlowId::Stream(id) => self.has_stream(id),
             FlowId::StreamClose => self.first_stream().is_some(),
@@ -173,8 +221,16 @@ impl DocumentStore {
 }
 
 impl FlowId {
+    pub(super) fn cache_key(&self) -> String {
+        match self {
+            Self::Node(id) | Self::Stream(id) => id.clone(),
+            Self::Row(id, index) => format!("\0row:{id}:{index}"),
+            Self::End(id) => format!("\0end:{id}"),
+            _ => unreachable!("spacers have no display list"),
+        }
+    }
     fn reading_owner(&self) -> bool {
-        matches!(self, Self::Node(_) | Self::Stream(_))
+        matches!(self, Self::Node(_) | Self::Row(_, _) | Self::Stream(_))
     }
 }
 
@@ -271,9 +327,9 @@ impl FlowSource for LayoutBuilder<'_> {
             FlowId::Top => 20.0,
             FlowId::Bottom => 60.0, // bottom margin and transcript breathing room
             FlowId::Close(_) | FlowId::StreamClose => 5.0,
-            FlowId::Node(id) | FlowId::Stream(id) => {
+            FlowId::Node(_) | FlowId::Row(_, _) | FlowId::End(_) | FlowId::Stream(_) => {
                 let theme = self.theme.clone();
-                self.measure_owner(id, width, &theme)
+                self.measure_flow(id, width, &theme)
                     .expect("indexed flow owner")
             }
         }

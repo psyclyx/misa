@@ -20,7 +20,11 @@ impl LayoutBuilder<'_> {
         scene: &mut Scene,
     ) {
         let mut spans: Vec<(Style, String)> = Vec::new();
-        for child in &node.children {
+        let listed = match &node.kind {
+            Kind::List { items, .. } => items.iter().flatten().collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        for child in node.children.iter().chain(listed) {
             if !child.role.starts_with("indicator.") {
                 continue;
             }
@@ -460,80 +464,14 @@ impl LayoutBuilder<'_> {
                 *y += 22.0;
             }
             Kind::Table { head, rows, .. } => {
-                let columns = head
-                    .len()
-                    .max(rows.iter().map(Vec::len).max().unwrap_or(1))
-                    .max(1);
-                let cell_width = width / columns as f32;
-                let mut source_offset = self.interaction.source_cursor();
-                if source_offset > 0 {
-                    source_offset += 1;
-                }
+                let columns = if self.document.contains(&node.id) {
+                    self.document.table_columns(&node.id)
+                } else {
+                    super::document::table_column_count(head, rows)
+                };
                 for (index, row) in std::iter::once(head).chain(rows.iter()).enumerate() {
-                    let base = theme.role("table.cell");
-                    let cells: Vec<_> = row
-                        .iter()
-                        .map(|cell| {
-                            let start = source_offset;
-                            let runs: Vec<_> = cell
-                                .iter()
-                                .map(|span| {
-                                    (crate::span_style(theme, span, base), span.text.clone())
-                                })
-                                .collect();
-                            source_offset += runs
-                                .iter()
-                                .map(|(_, text)| text.chars().count())
-                                .sum::<usize>()
-                                + 1;
-                            (
-                                start,
-                                TextFlow::new(self.metrics, FONT_SIZE).wrap_with_ranges(
-                                    runs,
-                                    (cell_width - 10.0 - self.prefix_width()).max(0.0),
-                                ),
-                            )
-                        })
-                        .collect();
-                    let lines = cells
-                        .iter()
-                        .map(|(_, rows)| rows.len())
-                        .max()
-                        .unwrap_or(1)
-                        .max(1);
-                    let height = lines as f32 * self.line_height() + 8.0;
-                    scene.ops.push(Op::Rect {
-                        x,
-                        y: *y,
-                        width,
-                        height,
-                        style: if index == 0 {
-                            self.colors.selected_button
-                        } else {
-                            self.colors.button
-                        },
-                    });
-                    for (column, (start, cell)) in cells.into_iter().enumerate() {
-                        let mut previous_end = 0;
-                        for (line, (content, offset, end)) in cell.into_iter().enumerate() {
-                            // Only a new cell or an explicit source break separates
-                            // logical rows; a soft wrap continues this cell's text.
-                            self.interaction
-                                .next_source(start + offset, line > 0 && offset == previous_end);
-                            previous_end = end;
-                            self.row(
-                                scene,
-                                x + column as f32 * cell_width + 5.0,
-                                *y + 4.0 + line as f32 * self.line_height(),
-                                (cell_width - 10.0).max(0.0),
-                                content,
-                            );
-                        }
-                    }
-                    *y += height + 2.0;
+                    self.table_row(row, index, columns, x, y, width, theme, scene);
                 }
-                self.interaction
-                    .finish_source(source_offset.saturating_sub(1));
             }
             Kind::List { .. } => {}
             Kind::Image { blob, alt, .. } => {
@@ -633,6 +571,84 @@ impl LayoutBuilder<'_> {
         (children, quote_prefix)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn table_row(
+        &mut self,
+        row: &[Vec<misa_proto::view::Span>],
+        index: usize,
+        columns: usize,
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        theme: &Theme,
+        scene: &mut Scene,
+    ) {
+        let cell_width = width / columns as f32;
+        let mut source_offset = self.interaction.source_cursor();
+        if source_offset > 0 {
+            source_offset += 1;
+        }
+        let base = theme.role("table.cell");
+        let cells: Vec<_> = row
+            .iter()
+            .map(|cell| {
+                let start = source_offset;
+                let runs: Vec<_> = cell
+                    .iter()
+                    .map(|span| (crate::span_style(theme, span, base), span.text.clone()))
+                    .collect();
+                source_offset += runs
+                    .iter()
+                    .map(|(_, text)| text.chars().count())
+                    .sum::<usize>()
+                    + 1;
+                (
+                    start,
+                    TextFlow::new(self.metrics, FONT_SIZE)
+                        .wrap_with_ranges(runs, (cell_width - 10.0 - self.prefix_width()).max(0.0)),
+                )
+            })
+            .collect();
+        let lines = cells
+            .iter()
+            .map(|(_, rows)| rows.len())
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let height = lines as f32 * self.line_height() + 8.0;
+        scene.ops.push(Op::Rect {
+            x,
+            y: *y,
+            width,
+            height,
+            style: if index == 0 {
+                self.colors.selected_button
+            } else {
+                self.colors.button
+            },
+        });
+        for (column, (start, cell)) in cells.into_iter().enumerate() {
+            let mut previous_end = 0;
+            for (line, (content, offset, end)) in cell.into_iter().enumerate() {
+                // Only a new cell or an explicit source break separates
+                // logical rows; a soft wrap continues this cell's text.
+                self.interaction
+                    .next_source(start + offset, line > 0 && offset == previous_end);
+                previous_end = end;
+                self.row(
+                    scene,
+                    x + column as f32 * cell_width + 5.0,
+                    *y + 4.0 + line as f32 * self.line_height(),
+                    (cell_width - 10.0).max(0.0),
+                    content,
+                );
+            }
+        }
+        *y += height + 2.0;
+        self.interaction
+            .finish_source(source_offset.saturating_sub(1));
+    }
+
     /// Emit indexed owner groups and embedded children in their original order.
     fn paint_children(
         &mut self,
@@ -650,24 +666,18 @@ impl LayoutBuilder<'_> {
         } = &node.kind
         {
             for (index, item) in items.iter().enumerate() {
-                self.row(
-                    scene,
+                self.list_item(
+                    node,
+                    *ordered,
+                    markers.get(index).copied().flatten(),
+                    index,
+                    item,
                     x,
-                    *y,
+                    y,
                     width,
-                    vec![(
-                        theme.role(&node.role),
-                        match markers.get(index).copied().flatten() {
-                            Some(true) => "☑".into(),
-                            Some(false) => "☐".into(),
-                            None if *ordered => format!("{}.", index + 1),
-                            None => "•".into(),
-                        },
-                    )],
+                    theme,
+                    scene,
                 );
-                for child in item {
-                    self.node_uncached(child, x + 25.0, y, (width - 25.0).max(10.0), theme, scene);
-                }
             }
         }
         for id in self.document.children(&node.id) {
@@ -687,7 +697,41 @@ impl LayoutBuilder<'_> {
         }
     }
 
-    fn paint_self_actions(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn list_item(
+        &mut self,
+        node: &Node,
+        ordered: bool,
+        marker: Option<bool>,
+        index: usize,
+        item: &[Node],
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        theme: &Theme,
+        scene: &mut Scene,
+    ) {
+        self.row(
+            scene,
+            x,
+            *y,
+            width,
+            vec![(
+                theme.role(&node.role),
+                match marker {
+                    Some(true) => "☑".into(),
+                    Some(false) => "☐".into(),
+                    None if ordered => format!("{}.", index + 1),
+                    None => "•".into(),
+                },
+            )],
+        );
+        for child in item {
+            self.node_uncached(child, x + 25.0, y, (width - 25.0).max(10.0), theme, scene);
+        }
+    }
+
+    pub(super) fn paint_self_actions(
         &mut self,
         node: &Node,
         x: f32,

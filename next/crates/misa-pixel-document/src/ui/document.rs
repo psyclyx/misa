@@ -10,6 +10,8 @@ use std::sync::Arc;
 #[derive(Default)]
 pub(super) struct Changes {
     pub ids: BTreeSet<String>,
+    /// A projected stream changed only this fragment's trailing content.
+    pub end_ids: BTreeSet<String>,
     /// Owners whose semantic text may have changed, not incidental ancestors.
     pub retired: BTreeSet<String>,
     pub full: bool,
@@ -18,6 +20,14 @@ pub(super) struct Changes {
 pub(super) struct DocumentStore {
     pub(super) tree: IndexedTree,
     root: String,
+    table_columns: BTreeMap<String, usize>,
+    // Embedded list descendants are addressed by their indexed owner and row.
+    embedded_rows: BTreeMap<String, (String, usize)>,
+    embedded_by_owner: BTreeMap<String, BTreeSet<String>>,
+    #[cfg(test)]
+    indexed_nodes_visited: Cell<usize>,
+    #[cfg(test)]
+    tables_visited: Cell<usize>,
     streams: BTreeMap<String, LiveStream>,
     // Nonempty streams grouped by owner, including those suppressed by the tree.
     streams_by_owner: BTreeMap<String, BTreeSet<(String, u8, String)>>,
@@ -31,16 +41,30 @@ pub(super) struct DocumentStore {
 impl DocumentStore {
     pub fn new(view: Node) -> Self {
         let root = view.id.clone();
-        Self {
-            tree: IndexedTree::new(view),
+        let tree = IndexedTree::new(view);
+        let table_columns = table_columns(&tree);
+        let mut store = Self {
+            tree,
             root,
+            table_columns,
+            embedded_rows: BTreeMap::new(),
+            embedded_by_owner: BTreeMap::new(),
+            #[cfg(test)]
+            indexed_nodes_visited: Cell::new(0),
+            #[cfg(test)]
+            tables_visited: Cell::new(0),
             streams: BTreeMap::new(),
             streams_by_owner: BTreeMap::new(),
             visible_stream_order: BTreeSet::new(),
             #[cfg(test)]
             visibility_checks: Cell::new(0),
             images: BTreeMap::new(),
+        };
+        let ids: Vec<_> = store.tree.nodes().map(|node| node.id.clone()).collect();
+        for id in ids {
+            store.index_owner(&id);
         }
+        store
     }
     pub fn root(&self) -> &str {
         &self.root
@@ -48,21 +72,63 @@ impl DocumentStore {
     pub fn node(&self, id: &str) -> Option<&Node> {
         self.tree.node(id)
     }
+    pub(super) fn set_measurement_columns(&mut self, id: &str, columns: usize) {
+        self.table_columns.insert(id.to_owned(), columns);
+    }
+    pub(super) fn table_columns(&self, id: &str) -> usize {
+        self.table_columns.get(id).copied().unwrap_or(1)
+    }
+    pub(super) fn fragment_owner(&self, id: &str) -> Option<(&str, usize)> {
+        self.embedded_rows
+            .get(id)
+            .map(|(owner, row)| (owner.as_str(), *row))
+    }
+    fn unindex_owner(&mut self, id: &str) {
+        if let Some(ids) = self.embedded_by_owner.remove(id) {
+            for child in ids {
+                self.embedded_rows.remove(&child);
+            }
+        }
+        self.table_columns.remove(id);
+    }
+    fn index_owner(&mut self, id: &str) {
+        let Some(node) = self.tree.node(id) else {
+            return;
+        };
+        #[cfg(test)]
+        self.indexed_nodes_visited
+            .set(self.indexed_nodes_visited.get() + 1);
+        if let Kind::Table { head, rows, .. } = &node.kind {
+            #[cfg(test)]
+            self.tables_visited.set(self.tables_visited.get() + 1);
+            self.table_columns
+                .insert(id.to_owned(), table_column_count(head, rows));
+        }
+        if let Kind::List { items, .. } = &node.kind {
+            let mut ids = BTreeSet::new();
+            for (row, item) in items.iter().enumerate() {
+                for child in item {
+                    collect_embedded(child, &mut |id| {
+                        ids.insert(id.to_owned());
+                        self.embedded_rows
+                            .insert(id.to_owned(), (node.id.clone(), row));
+                    });
+                }
+            }
+            self.embedded_by_owner.insert(id.to_owned(), ids);
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn index_visits(&self) -> (usize, usize) {
+        (self.indexed_nodes_visited.get(), self.tables_visited.get())
+    }
     /// Fields in list items are embedded in their list owner, not separate index entries.
     /// The cache owner of a node embedded inside a list item is its indexed list.
     pub fn cache_owner<'a>(&'a self, id: &'a str) -> &'a str {
         if self.tree.contains(id) || id == "streams" || self.streams.contains_key(id) {
             return id;
         }
-        fn contains(node: &Node, id: &str) -> bool {
-            node.id == id
-                || node.children.iter().any(|child| contains(child, id))
-                || matches!(&node.kind, Kind::List { items, .. } if items.iter().flatten().any(|child| contains(child, id)))
-        }
-        self.tree
-            .nodes()
-            .find(|node| contains(node, id))
-            .map_or(id, |node| node.id.as_str())
+        self.fragment_owner(id).map_or(id, |(owner, _)| owner)
     }
     pub fn field(&self, id: &str, field: &str) -> Option<&misa_proto::view::Field> {
         fn find<'a>(node: &'a Node, id: &str, field: &str) -> Option<&'a misa_proto::view::Field> {
@@ -88,7 +154,16 @@ impl DocumentStore {
         self.tree
             .node(id)
             .and_then(|node| find(node, id, field))
-            .or_else(|| self.tree.nodes().find_map(|node| find(node, id, field)))
+            .or_else(|| {
+                let (owner, row) = self.fragment_owner(id)?;
+                let Kind::List { items, .. } = &self.tree.node(owner)?.kind else {
+                    return None;
+                };
+                items
+                    .get(row)?
+                    .iter()
+                    .find_map(|node| find(node, id, field))
+            })
     }
     pub fn stream_or_node(&self, id: &str) -> Option<&Node> {
         self.streams
@@ -253,6 +328,13 @@ impl DocumentStore {
     fn reset(&mut self, view: Node) -> Changes {
         self.root = view.id.clone();
         self.tree = IndexedTree::new(view);
+        self.table_columns.clear();
+        self.embedded_rows.clear();
+        self.embedded_by_owner.clear();
+        let ids: Vec<_> = self.tree.nodes().map(|node| node.id.clone()).collect();
+        for id in ids {
+            self.index_owner(&id);
+        }
         self.streams.clear();
         self.streams_by_owner.clear();
         self.visible_stream_order.clear();
@@ -311,7 +393,23 @@ impl DocumentStore {
                             }
                         }
                     }
+                    // Only the old and new indexed subtrees can change row addresses
+                    // or table widths. No walk of unrelated history is needed.
+                    if let ViewOp::Remove { id } | ViewOp::Replace { id, .. } = op {
+                        for owner in
+                            std::iter::once(id.clone()).chain(removed_owners.iter().cloned())
+                        {
+                            self.unindex_owner(&owner);
+                        }
+                    }
                     self.tree.apply(op)?;
+                    if let ViewOp::Insert { node, .. } | ViewOp::Replace { node, .. } = op {
+                        let mut pending = vec![node.id.clone()];
+                        while let Some(id) = pending.pop() {
+                            pending.extend(self.children(&id));
+                            self.index_owner(&id);
+                        }
+                    }
                     for owner in removed_owners {
                         self.refresh_stream_owner(&owner);
                     }
@@ -336,7 +434,11 @@ impl DocumentStore {
     }
     fn invalidate_stream_projection(&self, changes: &mut Changes) {
         changes.ids.insert("streams".into());
-        changes.ids.insert(self.stream_parent().into());
+        if self.row_count(self.stream_parent()).is_some() {
+            changes.end_ids.insert(self.stream_parent().into());
+        } else {
+            changes.ids.insert(self.stream_parent().into());
+        }
     }
     fn reset_streams(&mut self, streams: &[misa_proto::sync::Stream], changes: &mut Changes) {
         changes.ids.extend(self.streams.keys().cloned());
@@ -421,6 +523,36 @@ impl DocumentStore {
             full: evicted,
             ..Changes::default()
         })
+    }
+}
+
+pub(super) fn table_column_count(head: &[Vec<Span>], rows: &[Vec<Vec<Span>>]) -> usize {
+    head.len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(1))
+        .max(1)
+}
+
+fn table_columns(tree: &IndexedTree) -> BTreeMap<String, usize> {
+    tree.nodes()
+        .filter_map(|node| {
+            if let Kind::Table { head, rows, .. } = &node.kind {
+                Some((node.id.clone(), table_column_count(head, rows)))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn collect_embedded(node: &Node, visit: &mut impl FnMut(&str)) {
+    visit(&node.id);
+    for child in &node.children {
+        collect_embedded(child, visit);
+    }
+    if let Kind::List { items, .. } = &node.kind {
+        for child in items.iter().flatten() {
+            collect_embedded(child, visit);
+        }
     }
 }
 

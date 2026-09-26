@@ -36,6 +36,7 @@ pub(super) struct Cached {
 #[derive(Default)]
 pub(super) struct RetainedScenes {
     cache: BTreeMap<String, Arc<Cached>>,
+    row_keys: BTreeMap<String, BTreeSet<String>>,
     moving: BTreeSet<String>,
     stack: Vec<Vec<Placement>>,
     placed: Vec<IndicatorBounds>,
@@ -53,9 +54,31 @@ pub(super) struct RetainedScenes {
 impl RetainedScenes {
     pub(super) fn clear(&mut self) {
         self.cache.clear();
+        self.row_keys.clear();
         self.moving.clear();
         self.stack.clear();
         self.placed.clear();
+    }
+
+    pub(super) fn clear_owner(&mut self, id: &str) {
+        if let Some(keys) = self.row_keys.remove(id) {
+            for key in keys {
+                self.cache.remove(&key);
+            }
+        }
+        self.cache.remove(id);
+    }
+
+    pub(super) fn invalidate_end(&mut self, id: &str) {
+        let key = format!("\0end:{id}");
+        self.cache.remove(&key);
+        if let Some(keys) = self.row_keys.get_mut(id) {
+            keys.remove(&key);
+        }
+    }
+
+    pub(super) fn row_keys(&self, id: &str) -> impl Iterator<Item = &String> {
+        self.row_keys.get(id).into_iter().flatten()
     }
 
     pub(super) fn invalidate(&mut self, id: &str, document: &document::DocumentStore) {
@@ -64,14 +87,32 @@ impl RetainedScenes {
         if !document.contains(id) && document.stream_or_node(id).is_some() {
             self.cache.remove(id);
             self.cache.remove("streams");
-            self.invalidate(document.stream_parent(), document);
+            if document.row_count(document.stream_parent()).is_some() {
+                self.invalidate_end(document.stream_parent());
+            } else {
+                self.invalidate(document.stream_parent(), document);
+            }
             return;
         }
-        let mut cursor = Some(document.cache_owner(id).to_string());
-        while let Some(id) = cursor {
-            self.cache.remove(&id);
-            self.moving.remove(&id);
-            cursor = document.parent(&id).map(str::to_owned);
+        if let Some((owner, row)) = document.fragment_owner(id) {
+            let key = format!("\0row:{owner}:{row}");
+            self.cache.remove(&key);
+            if let Some(keys) = self.row_keys.get_mut(owner) {
+                keys.remove(&key);
+            }
+            let mut cursor = Some(owner);
+            while let Some(id) = cursor {
+                self.cache.remove(id);
+                self.moving.remove(id);
+                cursor = document.parent(id);
+            }
+        } else {
+            let mut cursor = Some(document.cache_owner(id).to_string());
+            while let Some(id) = cursor {
+                self.clear_owner(&id);
+                self.moving.remove(&id);
+                cursor = document.parent(&id).map(str::to_owned);
+            }
         }
     }
 
@@ -85,6 +126,9 @@ impl RetainedScenes {
         } else {
             for id in changes.ids {
                 self.invalidate(&id, document);
+            }
+            for id in changes.end_ids {
+                self.invalidate_end(&id);
             }
         }
     }
@@ -124,10 +168,14 @@ impl RetainedScenes {
     }
 
     pub(super) fn observe_status(&mut self, model: &Node) {
-        let moving = model
-            .children
-            .iter()
-            .any(|child| child.role == "indicator.activity" && indicator_value(child) != "ready");
+        let listed = match &model.kind {
+            Kind::List { items, .. } => items.iter().flatten().collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let moving =
+            model.children.iter().chain(listed).any(|child| {
+                child.role == "indicator.activity" && indicator_value(child) != "ready"
+            });
         if moving {
             self.moving.insert(model.id.clone());
         } else {
@@ -157,6 +205,19 @@ impl RetainedScenes {
             children,
             phase: moving.then_some(self.phase),
         });
+        if let Some(rest) = id.strip_prefix("\0row:") {
+            if let Some((owner, _)) = rest.rsplit_once(':') {
+                self.row_keys
+                    .entry(owner.to_owned())
+                    .or_default()
+                    .insert(id.to_owned());
+            }
+        } else if let Some(owner) = id.strip_prefix("\0end:") {
+            self.row_keys
+                .entry(owner.to_owned())
+                .or_default()
+                .insert(id.to_owned());
+        }
         self.cache.insert(id.to_string(), cached.clone());
         cached
     }

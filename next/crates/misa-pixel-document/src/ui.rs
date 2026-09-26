@@ -266,6 +266,10 @@ impl DocumentUi {
     }
 
     fn invalidate(&mut self, id: &str) {
+        if let Some((owner, index)) = self.document.fragment_owner(id) {
+            self.viewport
+                .invalidate(&flow::FlowId::Row(owner.to_owned(), index));
+        }
         // List-item fields are embedded in their indexed list owner.
         let mut cursor = Some(self.document.cache_owner(id));
         while let Some(owner) = cursor {
@@ -315,6 +319,25 @@ impl DocumentUi {
         if changes.full {
             self.viewport.clear_measurements();
         } else {
+            // Retire every measured fragment for a changed or removed owner,
+            // including owners already absent from the canonical index.
+            for id in &changes.ids {
+                for key in self.retained.row_keys(id) {
+                    if let Some(index) = key
+                        .strip_prefix("\0row:")
+                        .and_then(|rest| rest.rsplit_once(':'))
+                        .and_then(|(_, row)| row.parse().ok())
+                    {
+                        self.viewport
+                            .invalidate(&flow::FlowId::Row(id.clone(), index));
+                    } else {
+                        self.viewport.invalidate(&flow::FlowId::End(id.clone()));
+                    }
+                }
+            }
+            for id in &changes.end_ids {
+                self.viewport.invalidate(&flow::FlowId::End(id.clone()));
+            }
             for id in &changes.ids {
                 let mut cursor = Some(id.as_str());
                 while let Some(owner) = cursor {
@@ -393,9 +416,16 @@ impl DocumentUi {
         let constraints = self.viewport.constraints();
         self.retained.begin_placement(constraints.height);
         for placement in self.viewport.visible() {
-            if let flow::FlowId::Node(id) | flow::FlowId::Stream(id) = &placement.id {
-                if let Some(cached) = self.retained.get(id, constraints.width) {
-                    self.retained.place(id, &cached, placement.y);
+            if matches!(
+                placement.id,
+                flow::FlowId::Node(_)
+                    | flow::FlowId::Stream(_)
+                    | flow::FlowId::Row(_, _)
+                    | flow::FlowId::End(_)
+            ) {
+                let key = placement.id.cache_key();
+                if let Some(cached) = self.retained.get(&key, constraints.width) {
+                    self.retained.place(&key, &cached, placement.y);
                 }
             }
         }
@@ -599,8 +629,10 @@ impl DocumentUi {
                 .visible()
                 .iter()
                 .find(|p| {
-                    matches!(p.id, flow::FlowId::Node(_) | flow::FlowId::Stream(_))
-                        && y >= p.y
+                    matches!(
+                        p.id,
+                        flow::FlowId::Node(_) | flow::FlowId::Stream(_) | flow::FlowId::Row(_, _)
+                    ) && y >= p.y
                         && y < p.y + p.height
                 })
                 .cloned()

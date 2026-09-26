@@ -14,7 +14,9 @@ mod tests;
 /// A single atomic owner's production layout inputs, independent of the live UI.
 /// The width is the *content* width passed to `measure_owner`, not the window width.
 pub(super) struct HeightSnapshot {
-    owner: String,
+    owner: FlowId,
+    row_content_index: Option<usize>,
+    columns: Option<usize>,
     root: Node,
     streams: Vec<Node>,
     images: BTreeMap<String, Arc<image::RgbaImage>>,
@@ -36,27 +38,95 @@ impl HeightSnapshot {
         } else {
             Theme::dark()
         };
+        let mut row_content_index = None;
+        let mut columns = None;
         let (owner, mut root, include_streams) = match id {
+            FlowId::Row(owner, index) if ui.document.row_count(owner).is_some() => {
+                let original = ui.document.node(owner).ok_or(SnapshotError::MissingOwner)?;
+                columns = matches!(original.kind, Kind::Table { .. })
+                    .then(|| ui.document.table_columns(owner));
+                let kind = match &original.kind {
+                    Kind::List {
+                        ordered,
+                        items,
+                        markers,
+                    } => {
+                        row_content_index = Some(0);
+                        Kind::List {
+                            ordered: *ordered,
+                            items: vec![
+                                items
+                                    .get(*index)
+                                    .ok_or(SnapshotError::MissingOwner)?
+                                    .clone(),
+                            ],
+                            markers: vec![markers.get(*index).copied().flatten()],
+                        }
+                    }
+                    Kind::Table { head, rows, align } if *index == 0 => Kind::Table {
+                        head: head.clone(),
+                        rows: vec![],
+                        align: align.clone(),
+                    },
+                    Kind::Table { rows, align, .. } => {
+                        row_content_index = Some(1);
+                        Kind::Table {
+                            head: vec![],
+                            rows: vec![
+                                rows.get(index - 1)
+                                    .ok_or(SnapshotError::MissingOwner)?
+                                    .clone(),
+                            ],
+                            align: align.clone(),
+                        }
+                    }
+                    _ => return Err(SnapshotError::MissingOwner),
+                };
+                (id.clone(), Node::new(&original.role, kind).id(owner), false)
+            }
+            FlowId::End(owner) if ui.document.row_count(owner).is_some() => {
+                let original = ui.document.node(owner).ok_or(SnapshotError::MissingOwner)?;
+                let mut root = Node::new(&original.role, empty_flow_kind(&original.kind)).id(owner);
+                root.children = ui
+                    .document
+                    .children(owner)
+                    .iter()
+                    .filter_map(|child| ui.document.subtree(child))
+                    .collect();
+                root.actions = original.actions.clone();
+                let include_streams = owner == ui.document.stream_parent();
+                (id.clone(), root, include_streams)
+            }
             // `retain_owner` resolves this synthetic group before the tree lookup.
             FlowId::Node(id) if id == "streams" => (
-                id.clone(),
+                FlowId::Node(id.clone()),
                 Node::section("measurement").id("__measurement_root"),
                 true,
             ),
             FlowId::Node(id) if ui.document.contains(id) && !ui.document.structural(id, &theme) => {
-                let root = ui.document.subtree(id).ok_or(SnapshotError::MissingOwner)?;
-                let include_streams = contains_id(&root, ui.document.stream_parent());
-                (id.clone(), root, include_streams)
+                let original = ui.document.node(id).ok_or(SnapshotError::MissingOwner)?;
+                if ui.document.row_count(id).is_some() {
+                    let mut root =
+                        Node::new(&original.role, empty_flow_kind(&original.kind)).id(id);
+                    root.label = original.label.clone();
+                    (FlowId::Node(id.clone()), root, false)
+                } else {
+                    let root = ui.document.subtree(id).ok_or(SnapshotError::MissingOwner)?;
+                    let include_streams = contains_id(&root, ui.document.stream_parent());
+                    (FlowId::Node(id.clone()), root, include_streams)
+                }
             }
             FlowId::Stream(id) if ui.document.has_stream(id) => (
-                id.clone(),
+                FlowId::Stream(id.clone()),
                 ui.document
                     .stream_or_node(id)
                     .ok_or(SnapshotError::MissingOwner)?
                     .clone(),
                 false,
             ),
-            FlowId::Node(_) | FlowId::Stream(_) => return Err(SnapshotError::MissingOwner),
+            FlowId::Node(_) | FlowId::Stream(_) | FlowId::Row(_, _) | FlowId::End(_) => {
+                return Err(SnapshotError::MissingOwner);
+            }
             FlowId::Top | FlowId::Close(_) | FlowId::StreamClose | FlowId::Bottom => {
                 return Err(SnapshotError::NotAtomic);
             }
@@ -78,6 +148,8 @@ impl HeightSnapshot {
         }
         Ok(Self {
             owner,
+            row_content_index,
+            columns,
             root,
             streams,
             images,
@@ -85,6 +157,22 @@ impl HeightSnapshot {
             width,
             light: ui.light,
         })
+    }
+}
+
+fn empty_flow_kind(kind: &Kind) -> Kind {
+    match kind {
+        Kind::List { ordered, .. } => Kind::List {
+            ordered: *ordered,
+            items: vec![],
+            markers: vec![],
+        },
+        Kind::Table { align, .. } => Kind::Table {
+            head: vec![],
+            rows: vec![],
+            align: align.clone(),
+        },
+        _ => unreachable!(),
     }
 }
 
@@ -145,6 +233,11 @@ fn prepare(
 /// geometry are dropped here; neither a scene nor GPU resources leave this call.
 pub(super) fn measure(snapshot: HeightSnapshot, metrics: Arc<dyn TextMetrics>) -> f32 {
     let mut ui = DocumentUi::new(snapshot.root, metrics);
+    if let Some(columns) = snapshot.columns {
+        if let FlowId::Row(owner, _) = &snapshot.owner {
+            ui.document.set_measurement_columns(owner, columns);
+        }
+    }
     ui.set_light(snapshot.light);
     ui.document
         .install_measurement_resources(snapshot.streams, snapshot.images);
@@ -165,7 +258,10 @@ pub(super) fn measure(snapshot: HeightSnapshot, metrics: Arc<dyn TextMetrics>) -
         ui.metrics.as_ref(),
         ui.light,
     );
-    builder
-        .measure_owner(&snapshot.owner, snapshot.width, &theme)
-        .expect("captured atomic owner must exist in private document")
+    builder.row_content_index = snapshot.row_content_index;
+    match &snapshot.owner {
+        FlowId::Node(id) if id == "streams" => builder.measure_owner(id, snapshot.width, &theme),
+        _ => builder.measure_flow(&snapshot.owner, snapshot.width, &theme),
+    }
+    .expect("captured atomic owner must exist in private document")
 }

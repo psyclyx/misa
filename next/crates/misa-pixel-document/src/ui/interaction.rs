@@ -121,11 +121,15 @@ impl InteractionMap {
         self.selection = None;
     }
     pub(super) fn retire(&mut self, ids: &BTreeSet<String>) {
-        if self
-            .selection
-            .as_ref()
-            .is_some_and(|s| s.parts.iter().any(|p| ids.contains(&p.owner)))
-        {
+        if self.selection.as_ref().is_some_and(|s| {
+            s.parts.iter().any(|p| {
+                ids.contains(&p.owner)
+                    || ids.iter().any(|id| {
+                        p.owner.starts_with(&format!("\0row:{id}:"))
+                            || p.owner == format!("\0end:{id}")
+                    })
+            })
+        }) {
             self.clear_selection();
         }
     }

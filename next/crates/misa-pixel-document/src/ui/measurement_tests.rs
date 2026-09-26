@@ -5,6 +5,14 @@ use misa_proto::sync::{Stream, StreamUpdate};
 use misa_proto::view::{BlobRef, Definition, Field, Span};
 
 fn parity(app: &mut DocumentUi, id: FlowId) {
+    if let FlowId::Node(owner) = &id {
+        if let Some(count) = app.document.row_count(owner) {
+            for index in 0..count {
+                parity(app, FlowId::Row(owner.clone(), index));
+            }
+            parity(app, FlowId::End(owner.clone()));
+        }
+    }
     for width in [140.0, 600.0] {
         for light in [false, true] {
             app.set_light(light);
@@ -22,16 +30,7 @@ fn parity(app: &mut DocumentUi, id: FlowId) {
                     app.metrics.as_ref(),
                     light,
                 );
-                builder
-                    .measure_owner(
-                        match &id {
-                            FlowId::Node(id) | FlowId::Stream(id) => id,
-                            _ => unreachable!(),
-                        },
-                        width,
-                        &theme,
-                    )
-                    .unwrap()
+                builder.measure_flow(&id, width, &theme).unwrap()
             };
             let snapshot = HeightSnapshot::capture(app, &id, width).unwrap();
             assert_eq!(
@@ -41,6 +40,101 @@ fn parity(app: &mut DocumentUi, id: FlowId) {
             );
         }
     }
+}
+
+#[test]
+fn fragmented_row_snapshot_matches_decoded_image_and_edited_field() {
+    let image = Node::new(
+        "image",
+        Kind::Image {
+            blob: BlobRef {
+                hash: "row-image".into(),
+                len: 16,
+                media: None,
+            },
+            alt: "preview".into(),
+            width: 2,
+            height: 2,
+        },
+    )
+    .id("row.image");
+    let field = Node::new(
+        "form",
+        Kind::Fields {
+            fields: vec![Field {
+                id: "body".into(),
+                label: "Body".into(),
+                value: "initial".into(),
+                hint: None,
+                kind: FieldKind::Block,
+                read_only: false,
+                secret: false,
+            }],
+        },
+    )
+    .id("row.field");
+    let mut app = DocumentUi::new(
+        Node::new(
+            "list",
+            Kind::List {
+                ordered: false,
+                items: vec![vec![image, field]],
+                markers: vec![],
+            },
+        )
+        .id("list"),
+        ui_tests::test_metrics(),
+    );
+    let row = FlowId::Row("list".into(), 0);
+    parity(&mut app, row.clone());
+    app.image("row-image".into(), Arc::new(image::RgbaImage::new(2, 2)));
+    app.frame(140, 240);
+    app.focus_control(Some(super::super::Control::Field {
+        node: "row.field".into(),
+        field: "body".into(),
+    }));
+    app.drive(
+        misa_window_core::Event::Text("\nsecond line".into()),
+        std::time::Duration::ZERO,
+    );
+    app.frame(140, 240);
+    parity(&mut app, row);
+}
+
+#[test]
+fn table_tail_snapshot_uses_columns_from_offscreen_rows() {
+    let mut app = DocumentUi::new(
+        Node::new(
+            "table",
+            Kind::Table {
+                head: vec![vec![Span::plain("head")]],
+                rows: vec![
+                    vec![
+                        vec![Span::plain("one")],
+                        vec![Span::plain("two")],
+                        vec![Span::plain("three")],
+                    ],
+                    vec![vec![Span::plain(
+                        "tail wraps when it gets a third of the width",
+                    )]],
+                ],
+                align: vec![],
+            },
+        )
+        .id("table"),
+        ui_tests::test_metrics(),
+    );
+    assert_eq!(app.document.table_columns("table"), 3);
+    parity(&mut app, FlowId::Row("table".into(), 2));
+    app.frame(140, 220);
+    let tail = app
+        .viewport
+        .visible()
+        .iter()
+        .find(|p| p.id == FlowId::Row("table".into(), 2))
+        .unwrap();
+    let snapshot = HeightSnapshot::capture(&app, &tail.id, 100.0).unwrap();
+    assert_eq!(measure(snapshot, ui_tests::test_metrics()), tail.height);
 }
 
 #[test]
