@@ -34,6 +34,11 @@ impl LayoutBuilder<'_> {
         width: f32,
         spans: Vec<(Style, String)>,
     ) {
+        let prefix = self
+            .prefixes
+            .iter()
+            .map(|(_, value)| value.chars().count())
+            .sum();
         let spans = self.prefixes.iter().cloned().chain(spans).collect();
         let flow = TextFlow::new(self.metrics, FONT_SIZE);
         let bounds = Rect {
@@ -46,15 +51,7 @@ impl LayoutBuilder<'_> {
         // The entire bounded row is selectable, including blank lines and
         // the space after the last glyph (which maps to the final caret).
         self.interaction
-            .add_row(x, y, bounds.width, bounds.height, geometry);
-    }
-
-    pub(super) fn wrap_runs(
-        &self,
-        spans: Vec<(Style, String)>,
-        budget: f32,
-    ) -> Vec<Vec<(Style, String)>> {
-        TextFlow::new(self.metrics, FONT_SIZE).wrap(spans, budget)
+            .add_row(x, y, bounds.width, bounds.height, geometry, prefix);
     }
 
     pub(super) fn wrapped(
@@ -72,8 +69,17 @@ impl LayoutBuilder<'_> {
             .iter()
             .map(|span| (crate::span_style(theme, span, base), span.text.clone()))
             .collect();
-        for line in self.wrap_runs(runs, (width - prefix).max(0.0)) {
+        let mut previous_end = 0;
+        for (index, (line, start, end)) in TextFlow::new(self.metrics, FONT_SIZE)
+            .wrap_with_ranges(runs, (width - prefix).max(0.0))
+            .into_iter()
+            .enumerate()
+        {
+            if index > 0 {
+                self.interaction.continue_row(start - previous_end);
+            }
             self.row(scene, x, *y, width, line);
+            previous_end = end;
             *y += self.line_height();
         }
     }

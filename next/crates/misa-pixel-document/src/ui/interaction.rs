@@ -1,6 +1,4 @@
-//! Frame-local interaction geometry and persistent selection/focus state.
-//! Cached groups use the same coordinates for paint and hit testing; only this
-//! owner rebases their row indices when placing them in a frame.
+//! Frame-local interaction geometry and persistent semantic selection.
 use super::{Control, text};
 use misa_pixel_ui::{FieldViewport, LaidOutRow, Op, PlacedField, Scene};
 use misa_style::Style;
@@ -24,9 +22,15 @@ impl Hit {
 pub(super) struct TextRow {
     pub(super) x: f32,
     pub(super) y: f32,
-    /// The same local viewport used by the paint op and the hit rectangle.
     pub(super) width: f32,
     pub(super) geometry: Arc<LaidOutRow>,
+    owner: String,
+    /// Scalar offset in the owner's logical text (not a frame row number).
+    source_start: usize,
+    prefix: usize,
+    /// Soft wrap versus explicit source break / separate logical row.
+    continued: bool,
+    break_before: bool,
 }
 impl TextRow {
     fn column(&self, x: f32) -> usize {
@@ -39,6 +43,31 @@ impl TextRow {
         let advances = &self.geometry.advances;
         advances[column.min(advances.len() - 1)].min(self.width)
     }
+    fn point(&self, column: usize) -> (String, usize) {
+        (
+            self.owner.clone(),
+            self.source_start
+                + column
+                    .min(self.geometry.text.chars().count())
+                    .saturating_sub(self.prefix),
+        )
+    }
+}
+#[derive(Clone, Debug)]
+struct SelectedPart {
+    owner: String,
+    start: usize,
+    end: usize,
+}
+#[derive(Clone, Debug)]
+struct Selection {
+    anchor: (String, usize),
+    anchor_at_end: bool,
+    #[cfg_attr(not(test), allow(dead_code))]
+    head: (String, usize),
+    parts: Vec<SelectedPart>,
+    /// The selected content is independent of viewport residency and reflow.
+    text: String,
 }
 #[derive(Default)]
 pub(super) struct InteractionMap {
@@ -46,13 +75,18 @@ pub(super) struct InteractionMap {
     rows: Vec<TextRow>,
     focus: Option<Control>,
     expanded: BTreeSet<String>,
-    selection: Option<((usize, usize), (usize, usize))>,
+    selection: Option<Selection>,
+    owner: String,
+    cursor: usize,
+    continues: bool,
 }
-
 #[derive(Clone)]
 pub(super) struct GroupGeometry {
     hits: Vec<Hit>,
     rows: Vec<TextRow>,
+    owner: String,
+    cursor: usize,
+    continues: bool,
 }
 #[cfg(test)]
 impl GroupGeometry {
@@ -60,13 +94,11 @@ impl GroupGeometry {
         &self.rows
     }
 }
-
 pub(super) enum PointerResult {
     None,
     SelectionChanged,
     Activate(Control),
 }
-
 impl InteractionMap {
     pub(super) fn is_expanded(&self, id: &str) -> bool {
         self.expanded.contains(id)
@@ -88,9 +120,18 @@ impl InteractionMap {
     pub(super) fn clear_selection(&mut self) {
         self.selection = None;
     }
+    pub(super) fn retire(&mut self, ids: &BTreeSet<String>) {
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|s| s.parts.iter().any(|p| ids.contains(&p.owner)))
+        {
+            self.clear_selection();
+        }
+    }
     pub(super) fn select_all(&mut self) {
         if !self.rows.is_empty() {
-            self.selection = Some(((0, 0), (self.rows.len() - 1, usize::MAX)));
+            self.set_selection((0, 0), (self.rows.len() - 1, usize::MAX));
         }
     }
     pub(super) fn next_focus(&mut self, backward: bool) {
@@ -119,16 +160,30 @@ impl InteractionMap {
             return PointerResult::None;
         };
         if let Control::Text(index) = &hit.control {
-            // A text hit is always registered together with its measured row.
-            let row = &self.rows[*index];
-            let point = (*index, row.column(x));
+            let point = (*index, self.rows[*index].column(x));
             if dragging {
-                if let Some((_, head)) = &mut self.selection {
-                    *head = point;
+                if let Some(selection) = &self.selection {
+                    let anchor = &selection.anchor;
+                    let candidates = self.rows.iter().enumerate().filter_map(|(i, row)| {
+                        let length = row.geometry.text.chars().count().saturating_sub(row.prefix);
+                        (row.owner == anchor.0
+                            && anchor.1 >= row.source_start
+                            && anchor.1 <= row.source_start + length)
+                            .then_some((i, row.prefix + anchor.1.saturating_sub(row.source_start)))
+                    });
+                    let anchor_row = if selection.anchor_at_end {
+                        candidates.into_iter().next()
+                    } else {
+                        candidates.into_iter().last()
+                    };
+                    let Some((row_index, column)) = anchor_row else {
+                        return PointerResult::None;
+                    };
+                    self.set_selection((row_index, column), point);
                     return PointerResult::SelectionChanged;
                 }
             } else {
-                self.selection = Some((point, point));
+                self.set_selection(point, point);
                 self.focus = None;
                 return PointerResult::SelectionChanged;
             }
@@ -149,25 +204,50 @@ impl InteractionMap {
     pub(super) fn clear_hits(&mut self) {
         self.hits.clear();
     }
-    /// Scroll/repaint preserves selection, but a changed view can retire its rows.
-    pub(super) fn finish_frame(&mut self) {
-        if self
-            .selection
-            .is_some_and(|(anchor, head)| anchor.0 >= self.rows.len() || head.0 >= self.rows.len())
-        {
-            self.selection = None;
-        }
+    /// Offscreen owners are not retired: only document changes can invalidate
+    /// their semantic selection. Keep the frame boundary explicit for callers.
+    pub(super) fn finish_frame(&mut self) {}
+    pub(super) fn begin_owner(&mut self, owner: &str) {
+        self.owner = owner.to_owned();
+        self.cursor = 0;
+        self.continues = false;
+    }
+    pub(super) fn continue_row(&mut self, skipped: usize) {
+        self.cursor += skipped;
+        self.continues = true;
+    }
+    pub(super) fn source_cursor(&self) -> usize {
+        self.cursor
+    }
+    /// Table cells have independent logical ranges even when their visual rows interleave.
+    pub(super) fn next_source(&mut self, offset: usize, continued: bool) {
+        self.cursor = if continued {
+            offset
+        } else {
+            offset.saturating_sub(1)
+        };
+        self.continues = continued || offset == 0;
+    }
+    pub(super) fn finish_source(&mut self, offset: usize) {
+        self.cursor = offset;
+        self.continues = false;
     }
     pub(super) fn take_group(&mut self) -> GroupGeometry {
         GroupGeometry {
             hits: std::mem::take(&mut self.hits),
             rows: std::mem::take(&mut self.rows),
+            owner: std::mem::take(&mut self.owner),
+            cursor: std::mem::take(&mut self.cursor),
+            continues: std::mem::take(&mut self.continues),
         }
     }
     pub(super) fn restore_group(&mut self, outer: GroupGeometry) -> GroupGeometry {
         let local = self.take_group();
         self.hits = outer.hits;
         self.rows = outer.rows;
+        self.owner = outer.owner;
+        self.cursor = outer.cursor;
+        self.continues = outer.continues;
         local
     }
     pub(super) fn place_group(&mut self, group: &GroupGeometry, x: f32, y: f32) {
@@ -177,6 +257,11 @@ impl InteractionMap {
             y: row.y + y,
             width: row.width,
             geometry: Arc::clone(&row.geometry),
+            owner: row.owner.clone(),
+            source_start: row.source_start,
+            prefix: row.prefix,
+            continued: row.continued,
+            break_before: row.break_before,
         }));
         self.hits.extend(group.hits.iter().map(|hit| {
             let mut hit = hit.clone();
@@ -191,8 +276,6 @@ impl InteractionMap {
     pub(super) fn add_hit(&mut self, hit: Hit) {
         self.hits.push(hit);
     }
-    /// Register precisely the bounds returned by the field painter; the caller
-    /// persists its scroll position alongside its editor or overlay state.
     pub(super) fn place_field(
         &mut self,
         scene: &mut Scene,
@@ -215,6 +298,7 @@ impl InteractionMap {
         width: f32,
         height: f32,
         geometry: LaidOutRow,
+        prefix: usize,
     ) {
         let index = self.rows.len();
         self.add_hit(Hit {
@@ -224,33 +308,86 @@ impl InteractionMap {
             height,
             control: Control::Text(index),
         });
+        let continued = self.continues;
+        let previous = self.rows.last().filter(|row| row.owner == self.owner);
+        let before = previous
+            .map(|row| {
+                row.source_start + row.geometry.text.chars().count().saturating_sub(row.prefix)
+            })
+            .unwrap_or(0);
+        if !continued && self.cursor > 0 {
+            self.cursor += 1;
+        }
+        self.continues = false;
+        let source_start = self.cursor;
+        let break_before = previous.is_some() && source_start > before;
+        self.cursor += geometry.text.chars().count().saturating_sub(prefix);
         self.rows.push(TextRow {
             x,
             y,
             width,
             geometry: Arc::new(geometry),
+            owner: self.owner.clone(),
+            source_start,
+            prefix,
+            continued,
+            break_before,
+        });
+    }
+    fn set_selection(&mut self, a: (usize, usize), b: (usize, usize)) {
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        let mut parts: Vec<SelectedPart> = Vec::new();
+        let mut text = String::new();
+        for index in start.0..=end.0 {
+            let Some(row) = self.rows.get(index) else {
+                return;
+            };
+            let from =
+                if index == start.0 { start.1 } else { 0 }.min(row.geometry.text.chars().count());
+            let to = if index == end.0 { end.1 } else { usize::MAX }
+                .min(row.geometry.text.chars().count());
+            if index > start.0 && (!row.continued || row.break_before) {
+                text.push('\n');
+            }
+            let from = if row.continued {
+                from.max(row.prefix)
+            } else {
+                from
+            };
+            text.extend(
+                row.geometry
+                    .text
+                    .chars()
+                    .skip(from)
+                    .take(to.saturating_sub(from)),
+            );
+            let left = row.source_start + from.saturating_sub(row.prefix);
+            let right = row.source_start + to.saturating_sub(row.prefix);
+            if let Some(part) = parts
+                .last_mut()
+                .filter(|part| part.owner == row.owner && left >= part.start && left <= part.end)
+            {
+                part.end = right;
+            } else {
+                parts.push(SelectedPart {
+                    owner: row.owner.clone(),
+                    start: left,
+                    end: right,
+                });
+            }
+        }
+        self.selection = Some(Selection {
+            anchor: self.rows[a.0].point(a.1),
+            anchor_at_end: a.1 > 0 && a.1 >= self.rows[a.0].geometry.text.chars().count(),
+            head: self.rows[b.0].point(b.1),
+            parts,
+            text,
         });
     }
     pub(super) fn selected_text(&self) -> String {
-        let Some((a, b)) = self.selection else {
-            return String::new();
-        };
-        let (start, end) = if a <= b { (a, b) } else { (b, a) };
-        (start.0..=end.0.min(self.rows.len().saturating_sub(1)))
-            .filter_map(|index| {
-                self.rows.get(index).map(|row| {
-                    let from = if index == start.0 { start.1 } else { 0 };
-                    let to = if index == end.0 { end.1 } else { usize::MAX };
-                    row.geometry
-                        .text
-                        .chars()
-                        .skip(from)
-                        .take(to.saturating_sub(from))
-                        .collect::<String>()
-                })
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        self.selection
+            .as_ref()
+            .map_or_else(String::new, |s| s.text.clone())
     }
     pub(super) fn paint_selection(
         &self,
@@ -258,21 +395,37 @@ impl InteractionMap {
         line_height: f32,
         selection_style: Style,
     ) {
-        let Some((a, b)) = self.selection else {
+        let Some(selection) = &self.selection else {
             return;
         };
-        let (start, end) = if a <= b { (a, b) } else { (b, a) };
-        for (index, row) in self
-            .rows
-            .iter()
-            .enumerate()
-            .skip(start.0)
-            .take(end.0.saturating_sub(start.0) + 1)
-        {
-            let from = if index == start.0 { start.1 } else { 0 };
-            let to = if index == end.0 { end.1 } else { usize::MAX };
-            let from = from.min(row.geometry.text.chars().count());
-            let to = to.min(row.geometry.text.chars().count());
+        for row in &self.rows {
+            let Some(part) = selection.parts.iter().find(|p| {
+                p.owner == row.owner
+                    && p.end > row.source_start
+                    && p.start
+                        < row.source_start
+                            + row.geometry.text.chars().count().saturating_sub(row.prefix)
+            }) else {
+                continue;
+            };
+            let len = row.geometry.text.chars().count();
+            if part.end <= row.source_start
+                || part.start >= row.source_start + len.saturating_sub(row.prefix)
+            {
+                continue;
+            }
+            let from = if part.start <= row.source_start {
+                0
+            } else {
+                row.prefix + part.start - row.source_start
+            }
+            .min(len);
+            let to = if part.end >= row.source_start + len.saturating_sub(row.prefix) {
+                len
+            } else {
+                row.prefix + part.end.saturating_sub(row.source_start)
+            }
+            .min(len);
             if to <= from {
                 continue;
             }
@@ -301,7 +454,6 @@ impl InteractionMap {
             });
         }
     }
-    /// Lookup only: hosts need a pointer target, not mutable access to frame maps.
     pub(super) fn hit_at(&self, x: f32, y: f32) -> Option<Control> {
         self.hits
             .iter()
@@ -324,7 +476,9 @@ impl InteractionMap {
         &self.hits
     }
     #[cfg(test)]
-    pub(super) fn selection(&self) -> Option<((usize, usize), (usize, usize))> {
+    pub(super) fn selection(&self) -> Option<((String, usize), (String, usize))> {
         self.selection
+            .as_ref()
+            .map(|s| (s.anchor.clone(), s.head.clone()))
     }
 }

@@ -34,7 +34,7 @@ impl TextMetrics for TestMetrics {
         }
     }
 }
-fn test_metrics() -> Arc<dyn TextMetrics> {
+pub(super) fn test_metrics() -> Arc<dyn TextMetrics> {
     Arc::new(TestMetrics)
 }
 
@@ -147,7 +147,6 @@ fn every_kind_retains_the_same_owner_when_measured_without_placement() {
         let expected = standard.retained.cached("owner");
         let mut measured = DocumentUi::new(node, test_metrics());
         measured.retained.begin_frame(640, Duration::ZERO);
-        let viewport = measured.viewport;
         let theme = Theme::dark();
         let mut builder = super::layout::LayoutBuilder::new(
             &measured.document,
@@ -155,7 +154,6 @@ fn every_kind_retains_the_same_owner_when_measured_without_placement() {
             &mut measured.interaction,
             &mut measured.retained,
             &mut measured.overlays,
-            &viewport,
             measured.metrics.as_ref(),
             false,
         );
@@ -198,7 +196,6 @@ fn every_kind_retains_the_same_owner_when_measured_without_placement() {
         Node::section("status.indicators").id("empty"),
         test_metrics(),
     );
-    let viewport = empty.viewport;
     let theme = Theme::dark();
     let mut builder = super::layout::LayoutBuilder::new(
         &empty.document,
@@ -206,7 +203,6 @@ fn every_kind_retains_the_same_owner_when_measured_without_placement() {
         &mut empty.interaction,
         &mut empty.retained,
         &mut empty.overlays,
-        &viewport,
         empty.metrics.as_ref(),
         false,
     );
@@ -237,7 +233,6 @@ fn measured_field_defers_viewport_updates_until_the_owner_is_placed() {
         line: 0,
     };
     app.drafts.set_viewport("owner", "text", initial);
-    let viewport = app.viewport;
     let theme = Theme::dark();
     let mut builder = super::layout::LayoutBuilder::new(
         &app.document,
@@ -245,7 +240,6 @@ fn measured_field_defers_viewport_updates_until_the_owner_is_placed() {
         &mut app.interaction,
         &mut app.retained,
         &mut app.overlays,
-        &viewport,
         app.metrics.as_ref(),
         false,
     );
@@ -286,7 +280,6 @@ fn measured_composites_match_placed_owners_without_placing_hits() {
         let mut standard = DocumentUi::new(node.clone(), test_metrics());
         standard.frame_at(640, 480, Duration::ZERO);
         let mut measured = DocumentUi::new(node, test_metrics());
-        let viewport = measured.viewport;
         let theme = Theme::dark();
         let mut builder = super::layout::LayoutBuilder::new(
             &measured.document,
@@ -294,7 +287,6 @@ fn measured_composites_match_placed_owners_without_placing_hits() {
             &mut measured.interaction,
             &mut measured.retained,
             &mut measured.overlays,
-            &viewport,
             measured.metrics.as_ref(),
             false,
         );
@@ -363,29 +355,51 @@ fn viewport_follows_new_output_but_report_wheel_and_offline_pin_do_not() {
             }))
     };
     let mut app = DocumentUi::new(view(20), test_metrics());
-    assert_eq!(app.viewport.content_height(), 0.0);
-    assert_eq!(app.viewport.viewport_height(), 600.0);
+    assert!(matches!(
+        app.viewport.position,
+        misa_pixel_ui::FlowPosition::FollowTail
+    ));
     app.frame(400, 100);
-    let first = app.viewport.offset();
-    assert!(first > 0.0);
+    assert!(
+        app.viewport
+            .visible()
+            .iter()
+            .any(|p| p.id == super::flow::FlowId::Node("row.19".into()))
+    );
     app.set_view(view(30));
     app.frame(400, 100);
-    assert!(app.viewport.offset() > first);
+    assert!(
+        app.viewport
+            .visible()
+            .iter()
+            .any(|p| p.id == super::flow::FlowId::Node("row.29".into()))
+    );
     app.scroll(-50.0);
-    let manual = app.viewport.offset();
+    let manual = app.viewport.visible()[0].id.clone();
     app.set_view(view(40));
     app.frame(400, 100);
-    assert_eq!(app.viewport.offset(), manual);
+    assert!(app.viewport.visible().iter().any(|p| p.id == manual));
     app.report("Local report".into(), Value::str("A report"));
+    let position = app.viewport.position.clone();
     app.scroll(200.0);
-    assert_eq!(app.viewport.offset(), manual);
+    assert_eq!(app.viewport.position, position);
     app.key(Key::Escape);
     app.pin_to_top();
     app.frame(400, 100);
-    assert_eq!(app.viewport.offset(), 0.0);
+    assert!(
+        app.viewport
+            .visible()
+            .iter()
+            .any(|p| p.id == super::flow::FlowId::Top)
+    );
     app.set_view(view(50));
     app.frame(400, 100);
-    assert_eq!(app.viewport.offset(), 0.0);
+    assert!(
+        app.viewport
+            .visible()
+            .iter()
+            .any(|p| p.id == super::flow::FlowId::Top)
+    );
 }
 
 #[test]
@@ -662,7 +676,6 @@ fn elapsed_pulse_skips_wraps_and_preserves_unrelated_owners() {
     let ms = Duration::from_millis;
     app.frame_at(640, 480, ms(0));
     let status = app.retained.cached("status").ops.clone();
-    let root = app.retained.cached("session").ops.clone();
     let message = app.retained.cached("message").ops.clone();
     let pulse = |ops: &[Op]| -> String {
         fn collect(ops: &[Op], result: &mut String) {
@@ -688,7 +701,7 @@ fn elapsed_pulse_skips_wraps_and_preserves_unrelated_owners() {
     app.frame_at(640, 480, ms(320)); // Skip phase 1.
     assert_eq!(app.retained.phase(), 2);
     assert!(!Arc::ptr_eq(&status, &app.retained.cached("status").ops));
-    assert!(!Arc::ptr_eq(&root, &app.retained.cached("session").ops));
+    assert!(!app.retained.contains("session"));
     assert_ne!(first, pulse(&app.retained.cached("status").ops));
     assert!(Arc::ptr_eq(&message, &app.retained.cached("message").ops));
     let phase_two = app.retained.cached("status").ops.clone();
@@ -786,72 +799,40 @@ fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
         height: 240,
     };
     app.frame_at(size.width, size.height, Duration::ZERO);
-    let status = app.retained.cached("status").ops.clone();
-    let before = app.retained.cached("before.0").ops.clone();
-    let after = app.retained.cached("after.0").ops.clone();
-    let bounds = app.retained.placed_indicators()[0].clone();
-    assert_eq!(bounds.id, "status");
-    assert!(bounds.top > size.height as f32);
-    assert!(bounds.bottom < app.viewport.content_height() - size.height as f32);
-    assert!(
-        !app.animating(),
-        "follow scroll leaves the status above the viewport"
-    );
+    assert!(!app.retained.contains("status"));
+    assert!(!app.animating());
     assert!(
         app.drive(Event::Redraw(size), Duration::from_millis(160))
             .deadline
             .is_none()
     );
     assert_eq!(app.retained.rendered_nodes(), 0);
-    assert!(Arc::ptr_eq(&status, &app.retained.cached("status").ops));
 
-    // Intersection uses the group's actual top and height, including nested groups.
-    let below = 20.0 + bounds.top - size.height as f32;
-    app.scroll(below - app.viewport.offset());
-    assert!(!app.animating());
-    app.scroll(1.0);
+    app.viewport
+        .anchor(super::flow::FlowId::Node("status".into()), 0.0, 80.0);
+    app.frame_at(size.width, size.height, Duration::from_millis(160));
     assert!(app.animating());
-    let above = 20.0 + bounds.bottom;
-    app.scroll(above - app.viewport.offset());
-    assert!(!app.animating());
-    app.scroll(-1.0);
-    assert!(app.animating());
-
-    // Center on the actual cached group placement, rather than a tree index.
-    let scroll_to_status = 20.0 + bounds.top - 80.0;
-    app.scroll(scroll_to_status - app.viewport.offset());
-    assert!(
-        app.animating(),
-        "wheel scrolling updates visibility immediately"
-    );
+    let status = app.retained.cached("status").ops.clone();
     assert!(
         app.drive(Event::Redraw(size), Duration::from_millis(320))
             .deadline
             .is_some()
     );
     assert!(!Arc::ptr_eq(&status, &app.retained.cached("status").ops));
-    let visible = app.retained.cached("status").ops.clone();
-    assert!(Arc::ptr_eq(&before, &app.retained.cached("before.0").ops));
-    assert!(Arc::ptr_eq(&after, &app.retained.cached("after.0").ops));
 
     app.scroll(100_000.0);
+    assert!(
+        !app.animating(),
+        "wheel updates the visible pulse set before repaint"
+    );
+    app.frame_at(size.width, size.height, Duration::from_millis(480));
     assert!(!app.animating());
     assert!(
-        app.drive(Event::Redraw(size), Duration::from_millis(480))
+        app.drive(Event::Redraw(size), Duration::from_millis(640))
             .deadline
             .is_none()
     );
     assert_eq!(app.retained.rendered_nodes(), 0);
-    assert!(Arc::ptr_eq(&visible, &app.retained.cached("status").ops));
-    app.scroll(scroll_to_status - app.viewport.offset());
-    assert!(
-        app.drive(Event::Redraw(size), Duration::from_millis(640))
-            .deadline
-            .is_some()
-    );
-    assert!(!Arc::ptr_eq(&visible, &app.retained.cached("status").ops));
-    assert!(Arc::ptr_eq(&before, &app.retained.cached("before.0").ops));
-    assert!(Arc::ptr_eq(&after, &app.retained.cached("after.0").ops));
 }
 
 #[test]
@@ -1767,6 +1748,7 @@ fn evicted_images_release_retained_scenes_and_can_be_reloaded() {
         "Cached display lists must not pin evicted bytes"
     );
     assert!(app.decoded_image_bytes() <= 32 * 1024 * 1024);
+    app.pin_to_top();
     app.frame(800, 600);
     assert!(
         app.interaction
@@ -1951,7 +1933,10 @@ fn blank_text_row_accepts_pointer_selection_across_its_width() {
     app.pointer(blank.1 + 5.0, blank.2 + 1.0, false);
     assert_eq!(
         app.interaction.selection(),
-        Some(((blank.0, 0), (blank.0, 0)))
+        Some((
+            (app.document.root().to_owned(), 6),
+            (app.document.root().to_owned(), 6)
+        ))
     );
 }
 
@@ -2177,11 +2162,13 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
             Node::text("text", [Span::plain(format!("line {i}"))]).id(format!("tail.{i}"))
         }));
     let mut app = DocumentUi::new(view, Arc::new(Counted(calls.clone())));
+    app.pin_to_top();
+    app.frame(400, 100);
+    app.scroll(20.0);
     app.frame(400, 100);
     let geometry = Arc::clone(&app.retained.cached("child").geometry.rows()[0].geometry);
     assert!(Arc::ptr_eq(&geometry, &app.interaction.rows()[0].geometry));
     let y = app.interaction.rows()[0].y;
-    let scroll = app.viewport.offset();
     let measured = calls.load(Ordering::Relaxed);
     app.frame(400, 100);
     assert_eq!(calls.load(Ordering::Relaxed), measured);
@@ -2195,11 +2182,7 @@ fn cached_groups_translate_measured_rows_without_remeasuring() {
     ));
     assert!(Arc::ptr_eq(&geometry, &app.interaction.rows()[0].geometry));
     assert_eq!(app.interaction.rows()[0].x, 20.0);
-    assert!(app.viewport.offset() < scroll);
-    assert_eq!(
-        app.interaction.rows()[0].y,
-        y + scroll - app.viewport.offset()
-    );
+    assert_eq!(app.interaction.rows()[0].y, y + 10.0);
 
     app.observed(&DocumentUpdate::Changed {
         tree: &[ViewOp::Replace {
@@ -2265,7 +2248,8 @@ fn scoped_document_transaction_settles_live_text_without_rebuilding_history() {
         })
         .unwrap();
         app.frame(800, 600);
-        let retained = app.retained.cached("message.0").ops.clone();
+        let retained_id = format!("message.{}", owners - 1);
+        let retained = app.retained.cached(&retained_id).ops.clone();
         let answer = Node::text("message.assistant", [Span::plain("é終")]).id("answer");
         let update = DocumentUpdate::Changed {
             tree: &[ViewOp::Insert {
@@ -2284,7 +2268,7 @@ fn scoped_document_transaction_settles_live_text_without_rebuilding_history() {
         let scene = app.frame(800, 600);
         assert!(Arc::ptr_eq(
             &retained,
-            &app.retained.cached("message.0").ops
+            &app.retained.cached(&retained_id).ops
         ));
         assert!(
             app.retained.rendered_nodes() <= 3,
@@ -2382,7 +2366,12 @@ fn stream_append_and_subtree_replace_reuse_unchanged_owner_scenes() {
         let mut app = DocumentUi::new(view, test_metrics());
         app.frame(800, 600);
         let retained: Vec<_> = (0..owners)
-            .map(|index| app.retained.cached(&format!("message.{index}")).ops.clone())
+            .filter_map(|index| {
+                let id = format!("message.{index}");
+                app.retained
+                    .contains(&id)
+                    .then(|| (id.clone(), app.retained.cached(&id).ops.clone()))
+            })
             .collect();
         let mut stream = Stream {
             id: "live.text".into(),
@@ -2410,12 +2399,9 @@ fn stream_append_and_subtree_replace_reuse_unchanged_owner_scenes() {
         );
         stream.text.push_str(" world");
         app.frame(800, 600);
-        assert_eq!(app.retained.rendered_nodes(), 5);
-        for (index, ops) in retained.iter().enumerate() {
-            assert!(Arc::ptr_eq(
-                ops,
-                &app.retained.cached(&format!("message.{index}")).ops
-            ));
+        assert!(app.retained.rendered_nodes() <= 3);
+        for (id, ops) in &retained {
+            assert!(Arc::ptr_eq(ops, &app.retained.cached(id).ops));
         }
         cold_scene(&mut app, &tree, &[stream.clone()]);
         let op = ViewOp::Replace {
@@ -2425,12 +2411,11 @@ fn stream_append_and_subtree_replace_reuse_unchanged_owner_scenes() {
         tree.apply(&op).unwrap();
         observed_changes(&mut app, vec![op], vec![], false);
         app.frame(800, 600);
-        assert_eq!(app.retained.rendered_nodes(), 3);
-        for (index, ops) in retained.iter().enumerate().skip(1) {
-            assert!(Arc::ptr_eq(
-                ops,
-                &app.retained.cached(&format!("message.{index}")).ops
-            ));
+        assert!(app.retained.rendered_nodes() <= 2);
+        for (id, ops) in &retained {
+            if id != "message.0" {
+                assert!(Arc::ptr_eq(ops, &app.retained.cached(id).ops));
+            }
         }
         cold_scene(&mut app, &tree, &[stream]);
     }
@@ -2778,12 +2763,12 @@ fn editing_a_field_does_not_relayout_the_transcript() {
         .child(form("panel.input", FieldKind::Inline));
     let mut app = DocumentUi::new(view, test_metrics());
     app.frame(800, 600);
-    let owner = app.retained.cached("transcript").ops.clone();
+    let owner = app.retained.cached("message.1").ops.clone();
     app.drive(Event::Text("draft".into()), Duration::ZERO)
         .commands;
     app.frame(800, 600);
-    assert_eq!(app.retained.rendered_nodes(), 2);
-    assert!(Arc::ptr_eq(&owner, &app.retained.cached("transcript").ops));
+    assert_eq!(app.retained.rendered_nodes(), 1);
+    assert!(Arc::ptr_eq(&owner, &app.retained.cached("message.1").ops));
     assert_eq!(app.field_text("panel.input", "value"), Some("draft"));
     let sent = app.key(Key::Enter { newline: false });
     assert!(

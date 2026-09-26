@@ -19,6 +19,7 @@ fn row(map: &mut InteractionMap, text: &str) {
             advances: (0..=text.len()).map(|index| index as f32 * 8.0).collect(),
             runs: vec![],
         },
+        0,
     );
 }
 
@@ -41,6 +42,8 @@ fn selection_survives_repaint_but_not_retired_rows() {
     assert_eq!(map.selected_text(), "ab");
     map.begin_frame();
     map.finish_frame();
+    assert_eq!(map.selected_text(), "ab");
+    map.retire(&[String::new()].into());
     assert_eq!(map.selection(), None);
 }
 

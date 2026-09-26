@@ -2,7 +2,7 @@
 use super::layout::LayoutBuilder;
 use super::retained::indicator_value;
 use super::{Control, FONT_SIZE, Hit};
-use misa_pixel_ui::{Button, Checkbox, Op, ProgressBar, Rect, Scene};
+use misa_pixel_ui::{Button, Checkbox, Op, ProgressBar, Rect, Scene, TextFlow};
 use misa_proto::view::{FieldKind, Kind, Node};
 use misa_render::Theme;
 use misa_style::Style;
@@ -465,22 +465,42 @@ impl LayoutBuilder<'_> {
                     .max(rows.iter().map(Vec::len).max().unwrap_or(1))
                     .max(1);
                 let cell_width = width / columns as f32;
+                let mut source_offset = self.interaction.source_cursor();
+                if source_offset > 0 {
+                    source_offset += 1;
+                }
                 for (index, row) in std::iter::once(head).chain(rows.iter()).enumerate() {
                     let base = theme.role("table.cell");
-                    let cells: Vec<Vec<Vec<(Style, String)>>> = row
+                    let cells: Vec<_> = row
                         .iter()
                         .map(|cell| {
-                            self.wrap_runs(
-                                cell.iter()
-                                    .map(|span| {
-                                        (crate::span_style(theme, span, base), span.text.clone())
-                                    })
-                                    .collect(),
-                                (cell_width - 10.0 - self.prefix_width()).max(0.0),
+                            let start = source_offset;
+                            let runs: Vec<_> = cell
+                                .iter()
+                                .map(|span| {
+                                    (crate::span_style(theme, span, base), span.text.clone())
+                                })
+                                .collect();
+                            source_offset += runs
+                                .iter()
+                                .map(|(_, text)| text.chars().count())
+                                .sum::<usize>()
+                                + 1;
+                            (
+                                start,
+                                TextFlow::new(self.metrics, FONT_SIZE).wrap_with_ranges(
+                                    runs,
+                                    (cell_width - 10.0 - self.prefix_width()).max(0.0),
+                                ),
                             )
                         })
                         .collect();
-                    let lines = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+                    let lines = cells
+                        .iter()
+                        .map(|(_, rows)| rows.len())
+                        .max()
+                        .unwrap_or(1)
+                        .max(1);
                     let height = lines as f32 * self.line_height() + 8.0;
                     scene.ops.push(Op::Rect {
                         x,
@@ -493,8 +513,14 @@ impl LayoutBuilder<'_> {
                             self.colors.button
                         },
                     });
-                    for (column, cell) in cells.into_iter().enumerate() {
-                        for (line, content) in cell.into_iter().enumerate() {
+                    for (column, (start, cell)) in cells.into_iter().enumerate() {
+                        let mut previous_end = 0;
+                        for (line, (content, offset, end)) in cell.into_iter().enumerate() {
+                            // Only a new cell or an explicit source break separates
+                            // logical rows; a soft wrap continues this cell's text.
+                            self.interaction
+                                .next_source(start + offset, line > 0 && offset == previous_end);
+                            previous_end = end;
                             self.row(
                                 scene,
                                 x + column as f32 * cell_width + 5.0,
@@ -506,6 +532,8 @@ impl LayoutBuilder<'_> {
                     }
                     *y += height + 2.0;
                 }
+                self.interaction
+                    .finish_source(source_offset.saturating_sub(1));
             }
             Kind::List { .. } => {}
             Kind::Image { blob, alt, .. } => {

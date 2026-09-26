@@ -72,6 +72,19 @@ impl<'a> TextFlow<'a> {
     /// Wrap by measured glyph advances, preserving whitespace, styles, explicit
     /// breaks and even a glyph wider than the available line.
     pub fn wrap(&self, spans: Vec<(Style, String)>, budget: f32) -> Vec<Vec<(Style, String)>> {
+        self.wrap_with_ranges(spans, budget)
+            .into_iter()
+            .map(|(runs, _, _)| runs)
+            .collect()
+    }
+
+    /// Each measured row carries its half-open scalar range in the original
+    /// source, including positions skipped by explicit line breaks.
+    pub fn wrap_with_ranges(
+        &self,
+        spans: Vec<(Style, String)>,
+        budget: f32,
+    ) -> Vec<(Vec<(Style, String)>, usize, usize)> {
         let mut chars = Vec::new();
         for (style, text) in spans {
             for segment in text.split_inclusive('\n') {
@@ -115,14 +128,14 @@ impl<'a> TextFlow<'a> {
                     runs.push((style, ch.to_string()));
                 }
             }
-            lines.push(runs);
+            lines.push((runs, start, end));
             start = end + usize::from(newline);
             if newline && start == chars.len() {
-                lines.push(vec![]);
+                lines.push((vec![], start, start));
             }
         }
         if lines.is_empty() {
-            lines.push(vec![]);
+            lines.push((vec![], 0, 0));
         }
         lines
     }
@@ -224,6 +237,15 @@ mod tests {
         assert_eq!(
             flow.wrap(vec![(a, "界\n".into())], 0.0),
             vec![vec![(a, "界".into())], vec![]]
+        );
+        assert_eq!(
+            flow.wrap_with_ranges(vec![(a, "ab\ncd".into())], 10.0),
+            vec![
+                (vec![(a, "a".into())], 0, 1),
+                (vec![(a, "b".into())], 1, 2),
+                (vec![(a, "c".into())], 3, 4),
+                (vec![(a, "d".into())], 4, 5),
+            ]
         );
         let restored = rows
             .iter()

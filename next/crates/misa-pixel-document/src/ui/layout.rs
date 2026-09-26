@@ -1,5 +1,6 @@
+use super::flow::FlowId;
 use super::{Control, DocumentUi, FONT_SIZE, FieldViewport, PULSE_PERIOD, text};
-use misa_pixel_ui::{FieldMode, Op, Scene};
+use misa_pixel_ui::{FieldMode, FlowConstraints, FlowViewport, Op, Scene};
 use misa_proto::view::{FieldKind, Node};
 use misa_render::Theme;
 use misa_style::Style;
@@ -13,9 +14,9 @@ pub(super) struct LayoutBuilder<'a> {
     pub(super) interaction: &'a mut super::interaction::InteractionMap,
     pub(super) retained: &'a mut super::retained::RetainedScenes,
     pub(super) overlays: &'a mut super::overlays::LocalOverlays,
-    pub(super) viewport: &'a misa_pixel_ui::Viewport,
     pub(super) metrics: &'a dyn misa_pixel_ui::TextMetrics,
     pub(super) colors: crate::appearance::Palette,
+    light: bool,
     pub(super) theme: Arc<Theme>,
     pub(super) prefixes: Vec<(Style, String)>,
     retain_only: bool,
@@ -30,7 +31,6 @@ impl<'a> LayoutBuilder<'a> {
         interaction: &'a mut super::interaction::InteractionMap,
         retained: &'a mut super::retained::RetainedScenes,
         overlays: &'a mut super::overlays::LocalOverlays,
-        viewport: &'a misa_pixel_ui::Viewport,
         metrics: &'a dyn misa_pixel_ui::TextMetrics,
         light: bool,
     ) -> Self {
@@ -40,9 +40,9 @@ impl<'a> LayoutBuilder<'a> {
             interaction,
             retained,
             overlays,
-            viewport,
             metrics,
             colors: crate::appearance::Palette::new(light),
+            light,
             theme: Arc::new(if light { Theme::light() } else { Theme::dark() }),
             prefixes: Vec::new(),
             retain_only: false,
@@ -52,8 +52,9 @@ impl<'a> LayoutBuilder<'a> {
 
     /// Retain one owner's exact laid-out display list without placing it in the
     /// frame. This path leaves the frame's hits and persistent editor scroll alone.
-    #[allow(dead_code)] // Used by the next owner-placement stage; exercised by parity tests now.
     pub(super) fn measure_owner(&mut self, id: &str, width: f32, theme: &Theme) -> Option<f32> {
+        #[cfg(test)]
+        self.retained.owner_measured();
         self.retain_only = true;
         let cached = self.retain_owner(id, width, theme);
         self.retain_only = false;
@@ -85,6 +86,7 @@ impl<'a> LayoutBuilder<'a> {
             };
             let effect_start = self.viewport_effects.len();
             let outer = self.interaction.take_group();
+            self.interaction.begin_owner(id);
             let mut local = Scene::default();
             let mut height = 0.0;
             self.retained.begin_group();
@@ -115,6 +117,8 @@ impl<'a> LayoutBuilder<'a> {
         let Some(cached) = self.retain_owner(id, width, theme) else {
             return;
         };
+        #[cfg(test)]
+        self.retained.owner_placed();
         self.retained.place(id, &cached, *y);
         if !self.retain_only {
             for (control, viewport) in &cached.viewport_effects {
@@ -145,35 +149,28 @@ impl DocumentUi {
     pub fn frame_at(&mut self, width: u32, height: u32, elapsed: Duration) -> Scene {
         self.size = misa_window_core::Size { width, height };
         self.retained.begin_frame(width, elapsed);
-        // Reconciliation mutates DocumentUi's viewport. The builder sees snapshots of that
-        // small value while it borrows the other owners for the whole frame.
-        let before = self.viewport;
         let mut builder = LayoutBuilder::new(
             &self.document,
             &mut self.drafts,
             &mut self.interaction,
             &mut self.retained,
             &mut self.overlays,
-            &before,
             self.metrics.as_ref(),
             self.light,
         );
-        let (mut scene, content_height) = builder.layout(width, height);
-        // The transcript owns its 40px tail breathing room; the viewport does not.
-        let moved = self.viewport.reconcile(content_height, height as f32, 40.0);
-        let after = self.viewport;
-        builder.viewport = &after;
-        if moved {
-            scene = builder.layout(width, height).0;
-        }
-        // Lay out first: the final scroll and collapsed groups determine visibility.
-        // An idle frame reuses its display lists and checks only moving owner bounds.
-        if builder.retained.invalidate_stale_visible(
-            builder.document,
-            self.viewport.offset(),
-            self.viewport.viewport_height(),
-        ) {
-            scene = builder.layout(width, height).0;
+        let mut scene = builder.layout(&mut self.viewport, width, height);
+        // A pulse invalidates only moving owners that were actually placed.
+        if builder.retained.invalidate_stale_visible(builder.document) {
+            let ids: Vec<_> = self
+                .viewport
+                .visible()
+                .iter()
+                .map(|p| p.id.clone())
+                .collect();
+            for id in ids {
+                self.viewport.invalidate(&id);
+            }
+            scene = builder.layout(&mut self.viewport, width, height);
         }
         builder.paint_report(&mut scene, width, height);
         if let Some(mut menu) = self.menu.take() {
@@ -231,26 +228,39 @@ impl LayoutBuilder<'_> {
             ));
         }
     }
-    pub(super) fn layout(&mut self, width: u32, height: u32) -> (Scene, f32) {
+    pub(super) fn layout(
+        &mut self,
+        viewport: &mut FlowViewport<FlowId>,
+        width: u32,
+        height: u32,
+    ) -> Scene {
         self.interaction.begin_frame();
-        self.retained.begin_placement();
+        self.retained.begin_placement(height as f32);
         let mut scene = Scene {
             width: width as f32,
             height: height as f32,
             ops: vec![],
         };
-        let root = self.document.root().to_string();
-        let theme = Arc::clone(&self.theme);
-        let mut y = 20.0 + self.viewport.position(0.0);
-        self.present(
-            &root,
-            20.0,
-            &mut y,
-            (width as f32 - 40.0).max(40.0),
-            &theme,
-            &mut scene,
+        let content_width = (width as f32 - 40.0).max(40.0);
+        viewport.layout(
+            self,
+            FlowConstraints {
+                width: content_width,
+                height: height as f32,
+                style_generation: u64::from(self.light),
+            },
         );
-        let content_height = y + self.viewport.offset() + 20.0;
+        let theme = Arc::clone(&self.theme);
+        for placement in viewport.visible() {
+            match &placement.id {
+                FlowId::Node(id) | FlowId::Stream(id) => {
+                    let mut y = placement.y;
+                    self.present(id, 20.0, &mut y, content_width, &theme, &mut scene);
+                    debug_assert_eq!(y, placement.y + placement.height);
+                }
+                FlowId::Top | FlowId::Close(_) | FlowId::StreamClose | FlowId::Bottom => {}
+            }
+        }
         self.interaction.finish_frame();
         self.interaction
             .paint_selection(&mut scene, self.line_height(), self.colors.selection);
@@ -370,7 +380,7 @@ impl LayoutBuilder<'_> {
                 self.colors.muted,
             ));
         }
-        (scene, content_height)
+        scene
     }
     pub(super) fn box_control(
         &mut self,

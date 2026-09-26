@@ -6,6 +6,8 @@ use std::hash::Hash;
 /// IDs remain stable across edits. `previous`/`next` are indexed navigation,
 /// not iterators over a materialized document. `measure` returns the exact height
 /// at this width and style generation (including any nested bounded viewport).
+/// Measurement may populate a retained display list, but must not place hits or
+/// apply editor viewport effects; those belong to visible placement.
 pub trait FlowSource {
     type Id: Clone + Eq + Hash;
     fn first(&self) -> Option<Self::Id>;
@@ -13,7 +15,7 @@ pub trait FlowSource {
     fn previous(&self, id: &Self::Id) -> Option<Self::Id>;
     fn next(&self, id: &Self::Id) -> Option<Self::Id>;
     fn contains(&self, id: &Self::Id) -> bool;
-    fn measure(&self, id: &Self::Id, width: f32, style_generation: u64) -> f32;
+    fn measure(&mut self, id: &Self::Id, width: f32, style_generation: u64) -> f32;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -94,6 +96,11 @@ impl<Id: Clone + Eq + Hash> FlowViewport<Id> {
         }
     }
 
+    /// Forget measurements after a document reset; keep the stable scroll position.
+    pub fn clear_measurements(&mut self) {
+        self.heights.clear();
+    }
+
     /// Call when an owner's content changes without changing its stable ID.
     pub fn invalidate(&mut self, id: &Id) {
         self.heights.remove(id);
@@ -142,7 +149,7 @@ impl<Id: Clone + Eq + Hash> FlowViewport<Id> {
         }
     }
 
-    fn height<S: FlowSource<Id = Id>>(&mut self, source: &S, id: &Id) -> f32 {
+    fn height<S: FlowSource<Id = Id>>(&mut self, source: &mut S, id: &Id) -> f32 {
         if let Some(height) = self.heights.get(id) {
             return *height;
         }
@@ -161,7 +168,7 @@ impl<Id: Clone + Eq + Hash> FlowViewport<Id> {
 
     /// Walk only as far as needed to cover the viewport. Traversal must be
     /// consistent and acyclic; no inferred heights or full-document prefix sums.
-    pub fn layout<S: FlowSource<Id = Id>>(&mut self, source: &S, constraints: Constraints) {
+    pub fn layout<S: FlowSource<Id = Id>>(&mut self, source: &mut S, constraints: Constraints) {
         assert!(constraints.width.is_finite() && constraints.width >= 0.0);
         assert!(constraints.height.is_finite() && constraints.height >= 0.0);
         if self.measure_key != Some((constraints.width.to_bits(), constraints.style_generation)) {
@@ -246,7 +253,7 @@ impl<Id: Clone + Eq + Hash> FlowViewport<Id> {
 
     fn extend_down<S: FlowSource<Id = Id>>(
         &mut self,
-        source: &S,
+        source: &mut S,
         rows: &mut VecDeque<FlowPlacement<Id>>,
     ) {
         while rows.back().unwrap().y + rows.back().unwrap().height < self.constraints.height {
@@ -260,7 +267,7 @@ impl<Id: Clone + Eq + Hash> FlowViewport<Id> {
     }
     fn extend_up<S: FlowSource<Id = Id>>(
         &mut self,
-        source: &S,
+        source: &mut S,
         rows: &mut VecDeque<FlowPlacement<Id>>,
     ) {
         while rows.front().unwrap().y > 0.0 {
@@ -275,7 +282,7 @@ impl<Id: Clone + Eq + Hash> FlowViewport<Id> {
 
     /// Positive delta scrolls toward the tail. Returns the unconsumed signed
     /// delta for a parent viewport. Requires an up-to-date layout.
-    pub fn wheel<S: FlowSource<Id = Id>>(&mut self, source: &S, delta: f32) -> f32 {
+    pub fn wheel<S: FlowSource<Id = Id>>(&mut self, source: &mut S, delta: f32) -> f32 {
         assert!(delta.is_finite());
         if delta == 0.0 || self.constraints.height == 0.0 || self.visible.is_empty() {
             return delta;

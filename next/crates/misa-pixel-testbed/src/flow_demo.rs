@@ -25,7 +25,7 @@ impl FlowSource for Rows {
     fn contains(&self, id: &usize) -> bool {
         *id < self.count
     }
-    fn measure(&self, id: &usize, _: f32, _: u64) -> f32 {
+    fn measure(&mut self, id: &usize, _: f32, _: u64) -> f32 {
         if self.count == 20 && *id == 1 {
             60.0
         } else {
@@ -81,11 +81,11 @@ fn tree(outer: &FlowViewport<usize>, child: &FlowViewport<usize>) -> PlacedCompo
 /// Run with `misa-pixel-testbed --nested-flow`; no window, protocol or client.
 pub fn run() -> Result<(), String> {
     let mut renderer = Renderer::new().map_err(|e| format!("Vulkan renderer unavailable: {e}"))?;
-    let outer_source = Rows {
+    let mut outer_source = Rows {
         count: 20,
         height: 24.0,
     };
-    let child_source = Rows {
+    let mut child_source = Rows {
         count: 8,
         height: 20.0,
     };
@@ -94,7 +94,7 @@ pub fn run() -> Result<(), String> {
     outer.pin_top(&outer_source);
     child.pin_top(&child_source);
     outer.layout(
-        &outer_source,
+        &mut outer_source,
         FlowConstraints {
             width: 180.0,
             height: 120.0,
@@ -102,7 +102,7 @@ pub fn run() -> Result<(), String> {
         },
     );
     child.layout(
-        &child_source,
+        &mut child_source,
         FlowConstraints {
             width: 100.0,
             height: 60.0,
@@ -124,9 +124,9 @@ pub fn run() -> Result<(), String> {
     let before = render(tree(&outer, &child))?;
     let unused = tree(&outer, &child).wheel(35.0, 40.0, 130.0, &mut |id, delta| {
         if *id == 1 {
-            child.wheel(&child_source, delta)
+            child.wheel(&mut child_source, delta)
         } else {
-            outer.wheel(&outer_source, delta)
+            outer.wheel(&mut outer_source, delta)
         }
     });
     let after = render(tree(&outer, &child))?;

@@ -39,10 +39,15 @@ pub(super) struct RetainedScenes {
     moving: BTreeSet<String>,
     stack: Vec<Vec<Placement>>,
     placed: Vec<IndicatorBounds>,
+    viewport_height: f32,
     width: u32,
     phase: u64,
     #[cfg(test)]
     rendered_nodes: usize,
+    #[cfg(test)]
+    measured_owners: usize,
+    #[cfg(test)]
+    placed_owners: usize,
 }
 
 impl RetainedScenes {
@@ -93,6 +98,8 @@ impl RetainedScenes {
         #[cfg(test)]
         {
             self.rendered_nodes = 0;
+            self.measured_owners = 0;
+            self.placed_owners = 0;
         }
     }
 
@@ -111,8 +118,9 @@ impl RetainedScenes {
         self.stack.push(Vec::new());
     }
 
-    pub(super) fn begin_placement(&mut self) {
+    pub(super) fn begin_placement(&mut self, height: f32) {
         self.placed.clear();
+        self.viewport_height = height;
     }
 
     pub(super) fn observe_status(&mut self, model: &Node) {
@@ -165,14 +173,14 @@ impl RetainedScenes {
             // Only a placed root makes its descendants visible. Walk the retained
             // owner links, not the document or its unplaced cached groups.
             for child in &cached.children {
-                Self::collect_placed(&self.cache, &child.id, child.y, &mut self.placed);
+                Self::collect_placed(&self.cache, &child.id, y + child.y, &mut self.placed);
             }
             if cached.phase.is_some() {
                 // Root itself may be the moving owner.
                 self.placed.push(IndicatorBounds {
                     id: id.to_string(),
-                    top: 0.0,
-                    bottom: cached.height,
+                    top: y,
+                    bottom: y + cached.height,
                 });
             }
         }
@@ -199,49 +207,32 @@ impl RetainedScenes {
         }
     }
 
-    fn visible<'a>(
-        &'a self,
-        _root: &str,
-        scroll: f32,
-        viewport: f32,
-    ) -> impl Iterator<Item = &'a str> {
-        let top = 20.0 - scroll;
+    fn visible(&self) -> impl Iterator<Item = &str> {
         self.placed
             .iter()
-            .filter(move |bounds| {
-                top + bounds.top < viewport
-                    && top + bounds.bottom > 0.0
+            .filter(|bounds| {
+                bounds.top < self.viewport_height
+                    && bounds.bottom > 0.0
                     && self.moving.contains(&bounds.id)
                     && self.cache.contains_key(&bounds.id)
             })
             .map(|bounds| bounds.id.as_str())
     }
 
-    pub(super) fn animating(&self, root: &str, scroll: f32, viewport: f32) -> bool {
-        self.visible(root, scroll, viewport).next().is_some()
+    pub(super) fn animating(&self) -> bool {
+        self.visible().next().is_some()
     }
 
-    pub(super) fn next_deadline(
-        &self,
-        root: &str,
-        scroll: f32,
-        viewport: f32,
-        elapsed: Duration,
-    ) -> Option<Duration> {
-        self.animating(root, scroll, viewport)
+    pub(super) fn next_deadline(&self, elapsed: Duration) -> Option<Duration> {
+        self.animating()
             .then(|| misa_window_core::next_deadline(elapsed, PULSE_PERIOD))
     }
 
     /// Only stale visible owners and their ancestors are invalidated. Hidden owners
     /// keep their lists until visible again, and idle frames do not walk history.
-    pub(super) fn invalidate_stale_visible(
-        &mut self,
-        document: &document::DocumentStore,
-        scroll: f32,
-        viewport: f32,
-    ) -> bool {
+    pub(super) fn invalidate_stale_visible(&mut self, document: &document::DocumentStore) -> bool {
         let stale: Vec<_> = self
-            .visible(document.root(), scroll, viewport)
+            .visible()
             .filter(|id| self.cache[*id].phase != Some(self.phase))
             .map(str::to_owned)
             .collect();
@@ -255,6 +246,18 @@ impl RetainedScenes {
     #[cfg(test)]
     pub(super) fn node_rendered(&mut self) {
         self.rendered_nodes += 1;
+    }
+    #[cfg(test)]
+    pub(super) fn owner_measured(&mut self) {
+        self.measured_owners += 1;
+    }
+    #[cfg(test)]
+    pub(super) fn owner_placed(&mut self) {
+        self.placed_owners += 1;
+    }
+    #[cfg(test)]
+    pub(super) fn owner_counts(&self) -> (usize, usize) {
+        (self.measured_owners, self.placed_owners)
     }
     #[cfg(test)]
     pub(super) fn rendered_nodes(&self) -> usize {

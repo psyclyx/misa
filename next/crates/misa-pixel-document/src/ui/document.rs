@@ -2,19 +2,29 @@
 use super::DocumentUpdate;
 use misa_proto::sync::{IndexedTree, Stream, StreamUpdate, ViewOp};
 use misa_proto::view::{Kind, Node, Span, State};
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[derive(Default)]
 pub(super) struct Changes {
     pub ids: BTreeSet<String>,
+    /// Owners whose semantic text may have changed, not incidental ancestors.
+    pub retired: BTreeSet<String>,
     pub full: bool,
 }
 
 pub(super) struct DocumentStore {
-    tree: IndexedTree,
+    pub(super) tree: IndexedTree,
     root: String,
     streams: BTreeMap<String, LiveStream>,
+    // Nonempty streams grouped by owner, including those suppressed by the tree.
+    streams_by_owner: BTreeMap<String, BTreeSet<(String, u8, String)>>,
+    // Exactly the nonempty streams whose owner is absent from the tree.
+    visible_stream_order: BTreeSet<(String, u8, String)>,
+    #[cfg(test)]
+    visibility_checks: Cell<usize>,
     images: BTreeMap<String, Arc<image::RgbaImage>>,
 }
 
@@ -25,6 +35,10 @@ impl DocumentStore {
             tree: IndexedTree::new(view),
             root,
             streams: BTreeMap::new(),
+            streams_by_owner: BTreeMap::new(),
+            visible_stream_order: BTreeSet::new(),
+            #[cfg(test)]
+            visibility_checks: Cell::new(0),
             images: BTreeMap::new(),
         }
     }
@@ -37,7 +51,7 @@ impl DocumentStore {
     /// Fields in list items are embedded in their list owner, not separate index entries.
     /// The cache owner of a node embedded inside a list item is its indexed list.
     pub fn cache_owner<'a>(&'a self, id: &'a str) -> &'a str {
-        if self.tree.contains(id) {
+        if self.tree.contains(id) || id == "streams" || self.streams.contains_key(id) {
             return id;
         }
         fn contains(node: &Node, id: &str) -> bool {
@@ -111,19 +125,87 @@ impl DocumentStore {
     pub fn decoded_image_bytes(&self) -> usize {
         self.images.values().map(|image| image.as_raw().len()).sum()
     }
+    fn owner_visible(&self, owner: &str) -> bool {
+        #[cfg(test)]
+        self.visibility_checks.set(self.visibility_checks.get() + 1);
+        !self.tree.contains(owner)
+    }
+    #[cfg(test)]
+    pub(super) fn visibility_checks(&self) -> usize {
+        self.visibility_checks.get()
+    }
+    // Reconcile only streams owned by the changed node, not all suppressed streams.
+    fn refresh_stream_owner(&mut self, owner: &str) {
+        if let Some(keys) = self.streams_by_owner.get(owner) {
+            let visible = self.owner_visible(owner);
+            for key in keys {
+                if visible {
+                    self.visible_stream_order.insert(key.clone());
+                } else {
+                    self.visible_stream_order.remove(key);
+                }
+            }
+        }
+    }
+    fn refresh_stream_subtree(&mut self, id: &str) {
+        let mut pending = vec![id.to_owned()];
+        while let Some(owner) = pending.pop() {
+            pending.extend(self.children(&owner));
+            self.refresh_stream_owner(&owner);
+        }
+    }
+    fn remove_stream_key(&mut self, id: &str) {
+        let key = stream_order(id);
+        self.visible_stream_order.remove(&key);
+        if let Some(keys) = self.streams_by_owner.get_mut(&key.0) {
+            keys.remove(&key);
+            if keys.is_empty() {
+                self.streams_by_owner.remove(&key.0);
+            }
+        }
+    }
+    fn insert_stream_key(&mut self, id: &str) {
+        let key = stream_order(id);
+        if self.owner_visible(&key.0) {
+            self.visible_stream_order.insert(key.clone());
+        }
+        self.streams_by_owner
+            .entry(key.0.clone())
+            .or_default()
+            .insert(key);
+    }
     pub fn visible_streams(&self) -> Vec<String> {
-        let mut ids: Vec<_> = self
-            .streams
+        self.visible_stream_order
             .iter()
-            .filter(|(id, live)| {
-                let owner = id.rsplit_once('.').map(|(owner, _)| owner).unwrap_or(id);
-                !self.tree.contains(owner) && !live.text.is_empty()
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        // Thinking precedes the answer even though `.text` sorts before `.thinking`.
-        ids.sort_by_key(|id| stream_order(id));
-        ids
+            .map(|(_, _, id)| id.clone())
+            .collect()
+    }
+    pub(super) fn first_stream(&self) -> Option<String> {
+        self.visible_stream_order
+            .first()
+            .map(|(_, _, id)| id.clone())
+    }
+    pub(super) fn last_stream(&self) -> Option<String> {
+        self.visible_stream_order
+            .last()
+            .map(|(_, _, id)| id.clone())
+    }
+    pub(super) fn next_stream(&self, id: &str) -> Option<String> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        self.visible_stream_order
+            .range((Excluded(stream_order(id)), Unbounded))
+            .next()
+            .map(|(_, _, id)| id.clone())
+    }
+    pub(super) fn previous_stream(&self, id: &str) -> Option<String> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        self.visible_stream_order
+            .range((Unbounded, Excluded(stream_order(id))))
+            .next_back()
+            .map(|(_, _, id)| id.clone())
+    }
+    pub(super) fn has_stream(&self, id: &str) -> bool {
+        self.visible_stream_order.contains(&stream_order(id))
     }
     pub fn stream_parent(&self) -> &str {
         if self.contains("transcript") {
@@ -150,6 +232,8 @@ impl DocumentStore {
         self.root = view.id.clone();
         self.tree = IndexedTree::new(view);
         self.streams.clear();
+        self.streams_by_owner.clear();
+        self.visible_stream_order.clear();
         let mut changes = Changes {
             full: true,
             ..Changes::default()
@@ -170,25 +254,49 @@ impl DocumentStore {
                 reset_live,
             } => {
                 for op in *tree {
+                    let mut removed_owners = Vec::new();
                     match op {
                         ViewOp::Insert { parent, .. } => {
                             changes.ids.insert(parent.clone());
+                            changes.retired.insert(parent.clone());
                         }
                         ViewOp::Remove { id } | ViewOp::Replace { id, .. } => {
+                            removed_owners.push(id.clone());
+                            changes.retired.insert(id.clone());
+                            changes.retired.extend(self.children(id));
                             // Capture the old ancestry before removal or replacement.
                             let mut cursor = Some(id.as_str());
                             while let Some(owner) = cursor {
                                 changes.ids.insert(owner.to_string());
+                                // Registered composites paint their indexed descendants as
+                                // one selection owner; changing a child retires that text.
+                                if self.node(owner).is_some_and(|node| {
+                                    matches!(
+                                        node.role.as_str(),
+                                        "queue" | "status.indicators" | "message.group.footer"
+                                    )
+                                }) {
+                                    changes.retired.insert(owner.to_string());
+                                }
                                 cursor = self.parent(owner);
                             }
                             let mut pending = self.children(id);
                             while let Some(child) = pending.pop() {
                                 pending.extend(self.children(&child));
-                                changes.ids.insert(child);
+                                changes.retired.insert(child.clone());
+                                changes.ids.insert(child.clone());
+                                removed_owners.push(child);
                             }
                         }
                     }
                     self.tree.apply(op)?;
+                    for owner in removed_owners {
+                        self.refresh_stream_owner(&owner);
+                    }
+                    if let ViewOp::Insert { node, .. } | ViewOp::Replace { node, .. } = op {
+                        // The inserted/replaced subtree can itself contain stream owners.
+                        self.refresh_stream_subtree(&node.id);
+                    }
                 }
                 if !tree.is_empty() {
                     self.prune_images(&mut changes);
@@ -210,15 +318,27 @@ impl DocumentStore {
     }
     fn reset_streams(&mut self, streams: &[misa_proto::sync::Stream], changes: &mut Changes) {
         changes.ids.extend(self.streams.keys().cloned());
+        changes.retired.extend(self.streams.keys().cloned());
         self.streams.clear();
+        self.streams_by_owner.clear();
+        self.visible_stream_order.clear();
         for stream in streams {
             self.streams
                 .insert(stream.id.clone(), LiveStream::new(stream));
+            if !stream.text.is_empty() {
+                self.insert_stream_key(&stream.id);
+            }
             changes.ids.insert(stream.id.clone());
         }
         self.invalidate_stream_projection(changes);
     }
     fn apply_stream(&mut self, update: &StreamUpdate, changes: &mut Changes) {
+        let id = match update {
+            StreamUpdate::Current { stream } => stream.id.as_str(),
+            StreamUpdate::Append { id, .. } | StreamUpdate::End { id } => id.as_str(),
+        };
+        self.remove_stream_key(id);
+        changes.retired.insert(id.to_owned());
         match update {
             StreamUpdate::Current { stream } => {
                 changes.ids.insert(stream.id.clone());
@@ -235,6 +355,13 @@ impl DocumentStore {
                 changes.ids.insert(id.clone());
                 self.streams.remove(id);
             }
+        }
+        if self
+            .streams
+            .get(id)
+            .is_some_and(|live| !live.text.is_empty())
+        {
+            self.insert_stream_key(id);
         }
         self.invalidate_stream_projection(changes);
     }
@@ -267,7 +394,11 @@ impl DocumentStore {
                 hashes.contains(&hash).then(|| node.id.clone())
             })
             .collect();
-        ImageChange::Loaded(Changes { ids, full: evicted })
+        ImageChange::Loaded(Changes {
+            ids,
+            full: evicted,
+            ..Changes::default()
+        })
     }
 }
 

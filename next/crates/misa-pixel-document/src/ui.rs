@@ -3,14 +3,13 @@
 use misa_kit::editor::{Editor, Motion};
 use misa_kit::intent::Intent;
 use misa_pixel_ui::{
-    ContextMenu, FieldViewport, MenuItem, MenuKey, MenuState, Op, Rect, Scene, TextMetrics,
-    Viewport,
+    ContextMenu, FieldViewport, FlowViewport, MenuItem, MenuKey, MenuState, Op, Rect, Scene,
+    TextMetrics,
 };
 use misa_proto::sync::{StreamUpdate, ViewOp};
 #[cfg(test)]
 use misa_proto::view::FieldKind;
 use misa_proto::view::{ActionOn, Kind, Node};
-#[cfg(test)]
 use misa_render::Theme;
 use misa_style::Style;
 use misa_value::Value;
@@ -21,6 +20,9 @@ use std::time::Duration;
 
 mod document;
 mod drafts;
+mod flow;
+#[cfg(test)]
+mod flow_tests;
 mod interaction;
 #[cfg(test)]
 mod interaction_tests;
@@ -95,7 +97,7 @@ pub struct DocumentUi {
     overlays: LocalOverlays,
     interaction: InteractionMap,
     drafts: drafts::Drafts,
-    viewport: Viewport,
+    viewport: FlowViewport<flow::FlowId>,
     offline_elapsed: Duration,
 }
 impl DocumentUi {
@@ -113,7 +115,7 @@ impl DocumentUi {
             overlays: LocalOverlays::default(),
             interaction: InteractionMap::default(),
             drafts: drafts::Drafts::default(),
-            viewport: Viewport::new(0.0, 600.0),
+            viewport: FlowViewport::default(),
             offline_elapsed: Duration::ZERO,
         };
         app.set_view(view);
@@ -154,12 +156,7 @@ impl DocumentUi {
             Event::Redraw(Size { width, height }) => {
                 if width != 0 && height != 0 {
                     output.frame = Some(self.frame_at(width, height, elapsed));
-                    output.deadline = self.retained.next_deadline(
-                        self.document.root(),
-                        self.viewport.offset(),
-                        self.viewport.viewport_height(),
-                        elapsed,
-                    );
+                    output.deadline = self.retained.next_deadline(elapsed);
                 }
             }
         }
@@ -174,11 +171,7 @@ impl DocumentUi {
     }
     /// Only painted moving groups intersecting the viewport need a pulse.
     pub fn animating(&self) -> bool {
-        self.retained.animating(
-            self.document.root(),
-            self.viewport.offset(),
-            self.viewport.viewport_height(),
-        )
+        self.retained.animating()
     }
     pub fn report(&mut self, title: String, value: Value) {
         self.overlays.report(title, value);
@@ -235,6 +228,14 @@ impl DocumentUi {
         self.set_view_with_streams(view, &[]);
     }
     fn set_view_with_streams(&mut self, mut view: Node, streams: &[misa_proto::sync::Stream]) {
+        // A reset can replace every reading ID. Capture its semantic place before
+        // replacing the index; ordinary edits and tail following remain untouched.
+        let theme = if self.light {
+            Theme::light()
+        } else {
+            Theme::dark()
+        };
+        let anchor = flow::ResetAnchor::capture(&self.document, &self.viewport, &theme);
         self.menu = None;
         misa_proto::sync::address(&mut view);
         let keys = self.drafts.reset(&view);
@@ -254,12 +255,24 @@ impl DocumentUi {
                 streams,
             })
             .expect("reset view is valid");
+        if let Some(anchor) = anchor {
+            anchor.restore(&self.document, &mut self.viewport, &theme);
+        }
         self.invalidate_document(changes);
         self.interaction.clear_selection();
         self.drafts.focus_changed(self.interaction.focus());
     }
 
     fn invalidate(&mut self, id: &str) {
+        // List-item fields are embedded in their indexed list owner.
+        let mut cursor = Some(self.document.cache_owner(id));
+        while let Some(owner) = cursor {
+            self.viewport
+                .invalidate(&flow::FlowId::Node(owner.to_owned()));
+            self.viewport
+                .invalidate(&flow::FlowId::Stream(owner.to_owned()));
+            cursor = self.document.parent(owner);
+        }
         self.retained.invalidate(id, &self.document);
     }
     fn invalidate_focus(&mut self) {
@@ -293,6 +306,24 @@ impl DocumentUi {
         self.drafts.focus_changed(self.interaction.focus());
     }
     fn invalidate_document(&mut self, changes: document::Changes) {
+        if changes.full {
+            self.interaction.clear_selection();
+        }
+        self.interaction.retire(&changes.retired);
+        if changes.full {
+            self.viewport.clear_measurements();
+        } else {
+            for id in &changes.ids {
+                let mut cursor = Some(id.as_str());
+                while let Some(owner) = cursor {
+                    self.viewport
+                        .invalidate(&flow::FlowId::Node(owner.to_owned()));
+                    self.viewport
+                        .invalidate(&flow::FlowId::Stream(owner.to_owned()));
+                    cursor = self.document.parent(owner);
+                }
+            }
+        }
         self.retained.invalidate_document(changes, &self.document);
     }
     /// One already-validated replica transaction. The window paints only after
@@ -338,7 +369,34 @@ impl DocumentUi {
     /// Pin an offline snapshot to the beginning of the view, rather than following
     /// live updates to the bottom. May be called before the first frame.
     pub fn pin_to_top(&mut self) {
-        self.viewport.pin_to_top();
+        self.viewport.anchor(flow::FlowId::Top, 0.0, 0.0);
+        if self.viewport.constraints().height > 0.0 {
+            let mut builder = layout::LayoutBuilder::new(
+                &self.document,
+                &mut self.drafts,
+                &mut self.interaction,
+                &mut self.retained,
+                &mut self.overlays,
+                self.metrics.as_ref(),
+                self.light,
+            );
+            let constraints = self.viewport.constraints();
+            self.viewport.layout(&mut builder, constraints);
+            self.sync_visible_moving();
+        }
+    }
+    /// Refresh pulse bounds from the flow's current placements without composing
+    /// a scene or applying editor viewport effects on a wheel event.
+    fn sync_visible_moving(&mut self) {
+        let constraints = self.viewport.constraints();
+        self.retained.begin_placement(constraints.height);
+        for placement in self.viewport.visible() {
+            if let flow::FlowId::Node(id) | flow::FlowId::Stream(id) = &placement.id {
+                if let Some(cached) = self.retained.get(id, constraints.width) {
+                    self.retained.place(id, &cached, placement.y);
+                }
+            }
+        }
     }
     fn menu_widget<'a>(
         &self,
@@ -466,6 +524,7 @@ impl DocumentUi {
                 vec![]
             }
             Some(MenuAction::Toggle(id)) => {
+                self.anchor_action_at(menu.anchor.1);
                 self.invalidate(&id);
                 self.interaction.toggle_disclosure(&id);
                 vec![]
@@ -484,7 +543,17 @@ impl DocumentUi {
         if self.overlays.scroll(delta) {
             return;
         }
-        self.viewport.scroll(delta);
+        let mut builder = layout::LayoutBuilder::new(
+            &self.document,
+            &mut self.drafts,
+            &mut self.interaction,
+            &mut self.retained,
+            &mut self.overlays,
+            self.metrics.as_ref(),
+            self.light,
+        );
+        self.viewport.wheel(&mut builder, delta);
+        self.sync_visible_moving();
     }
     pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
         if self.menu.is_some() {
@@ -511,8 +580,32 @@ impl DocumentUi {
         match self.interaction.pointer(x, y, dragging) {
             PointerResult::None | PointerResult::SelectionChanged => vec![],
             PointerResult::Activate(control) => {
-                self.viewport.stop_following();
+                self.anchor_action_at(y);
                 self.activate(control)
+            }
+        }
+    }
+    fn anchor_action_at(&mut self, y: f32) {
+        if matches!(
+            self.viewport.position,
+            misa_pixel_ui::FlowPosition::FollowTail
+        ) {
+            // Height-changing actions keep the acted-on owner fixed, not the
+            // later tail. Menus use the original right-click point here too.
+            if let Some(clicked) = self
+                .viewport
+                .visible()
+                .iter()
+                .find(|p| {
+                    matches!(p.id, flow::FlowId::Node(_) | flow::FlowId::Stream(_))
+                        && y >= p.y
+                        && y < p.y + p.height
+                })
+                .cloned()
+            {
+                self.viewport.anchor(clicked.id, y - clicked.y, y);
+            } else {
+                self.viewport.anchor(flow::FlowId::Top, 0.0, 0.0);
             }
         }
     }
