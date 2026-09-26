@@ -1,5 +1,5 @@
 use super::{Control, DocumentUi, FONT_SIZE, FieldViewport, PULSE_PERIOD, text};
-use misa_pixel_ui::{Op, Scene};
+use misa_pixel_ui::{FieldMode, Op, Scene};
 use misa_proto::view::{FieldKind, Node};
 use misa_render::Theme;
 use misa_style::Style;
@@ -370,6 +370,17 @@ impl LayoutBuilder<'_> {
             }
             _ => (None, FieldViewport::default()),
         };
+        let mode = match &control {
+            Control::Field { node, field }
+                if self
+                    .document
+                    .field(node, field)
+                    .is_some_and(|value| value.kind == FieldKind::Block) =>
+            {
+                FieldMode::WordWrap
+            }
+            _ => FieldMode::SingleLine,
+        };
         let placed = misa_pixel_ui::TextField {
             id: control,
             bounds: misa_pixel_ui::Rect {
@@ -379,6 +390,7 @@ impl LayoutBuilder<'_> {
                 height,
             },
             label: label.into(),
+            mode,
             font_size: FONT_SIZE,
             focused,
             cursor,

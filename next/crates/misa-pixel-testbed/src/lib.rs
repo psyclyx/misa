@@ -48,6 +48,9 @@ impl Headless {
     pub fn input(&mut self, event: Event) {
         match event {
             Event::Key(Key::Backspace) => self.dashboard.backspace_note(),
+            Event::Key(Key::Enter { newline: true }) if self.dashboard.note_focused() => {
+                self.dashboard.insert_note("\n")
+            }
             Event::Key(Key::Enter { .. }) if !self.dashboard.note_focused() => {
                 self.dashboard.toggle()
             }
@@ -200,37 +203,47 @@ mod tests {
     #[test]
     fn wheel_resize_and_follow_change_real_gpu_pixels() {
         let mut host = Headless::new(Size {
-            width: 130,
-            height: 300,
+            width: 500,
+            height: 500,
         })
         .expect("Vulkan ICD and GPU readback required; configure VK_ICD_FILENAMES");
         let top = host.frame().unwrap();
+        let (list_top, visible) = match top.scene.ops.last().unwrap() {
+            misa_pixel_ui::Op::ClipRect { y, height, .. } => (*y as usize, *height),
+            _ => panic!("list clip missing"),
+        };
         assert_eq!(host.dashboard.offset(), 0.0);
         host.input(Event::Wheel { delta: 26.0 });
         let scrolled = host.frame().unwrap();
         assert_eq!(host.dashboard.offset(), 26.0);
-        assert_ne!(pixel(&top, 38, 208), pixel(&scrolled, 38, 208));
+        assert_ne!(
+            pixel(&top, 38, list_top + 5),
+            pixel(&scrolled, 38, list_top + 5)
+        );
         host.input(Event::Wheel { delta: 100_000.0 });
         let end = host.frame().unwrap();
-        assert_eq!(host.dashboard.offset(), 20.0 * 26.0 - 35.0);
+        assert_eq!(host.dashboard.offset(), 20.0 * 26.0 - visible);
         assert_ne!(scrolled.pixels, end.pixels);
         host.input(Event::Resize(Size {
-            width: 130,
-            height: 800,
+            width: 500,
+            height: 1000,
         }));
         let taller = host.frame().unwrap();
         assert_eq!(host.dashboard.offset(), 0.0);
-        assert_eq!(pixel(&taller, 38, 208), pixel(&top, 38, 208));
+        assert_eq!(
+            pixel(&taller, 38, list_top + 5),
+            pixel(&top, 38, list_top + 5)
+        );
         host.dashboard.follow_tail();
         host.input(Event::Resize(Size {
-            width: 130,
-            height: 300,
+            width: 500,
+            height: 500,
         }));
         host.frame().unwrap();
-        assert_eq!(host.dashboard.offset(), 20.0 * 26.0 - 35.0);
+        assert_eq!(host.dashboard.offset(), 20.0 * 26.0 - visible);
         host.dashboard.append_row();
         let appended = host.frame().unwrap();
-        assert_eq!(host.dashboard.offset(), 21.0 * 26.0 - 35.0);
+        assert_eq!(host.dashboard.offset(), 21.0 * 26.0 - visible);
         assert_ne!(end.pixels, appended.pixels);
     }
 

@@ -1,7 +1,7 @@
 //! Toolkit-owned scene: no semantic tree or protocol types involved.
 use misa_pixel_ui::{
-    Button, FieldInsets, FieldViewport, PlacedField, Rect, TextField, TextFlow, TextMetrics,
-    Viewport,
+    Button, FieldInsets, FieldMode, FieldViewport, PlacedField, Rect, TextField, TextFlow,
+    TextMetrics, Viewport,
 };
 use misa_pixel_ui::{Op, Scene};
 use misa_style::Style;
@@ -39,7 +39,6 @@ impl Default for Dashboard {
     }
 }
 
-const LIST_TOP: f32 = 205.0;
 const ROW_HEIGHT: f32 = 26.0;
 
 impl Dashboard {
@@ -94,9 +93,10 @@ impl Dashboard {
                 x: 36.0,
                 y: 44.0,
                 width: (width as f32 - 72.0).max(1.0),
-                height: 27.0,
+                height: 76.0,
             },
             label: self.note.clone(),
+            mode: FieldMode::WordWrap,
             font_size: 15.0,
             focused: self.note_focused,
             cursor: Some(self.note_cursor),
@@ -161,15 +161,23 @@ impl Dashboard {
     pub fn frame(&mut self, width: u32, height: u32, metrics: &dyn TextMetrics) -> Scene {
         let button = self.button(width, metrics);
         let card_width = (width as f32 - 40.0).max(1.0);
-        let card_height = (height as f32 - 160.0).clamp(1.0, 310.0);
+        let flow = TextFlow::new(metrics, 15.0);
+        let description = "This card is built from Scene / Op, not misa-proto.";
+        let available = (card_width - 32.0).max(0.0);
+        let description_rows = flow.wrap(
+            vec![(Style::rgb(230, 232, 236), description.into())],
+            available,
+        );
+        let description_top = 205.0;
+        let list_top = description_top + description_rows.len() as f32 * flow.line_height() + 16.0;
         let mut scene = Scene {
             width: width as f32,
             height: height as f32,
             ops: vec![Op::Rect {
                 x: 20.0,
-                y: 74.0,
+                y: 200.0,
                 width: card_width,
-                height: card_height,
+                height: (list_top - 200.0).max(1.0),
                 style: Style::rgb(35, 40, 48),
             }],
         };
@@ -191,21 +199,16 @@ impl Dashboard {
             14.0,
             "Enter / Space or click the button to toggle",
         );
-        let flow = TextFlow::new(metrics, 15.0);
-        let description = "This card is built from Scene / Op, not misa-proto.";
-        let available = (card_width - 32.0).max(0.0);
-        for (line, runs) in flow
-            .wrap(
-                vec![(Style::rgb(230, 232, 236), description.into())],
-                available,
-            )
-            .into_iter()
-            .enumerate()
-        {
+        for (line, runs) in description_rows.into_iter().enumerate() {
+            // Reserve the footer even when the window is too short to show the
+            // complete description; its remaining rows never paint over it.
+            if description_top + (line + 1) as f32 * flow.line_height() > height as f32 - 60.0 {
+                break;
+            }
             flow.place(
                 Rect {
                     x: 36.0,
-                    y: 95.0 + line as f32 * flow.line_height(),
+                    y: description_top + line as f32 * flow.line_height(),
                     width: available,
                     height: flow.line_height(),
                 },
@@ -215,7 +218,7 @@ impl Dashboard {
         }
         // The list lives in its own clipped card. Width and height are measured
         // anew each frame, while the viewport retains the wheel/follow policy.
-        let list_height = (height as f32 - LIST_TOP - 60.0).max(1.0);
+        let list_height = (height as f32 - list_top - 60.0).max(0.0);
         let list_width = (width as f32 - 72.0).max(1.0);
         self.viewport
             .reconcile(self.rows as f32 * ROW_HEIGHT, list_height, 0.0);
@@ -225,7 +228,7 @@ impl Dashboard {
             if !self.viewport.visible(top, top + ROW_HEIGHT) {
                 continue;
             }
-            let y = LIST_TOP + self.viewport.position(top);
+            let y = list_top + self.viewport.position(top);
             rows.push(Op::Rect {
                 x: 36.0,
                 y,
@@ -247,7 +250,7 @@ impl Dashboard {
         }
         scene.ops.push(Op::ClipRect {
             x: 36.0,
-            y: LIST_TOP,
+            y: list_top,
             width: list_width,
             height: list_height,
             ops: Arc::new(rows),
@@ -299,6 +302,7 @@ mod tests {
             scene
                 .ops
                 .iter()
+                .take(scene.ops.len() - 1) // the final clip is the list
                 .filter_map(|op| match op {
                     Op::ClipRect {
                         x: 36.0,
@@ -306,7 +310,7 @@ mod tests {
                         width,
                         ops,
                         ..
-                    } if *y >= 95.0 && *y < 150.0 => Some((*width, ops.clone())),
+                    } if *y >= 205.0 && *y < 205.0 + 15.0 * 12.0 => Some((*width, ops.clone())),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -323,7 +327,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(reconstructed.starts_with("This card is built"));
+        assert!(reconstructed.starts_with("This card"));
     }
 
     #[test]

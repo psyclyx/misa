@@ -43,6 +43,14 @@ impl RetainedScenes {
     }
 
     pub(super) fn invalidate(&mut self, id: &str, document: &document::DocumentStore) {
+        // Live projections are outside the canonical index. A local disclosure
+        // toggle must invalidate their synthetic parent as well as the stream.
+        if !document.contains(id) && document.stream_or_node(id).is_some() {
+            self.cache.remove(id);
+            self.cache.remove("streams");
+            self.invalidate(document.stream_parent(), document);
+            return;
+        }
         let mut cursor = Some(document.cache_owner(id).to_string());
         while let Some(id) = cursor {
             self.cache.remove(&id);

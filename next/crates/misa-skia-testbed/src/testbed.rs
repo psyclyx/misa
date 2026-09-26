@@ -111,7 +111,9 @@ impl Fixtures {
             Event::Key(key) => self.key_at(key, elapsed),
             Event::Text(text) => {
                 if self.mode == Mode::Native {
-                    if text == " " {
+                    if self.native.note_focused() {
+                        self.native.insert_note(&text);
+                    } else if text == " " {
                         self.native.toggle();
                     }
                 } else {
@@ -155,11 +157,14 @@ impl Fixtures {
     }
     fn key_at(&mut self, key: Key, elapsed: Duration) {
         match self.mode {
-            Mode::Native => {
-                if matches!(key, Key::Enter { .. }) {
-                    self.native.toggle();
+            Mode::Native => match key {
+                Key::Backspace => self.native.backspace_note(),
+                Key::Enter { newline: true } if self.native.note_focused() => {
+                    self.native.insert_note("\n")
                 }
-            }
+                Key::Enter { .. } if !self.native.note_focused() => self.native.toggle(),
+                _ => {}
+            },
             Mode::Semantic => self.semantic_input(Event::Key(key), elapsed),
         }
     }
@@ -247,6 +252,43 @@ mod tests {
             }
         }
         text
+    }
+
+    #[test]
+    fn block_draft_wraps_without_changing_its_text_on_resize_or_reset() {
+        let mut fixture = semantic_fixture();
+        let Kind::Fields { fields } = &mut fixture.children.last_mut().unwrap().kind else {
+            panic!("fixture field")
+        };
+        fields[0].kind = FieldKind::Block;
+        let metrics = misa_skia_paint::text_metrics().unwrap();
+        let mut app = DocumentUi::new(fixture.clone(), metrics);
+        app.focus_control(Some(misa_pixel_document::ui::Control::Field {
+            node: "panel.input".into(),
+            field: "note".into(),
+        }));
+        let draft = " abcdefghijklmnopqrstuvwxyz\nlast";
+        app.drive(Event::Text(draft.into()), Duration::ZERO);
+        let narrow = app.frame(130, 440);
+        let painted = scene_text(&narrow.ops);
+        assert!(
+            painted.contains("last"),
+            "caret follows the final visual row"
+        );
+        assert!(
+            !painted.contains("Local draft abcdefghijklmnopqrstuvwxyz"),
+            "block uses soft rows"
+        );
+        assert_eq!(
+            app.field_text("panel.input", "note"),
+            Some(format!("Local draft{draft}").as_str())
+        );
+        app.frame(500, 440);
+        app.set_view(fixture);
+        assert_eq!(
+            app.field_text("panel.input", "note"),
+            Some(format!("Local draft{draft}").as_str())
+        );
     }
 
     #[test]

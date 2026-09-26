@@ -85,30 +85,21 @@ fn retained_bitmap_reaches_raster() {
 }
 
 fn parity(app: &mut DocumentUi, tree: &IndexedTree, streams: &[Stream]) {
-    let mut view = tree.snapshot();
-    let mut overlay = Node::section("streams").id("streams");
-    for stream in streams {
-        let owner = stream
-            .id
-            .rsplit_once('.')
-            .map_or(stream.id.as_str(), |(owner, _)| owner);
-        if !stream.text.is_empty() && !tree.contains(owner) {
-            overlay.children.push(
-                Node::text(&stream.role, [Span::plain(&stream.text)])
-                    .id(&stream.id)
-                    .state(misa_proto::view::State::Streaming),
-            );
-        }
-    }
-    if !overlay.children.is_empty() {
-        view.children[0].children.push(overlay);
-    }
+    let view = tree.snapshot();
     let warm = app.frame_at(800, 600, Duration::ZERO);
-    let cold = DocumentUi::new(
-        view,
+    let mut cold_app = DocumentUi::new(
+        view.clone(),
         text_metrics().expect("Skia text metrics for cold parity frame"),
-    )
-    .frame_at(800, 600, Duration::ZERO);
+    );
+    // Reconstruct from the canonical tree and current streams through the same
+    // public document transaction, not a separate plain-text fixture projection.
+    cold_app
+        .observed(&DocumentUpdate::Reset {
+            tree: &view,
+            streams,
+        })
+        .unwrap();
+    let cold = cold_app.frame_at(800, 600, Duration::ZERO);
     assert_eq!(
         raster(&warm, BACKGROUND).unwrap(),
         raster(&cold, BACKGROUND).unwrap()

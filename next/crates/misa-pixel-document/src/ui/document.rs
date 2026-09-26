@@ -1,6 +1,6 @@
 //! Canonical view, live stream projections and bounded decoded-image ownership.
 use super::DocumentUpdate;
-use misa_proto::sync::{IndexedTree, StreamUpdate, ViewOp};
+use misa_proto::sync::{IndexedTree, Stream, StreamUpdate, ViewOp};
 use misa_proto::view::{Kind, Node, Span, State};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -14,7 +14,7 @@ pub(super) struct Changes {
 pub(super) struct DocumentStore {
     tree: IndexedTree,
     root: String,
-    streams: BTreeMap<String, Node>,
+    streams: BTreeMap<String, LiveStream>,
     images: BTreeMap<String, Arc<image::RgbaImage>>,
 }
 
@@ -77,7 +77,10 @@ impl DocumentStore {
             .or_else(|| self.tree.nodes().find_map(|node| find(node, id, field)))
     }
     pub fn stream_or_node(&self, id: &str) -> Option<&Node> {
-        self.streams.get(id).or_else(|| self.node(id))
+        self.streams
+            .get(id)
+            .map(|live| &live.node)
+            .or_else(|| self.node(id))
     }
     pub fn contains(&self, id: &str) -> bool {
         self.tree.contains(id)
@@ -109,15 +112,18 @@ impl DocumentStore {
         self.images.values().map(|image| image.as_raw().len()).sum()
     }
     pub fn visible_streams(&self) -> Vec<String> {
-        self.streams
+        let mut ids: Vec<_> = self
+            .streams
             .iter()
-            .filter(|(id, node)| {
+            .filter(|(id, live)| {
                 let owner = id.rsplit_once('.').map(|(owner, _)| owner).unwrap_or(id);
-                !self.tree.contains(owner)
-                    && matches!(&node.kind, Kind::Text { spans } if spans.iter().any(|span| !span.text.is_empty()))
+                !self.tree.contains(owner) && !live.text.is_empty()
             })
             .map(|(id, _)| id.clone())
-            .collect()
+            .collect();
+        // Thinking precedes the answer even though `.text` sorts before `.thinking`.
+        ids.sort_by_key(|id| stream_order(id));
+        ids
     }
     pub fn stream_parent(&self) -> &str {
         if self.contains("transcript") {
@@ -206,10 +212,8 @@ impl DocumentStore {
         changes.ids.extend(self.streams.keys().cloned());
         self.streams.clear();
         for stream in streams {
-            self.streams.insert(
-                stream.id.clone(),
-                stream_node(&stream.id, &stream.role, &stream.text),
-            );
+            self.streams
+                .insert(stream.id.clone(), LiveStream::new(stream));
             changes.ids.insert(stream.id.clone());
         }
         self.invalidate_stream_projection(changes);
@@ -218,21 +222,13 @@ impl DocumentStore {
         match update {
             StreamUpdate::Current { stream } => {
                 changes.ids.insert(stream.id.clone());
-                self.streams.insert(
-                    stream.id.clone(),
-                    stream_node(&stream.id, &stream.role, &stream.text),
-                );
+                self.streams
+                    .insert(stream.id.clone(), LiveStream::new(stream));
             }
             StreamUpdate::Append { id, text, .. } => {
                 changes.ids.insert(id.clone());
-                if let Some(Node {
-                    kind: Kind::Text { spans },
-                    ..
-                }) = self.streams.get_mut(id)
-                {
-                    if let Some(span) = spans.first_mut() {
-                        span.text.push_str(text);
-                    }
+                if let Some(live) = self.streams.get_mut(id) {
+                    live.append(text);
                 }
             }
             StreamUpdate::End { id } => {
@@ -281,10 +277,91 @@ pub(super) enum ImageChange {
     Loaded(Changes),
 }
 
-fn stream_node(id: &str, role: &str, text: &str) -> Node {
-    Node::text(role, [Span::plain(text)])
-        .id(id)
-        .state(State::Streaming)
+/// The parsed in-flight body is owned by the document, not by the paint pass.
+struct LiveStream {
+    role: String,
+    text: String,
+    parsed: Option<misa_markdown::Document>,
+    node: Node,
+}
+
+impl LiveStream {
+    fn new(stream: &Stream) -> Self {
+        let mut live = Self {
+            role: stream.role.clone(),
+            text: String::new(),
+            parsed: None,
+            node: Node::section(&stream.role)
+                .id(&stream.id)
+                .state(State::Streaming),
+        };
+        live.append(&stream.text);
+        live
+    }
+
+    fn append(&mut self, delta: &str) {
+        self.text.push_str(delta);
+        let id = self.node.id.clone();
+        if thinking_stream(&self.role) {
+            // Reasoning is plain text in the settled tree too. Keep the same
+            // disclosure identity across appends and let the reader open it.
+            self.node = Node::new(
+                &self.role,
+                Kind::Collapsible {
+                    summary: thinking_summary(&self.text),
+                },
+            )
+            .id(&id)
+            .state(State::Streaming)
+            .child(
+                Node::text(format!("{}.text", self.role), [Span::plain(&self.text)])
+                    .id(format!("{id}.body")),
+            );
+            self.parsed = None;
+        } else {
+            let parsed = misa_markdown::document(&self.role, &self.text, self.parsed.as_ref());
+            let mut blocks = parsed.blocks.clone();
+            // Positional IDs keep the unchanged prefix's identity across appends.
+            // Nested block addresses are assigned by the protocol's address policy.
+            for (index, block) in blocks.iter_mut().enumerate() {
+                block.id = format!("{id}.block.{index}");
+                misa_proto::sync::address(block);
+            }
+            self.node = Node::section(&self.role)
+                .id(&id)
+                .state(State::Streaming)
+                .children(blocks);
+            self.parsed = Some(parsed);
+        }
+    }
+}
+
+pub(super) fn thinking_summary(text: &str) -> Vec<Span> {
+    let mut summary = vec![Span::strong("thinking")];
+    if !text.is_empty() {
+        // A collapsed live disclosure follows the last three lines, like TUI
+        // Live; opening it exposes the full, unparsed reasoning body.
+        let tail = text.lines().rev().take(3).collect::<Vec<_>>();
+        summary.push(Span::plain(format!(
+            " · {}",
+            tail.into_iter().rev().collect::<Vec<_>>().join(" ↵ ")
+        )));
+    }
+    summary
+}
+
+pub(super) fn thinking_stream(role: &str) -> bool {
+    role.starts_with("message.assistant.thinking") || role.starts_with("message.thinking")
+}
+
+pub(super) fn stream_order(id: &str) -> (String, u8, String) {
+    let (owner, suffix) = id.rsplit_once('.').unwrap_or((id, ""));
+    let rank = match suffix {
+        "thinking" => 0,
+        "text" => 1,
+        _ => 2,
+    };
+    (owner.to_string(), rank, id.to_string())
 }
 fn image_hashes(node: &Node, hashes: &mut BTreeSet<String>) {
     if let Kind::Image { blob, .. } = &node.kind {

@@ -2819,6 +2819,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "misa-kit",
+ "misa-markdown",
  "misa-pixel-ui",
  "misa-proto",
  "misa-render",
@@ -2846,6 +2847,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "misa-style",
+ "unicode-segmentation",
 ]
 
 [[package]]

@@ -1845,27 +1845,53 @@ fn cold_scene(
     tree: &misa_proto::sync::IndexedTree,
     streams: &[misa_proto::sync::Stream],
 ) {
-    let mut view = tree.snapshot();
-    let mut overlay = Node::section("streams").id("streams");
-    for stream in streams {
-        let owner = stream
-            .id
-            .rsplit_once('.')
-            .map_or(stream.id.as_str(), |(owner, _)| owner);
-        if !stream.text.is_empty() && !tree.contains(owner) {
-            overlay.children.push(
-                Node::text(&stream.role, [Span::plain(&stream.text)])
-                    .id(&stream.id)
-                    .state(misa_proto::view::State::Streaming),
-            );
-        }
-    }
-    if !overlay.children.is_empty() {
-        view.children[0].children.push(overlay);
-    }
     let scene = app.frame(800, 600);
-    let expected = DocumentUi::new(view, test_metrics()).frame(800, 600);
+    let view = tree.snapshot();
+    let mut cold = DocumentUi::new(view.clone(), test_metrics());
+    cold.observed(&DocumentUpdate::Reset {
+        tree: &view,
+        streams,
+    })
+    .unwrap();
+    let expected = cold.frame(800, 600);
     assert_eq!(scene, expected);
+}
+fn cold_stream_node(stream: &misa_proto::sync::Stream) -> Node {
+    use misa_proto::view::State;
+    let id = &stream.id;
+    if super::document::thinking_stream(&stream.role) {
+        return Node::new(
+            &stream.role,
+            Kind::Collapsible {
+                summary: {
+                    let mut summary = vec![Span::strong("thinking")];
+                    if !stream.text.is_empty() {
+                        let tail = stream.text.lines().rev().take(3).collect::<Vec<_>>();
+                        summary.push(Span::plain(format!(
+                            " · {}",
+                            tail.into_iter().rev().collect::<Vec<_>>().join(" ↵ ")
+                        )));
+                    }
+                    summary
+                },
+            },
+        )
+        .id(id)
+        .state(State::Streaming)
+        .child(
+            Node::text(format!("{}.text", stream.role), [Span::plain(&stream.text)])
+                .id(format!("{id}.body")),
+        );
+    }
+    let mut blocks = misa_markdown::document(&stream.role, &stream.text, None).blocks;
+    for (index, block) in blocks.iter_mut().enumerate() {
+        block.id = format!("{id}.block.{index}");
+        misa_proto::sync::address(block);
+    }
+    Node::section(&stream.role)
+        .id(id)
+        .state(State::Streaming)
+        .children(blocks)
 }
 fn observed_changes(
     app: &mut DocumentUi,
@@ -1917,7 +1943,7 @@ fn stream_append_and_subtree_replace_reuse_unchanged_owner_scenes() {
         );
         stream.text.push_str(" world");
         app.frame(800, 600);
-        assert_eq!(app.retained.rendered_nodes(), 4);
+        assert_eq!(app.retained.rendered_nodes(), 5);
         for (index, ops) in retained.iter().enumerate() {
             assert!(Arc::ptr_eq(
                 ops,
@@ -1987,6 +2013,231 @@ fn stream_completion_and_owner_removal_match_cold_rebuilds() {
     );
     cold_scene(&mut app, &tree, &[]);
 }
+#[test]
+fn markdown_stream_appends_reparse_partial_blocks_and_keep_prefix_ids() {
+    use misa_proto::sync::{Stream, StreamUpdate};
+    use misa_proto::view::SpanKind;
+    let mut app = DocumentUi::new(protocol_view(0), test_metrics());
+    let mut stream = Stream {
+        id: "msg.4.text".into(),
+        role: "message.assistant".into(),
+        text: String::new(),
+    };
+    observed_changes(
+        &mut app,
+        vec![],
+        vec![StreamUpdate::Current {
+            stream: stream.clone(),
+        }],
+        false,
+    );
+    for delta in [
+        "# Title\n\nfirst\n\nsecond\n\nthird\n\n*open",
+        " and closed*",
+        "\n\n```rust\nlet x = 1;",
+        "\n```\n\n| a | b |\n| --- | :---: |",
+        "\n| **yes** | no |",
+    ] {
+        let offset = stream.text.len();
+        observed_changes(
+            &mut app,
+            vec![],
+            vec![StreamUpdate::Append {
+                id: stream.id.clone(),
+                offset,
+                text: delta.into(),
+            }],
+            false,
+        );
+        stream.text.push_str(delta);
+        let live = app.document.stream_or_node(&stream.id).unwrap();
+        let cold = cold_stream_node(&stream);
+        assert_eq!(live, &cold, "after {delta:?}");
+        assert_eq!(live.children[0].id, "msg.4.text.block.0");
+        assert!(matches!(live.children[0].kind, Kind::Heading { .. }));
+        let scene = app.frame(360, 600);
+        let mut fresh = DocumentUi::new(protocol_view(0), test_metrics());
+        let view = protocol_view(0);
+        fresh
+            .observed(&DocumentUpdate::Reset {
+                tree: &view,
+                streams: &[stream.clone()],
+            })
+            .unwrap();
+        assert_eq!(scene, fresh.frame(360, 600));
+    }
+    let live = app.document.stream_or_node(&stream.id).unwrap();
+    assert!(live.children.iter().any(|node| matches!(&node.kind, Kind::Code { lang: Some(lang), text } if lang == "rust" && text == "let x = 1;")));
+    assert!(live.children.iter().any(|node| matches!(&node.kind, Kind::Table { rows, .. } if rows.iter().flatten().flatten().any(|span| span.kind == SpanKind::Strong))));
+    assert!(live.children.iter().any(|node| matches!(&node.kind, Kind::Text { spans } if spans.iter().any(|span| span.kind == SpanKind::Emphasis && span.text == "open and closed"))));
+}
+
+#[test]
+fn completed_markdown_stream_matches_settled_pixel_text_at_narrow_width() {
+    use misa_proto::sync::Stream;
+    let text = "# Heading\n\nA **bold** and *italic* word\n\n```rust\nlet x = 1;\n```\n\n| a | b |\n| --- | --- |\n| one | two |";
+    let stream = Stream {
+        id: "msg.4.text".into(),
+        role: "message.assistant".into(),
+        text: text.into(),
+    };
+    let view = protocol_view(0);
+    let mut live = DocumentUi::new(view.clone(), test_metrics());
+    live.observed(&DocumentUpdate::Reset {
+        tree: &view,
+        streams: &[stream.clone()],
+    })
+    .unwrap();
+    let settled = Node::section("message.assistant")
+        .id("msg.4")
+        .children(misa_markdown::blocks(&stream.role, text));
+    let mut view = view;
+    view.children[0].children.push(settled);
+    let mut cold = DocumentUi::new(view, test_metrics());
+    fn painted_text(scene: &Scene) -> Vec<(Style, String)> {
+        fn visit(ops: &[Op], out: &mut Vec<(Style, String)>) {
+            for op in ops {
+                match op {
+                    Op::Text { style, text, .. } => out.push((*style, text.clone())),
+                    Op::Group { ops, .. } | Op::ClipRect { ops, .. } => visit(ops, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut out = vec![];
+        visit(&scene.ops, &mut out);
+        out
+    }
+    assert_eq!(
+        painted_text(&live.frame(185, 600)),
+        painted_text(&cold.frame(185, 600))
+    );
+}
+
+#[test]
+fn current_rolls_back_markdown_and_end_and_reset_retire_it() {
+    use misa_proto::sync::{Stream, StreamUpdate};
+    let view = protocol_view(0);
+    let mut app = DocumentUi::new(view.clone(), test_metrics());
+    let mut stream = Stream {
+        id: "msg.1.text".into(),
+        role: "message.assistant".into(),
+        text: "old **bold".into(),
+    };
+    observed_changes(
+        &mut app,
+        vec![],
+        vec![StreamUpdate::Current {
+            stream: stream.clone(),
+        }],
+        false,
+    );
+    assert_eq!(
+        app.document.stream_or_node(&stream.id),
+        Some(&cold_stream_node(&stream))
+    );
+    stream.text = "new | heading\n--- | ---\ncell | next".into();
+    observed_changes(
+        &mut app,
+        vec![],
+        vec![StreamUpdate::Current {
+            stream: stream.clone(),
+        }],
+        false,
+    );
+    assert_eq!(
+        app.document.stream_or_node(&stream.id),
+        Some(&cold_stream_node(&stream))
+    );
+    assert!(matches!(
+        app.document.stream_or_node(&stream.id).unwrap().children[0].kind,
+        Kind::Table { .. }
+    ));
+    observed_changes(
+        &mut app,
+        vec![],
+        vec![StreamUpdate::End {
+            id: stream.id.clone(),
+        }],
+        false,
+    );
+    assert!(app.document.streams_empty());
+    assert!(app.document.visible_streams().is_empty());
+    observed_changes(
+        &mut app,
+        vec![],
+        vec![StreamUpdate::Current { stream }],
+        false,
+    );
+    app.observed(&DocumentUpdate::Reset {
+        tree: &view,
+        streams: &[],
+    })
+    .unwrap();
+    assert!(app.document.streams_empty());
+}
+
+#[test]
+fn thinking_precedes_answer_and_stays_plain_behind_disclosure() {
+    use misa_proto::sync::Stream;
+    let view = protocol_view(0);
+    let mut app = DocumentUi::new(view.clone(), test_metrics());
+    let streams = [
+        Stream {
+            id: "msg.1.text".into(),
+            role: "message.assistant".into(),
+            text: "**answer**".into(),
+        },
+        Stream {
+            id: "msg.1.thinking".into(),
+            role: "message.assistant.thinking".into(),
+            text: "**literal**".into(),
+        },
+    ];
+    app.observed(&DocumentUpdate::Reset {
+        tree: &view,
+        streams: &streams,
+    })
+    .unwrap();
+    assert_eq!(
+        app.document.visible_streams(),
+        ["msg.1.thinking", "msg.1.text"]
+    );
+    let thinking = app.document.stream_or_node("msg.1.thinking").unwrap();
+    assert!(matches!(thinking.kind, Kind::Collapsible { .. }));
+    assert!(
+        matches!(&thinking.children[0].kind, Kind::Text { spans } if spans[0].text == "**literal**")
+    );
+    let closed = app.frame(320, 500);
+    app.activate(Control::Disclosure("msg.1.thinking".into()));
+    let open = app.frame(320, 500);
+    assert_ne!(closed, open);
+    observed_changes(
+        &mut app,
+        vec![],
+        vec![misa_proto::sync::StreamUpdate::Append {
+            id: "msg.1.thinking".into(),
+            offset: "**literal**".len(),
+            text: "\nlast line".into(),
+        }],
+        false,
+    );
+    assert!(
+        matches!(&app.document.stream_or_node("msg.1.thinking").unwrap().children[0].kind,
+        Kind::Text { spans } if spans[0].text == "**literal**\nlast line")
+    );
+    assert_ne!(closed, app.frame(320, 500));
+    app.observed(&DocumentUpdate::Reset {
+        tree: &view,
+        streams: &streams,
+    })
+    .unwrap();
+    assert_eq!(
+        app.document.visible_streams(),
+        ["msg.1.thinking", "msg.1.text"]
+    );
+}
+
 #[test]
 fn headless_driver_uses_fake_clock_and_never_presents() {
     use misa_window_core::Clock;

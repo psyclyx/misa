@@ -51,6 +51,57 @@ fn native_key_pointer_and_resize_reach_gpu_readback() {
 }
 
 #[test]
+fn native_note_soft_wrap_newline_and_resize_reach_offscreen_gpu() {
+    let mut host = Headless::new(Size {
+        width: 130,
+        height: 320,
+    })
+    .unwrap();
+    host.input(Event::Pointer {
+        x: 40.0,
+        y: 50.0,
+        dragging: false,
+    });
+    let empty = host.frame().unwrap();
+    host.input(Event::Text("a long unbroken word for wrapping".into()));
+    host.input(Event::Key(Key::Enter { newline: true }));
+    host.input(Event::Text("tail".into()));
+    let narrow = host.frame().unwrap();
+    assert_ne!(empty.pixels, narrow.pixels);
+    let clip = narrow
+        .scene
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            Op::ClipRect {
+                x: 43.0,
+                y: 50.0,
+                ops,
+                ..
+            } => Some(ops),
+            _ => None,
+        })
+        .expect("measured note field clip");
+    assert!(
+        clip.iter()
+            .any(|op| matches!(op, Op::Text { text, .. } if text.contains("tail")))
+    );
+    assert!(
+        clip.iter()
+            .filter(|op| matches!(op, Op::Text { .. }))
+            .count()
+            > 1
+    );
+    host.input(Event::Resize(Size {
+        width: 500,
+        height: 320,
+    }));
+    let wide = host.frame().unwrap();
+    assert_ne!(narrow.pixels, wide.pixels);
+    assert_eq!(wide.pixels.dimensions(), (500, 320));
+}
+
+#[test]
 fn semantic_text_pointer_resize_and_fake_clock_paint_glyphs_on_gpu() {
     let mut host = Headless::new(Size {
         width: 600,
