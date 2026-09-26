@@ -85,12 +85,17 @@ impl SessionViews {
         self.local.open_commands();
     }
     pub(super) fn cycle_panel(&mut self) -> bool {
-        let ids: Vec<_> = self.panels.keys().collect();
+        let ids: Vec<_> = self.panels.keys().cloned().collect();
         if ids.is_empty() {
             return false;
         }
-        let current = ids.iter().position(|id| *id == &self.panel).unwrap_or(0);
-        self.panel = ids[(current + 1) % ids.len()].clone();
+        // The default "status" panel may not have arrived yet. Select the
+        // first available panel instead of cycling from a nonexistent one.
+        let next = ids
+            .iter()
+            .position(|id| id == &self.panel)
+            .map_or(0, |current| (current + 1) % ids.len());
+        self.panel = ids[next].clone();
         self.panel_focus = true;
         true
     }
@@ -565,6 +570,27 @@ mod session_tests {
                 incarnation: "one".into(),
             },
         )
+    }
+
+    #[test]
+    fn cycling_before_the_default_panel_arrives_selects_an_available_panel() {
+        let metrics = misa_skia_paint::text_metrics().unwrap();
+        let mut views =
+            SessionViews::new(misa_proto::Node::section("offline"), metrics.clone(), false);
+        assert!(!views.cycle_panel());
+        views.panels.insert(
+            "inspector".into(),
+            DocumentUi::new(misa_proto::Node::section("inspector"), metrics.clone()),
+        );
+        views.panels.insert(
+            "requests".into(),
+            DocumentUi::new(misa_proto::Node::section("requests"), metrics),
+        );
+        assert!(views.cycle_panel());
+        assert_eq!(views.panel, "inspector");
+        assert!(views.panel_focus);
+        assert!(views.cycle_panel());
+        assert_eq!(views.panel, "requests");
     }
 
     #[test]
