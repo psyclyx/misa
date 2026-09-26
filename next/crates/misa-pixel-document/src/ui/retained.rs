@@ -1,7 +1,9 @@
 //! Retained owner display lists and the policy for invalidating them. The document
 //! supplies ancestry; only painted, visible moving owners schedule pulse work.
+use super::Control;
 use super::interaction::GroupGeometry;
 use super::{PULSE_PERIOD, document};
+use misa_pixel_ui::FieldViewport;
 use misa_pixel_ui::Op;
 use misa_proto::view::{Kind, Node};
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,12 +17,19 @@ pub(super) struct IndicatorBounds {
     pub(super) bottom: f32,
 }
 
+struct Placement {
+    id: String,
+    y: f32,
+}
+
 pub(super) struct Cached {
     pub(super) width: f32,
     pub(super) height: f32,
     pub(super) ops: Arc<Vec<Op>>,
     pub(super) geometry: GroupGeometry,
-    indicators: Vec<IndicatorBounds>,
+    pub(super) viewport_effects: Vec<(Control, FieldViewport)>,
+    children: Vec<Placement>,
+    has_moving: bool,
     phase: Option<u64>,
 }
 
@@ -28,7 +37,8 @@ pub(super) struct Cached {
 pub(super) struct RetainedScenes {
     cache: BTreeMap<String, Arc<Cached>>,
     moving: BTreeSet<String>,
-    stack: Vec<Vec<IndicatorBounds>>,
+    stack: Vec<Vec<Placement>>,
+    placed: Vec<IndicatorBounds>,
     width: u32,
     phase: u64,
     #[cfg(test)]
@@ -40,6 +50,7 @@ impl RetainedScenes {
         self.cache.clear();
         self.moving.clear();
         self.stack.clear();
+        self.placed.clear();
     }
 
     pub(super) fn invalidate(&mut self, id: &str, document: &document::DocumentStore) {
@@ -100,6 +111,10 @@ impl RetainedScenes {
         self.stack.push(Vec::new());
     }
 
+    pub(super) fn begin_placement(&mut self) {
+        self.placed.clear();
+    }
+
     pub(super) fn observe_status(&mut self, model: &Node) {
         let moving = model
             .children
@@ -120,49 +135,79 @@ impl RetainedScenes {
         ops: Vec<Op>,
         geometry: GroupGeometry,
         status: bool,
+        viewport_effects: Vec<(Control, FieldViewport)>,
     ) -> Arc<Cached> {
-        let mut indicators = self.stack.pop().expect("retained group stack");
+        let children = self.stack.pop().expect("retained group stack");
         let moving = status && self.moving.contains(id);
-        if moving {
-            indicators.push(IndicatorBounds {
-                id: id.to_string(),
-                top: 0.0,
-                bottom: height,
-            });
-        }
         let cached = Arc::new(Cached {
             width,
             height,
             ops: Arc::new(ops),
             geometry,
-            indicators,
+            viewport_effects,
+            has_moving: moving || !children.is_empty(),
+            children,
             phase: moving.then_some(self.phase),
         });
         self.cache.insert(id.to_string(), cached.clone());
         cached
     }
 
-    pub(super) fn place(&mut self, cached: &Cached, y: f32) {
+    pub(super) fn place(&mut self, id: &str, cached: &Cached, y: f32) {
         if let Some(parent) = self.stack.last_mut() {
-            parent.extend(cached.indicators.iter().map(|bounds| IndicatorBounds {
-                id: bounds.id.clone(),
-                top: bounds.top + y,
-                bottom: bounds.bottom + y,
-            }));
+            if cached.has_moving {
+                parent.push(Placement {
+                    id: id.to_string(),
+                    y,
+                });
+            }
+        } else {
+            // Only a placed root makes its descendants visible. Walk the retained
+            // owner links, not the document or its unplaced cached groups.
+            for child in &cached.children {
+                Self::collect_placed(&self.cache, &child.id, child.y, &mut self.placed);
+            }
+            if cached.phase.is_some() {
+                // Root itself may be the moving owner.
+                self.placed.push(IndicatorBounds {
+                    id: id.to_string(),
+                    top: 0.0,
+                    bottom: cached.height,
+                });
+            }
+        }
+    }
+
+    fn collect_placed(
+        cache: &BTreeMap<String, Arc<Cached>>,
+        id: &str,
+        y: f32,
+        placed: &mut Vec<IndicatorBounds>,
+    ) {
+        let Some(cached) = cache.get(id) else {
+            return;
+        };
+        if cached.phase.is_some() {
+            placed.push(IndicatorBounds {
+                id: id.to_string(),
+                top: y,
+                bottom: y + cached.height,
+            });
+        }
+        for child in &cached.children {
+            Self::collect_placed(cache, &child.id, y + child.y, placed);
         }
     }
 
     fn visible<'a>(
         &'a self,
-        root: &str,
+        _root: &str,
         scroll: f32,
         viewport: f32,
     ) -> impl Iterator<Item = &'a str> {
         let top = 20.0 - scroll;
-        self.cache
-            .get(root)
-            .into_iter()
-            .flat_map(|cached| cached.indicators.iter())
+        self.placed
+            .iter()
             .filter(move |bounds| {
                 top + bounds.top < viewport
                     && top + bounds.bottom > 0.0
@@ -224,8 +269,8 @@ impl RetainedScenes {
         self.cache.contains_key(id)
     }
     #[cfg(test)]
-    pub(super) fn indicators(&self, id: &str) -> &[IndicatorBounds] {
-        &self.cache[id].indicators
+    pub(super) fn placed_indicators(&self) -> &[IndicatorBounds] {
+        &self.placed
     }
 }
 

@@ -64,6 +64,253 @@ fn walk_ops(ops: &[Op], visit: &mut impl FnMut(&Op)) {
 }
 
 #[test]
+fn every_kind_retains_the_same_owner_when_measured_without_placement() {
+    use misa_proto::view::{BlobRef, Definition, Field};
+    let span = || vec![Span::plain("a long measured line 界")];
+    let child = || Node::text("plain", span()).id("nested");
+    let kinds = [
+        Kind::Section,
+        Kind::Text { spans: span() },
+        Kind::Heading {
+            level: 1,
+            spans: span(),
+        },
+        Kind::Quote,
+        Kind::Rule,
+        Kind::Code {
+            lang: Some("rust".into()),
+            text: "fn main() {}".into(),
+        },
+        Kind::List {
+            ordered: true,
+            items: vec![vec![child()]],
+            markers: vec![None],
+        },
+        Kind::Table {
+            head: vec![span()],
+            rows: vec![vec![span()]],
+            align: vec![],
+        },
+        Kind::Definition {
+            entries: vec![Definition {
+                term: span(),
+                definitions: vec![span()],
+            }],
+        },
+        Kind::Fields {
+            fields: vec![Field {
+                id: "value".into(),
+                label: "Value".into(),
+                value: "界".into(),
+                hint: None,
+                kind: FieldKind::Inline,
+                read_only: false,
+                secret: false,
+            }],
+        },
+        Kind::Collapsible { summary: span() },
+        Kind::Image {
+            blob: BlobRef {
+                hash: "missing".into(),
+                len: 4,
+                media: None,
+            },
+            alt: "image".into(),
+            width: 2,
+            height: 2,
+        },
+        Kind::Status {
+            text: "working".into(),
+        },
+        Kind::Meter {
+            label: "used".into(),
+            value: 2.0,
+            max: 4.0,
+        },
+        Kind::Fact {
+            value: Value::from(42),
+        },
+    ];
+    for (index, kind) in kinds.into_iter().enumerate() {
+        let node = Node::new("test", kind)
+            .id("owner")
+            .label("Label")
+            .child(child())
+            .action(Action {
+                id: "go".into(),
+                on: ActionOn::Submit,
+                label: None,
+                args: Value::Null,
+            });
+        let mut standard = DocumentUi::new(node.clone(), test_metrics());
+        standard.frame_at(640, 480, Duration::ZERO);
+        let expected = standard.retained.cached("owner");
+        let mut measured = DocumentUi::new(node, test_metrics());
+        measured.retained.begin_frame(640, Duration::ZERO);
+        let viewport = measured.viewport;
+        let theme = Theme::dark();
+        let mut builder = super::layout::LayoutBuilder::new(
+            &measured.document,
+            &mut measured.drafts,
+            &mut measured.interaction,
+            &mut measured.retained,
+            &mut measured.overlays,
+            &viewport,
+            measured.metrics.as_ref(),
+            false,
+        );
+        assert_eq!(
+            builder.measure_owner("owner", 600.0, &theme),
+            Some(expected.height),
+            "kind {index}"
+        );
+        assert!(
+            builder.interaction.hits().is_empty(),
+            "measurement placed hits for kind {index}"
+        );
+        assert_eq!(
+            format!("{:?}", builder.retained.cached("owner").ops),
+            format!("{:?}", expected.ops),
+            "kind {index}"
+        );
+        assert_eq!(
+            builder.retained.cached("owner").geometry.rows().len(),
+            expected.geometry.rows().len(),
+            "kind {index}"
+        );
+        assert_eq!(
+            builder.measure_owner("owner", 600.0, &theme),
+            Some(expected.height)
+        );
+        let retained_ops = builder.retained.cached("owner").ops.clone();
+        drop(builder);
+        measured.frame_at(640, 480, Duration::ZERO);
+        assert!(
+            Arc::ptr_eq(&retained_ops, &measured.retained.cached("owner").ops),
+            "kind {index} laid out twice"
+        );
+        assert_eq!(
+            format!("{:?}", measured.retained.cached("owner").ops),
+            format!("{:?}", expected.ops)
+        );
+    }
+    let mut empty = DocumentUi::new(
+        Node::section("status.indicators").id("empty"),
+        test_metrics(),
+    );
+    let viewport = empty.viewport;
+    let theme = Theme::dark();
+    let mut builder = super::layout::LayoutBuilder::new(
+        &empty.document,
+        &mut empty.drafts,
+        &mut empty.interaction,
+        &mut empty.retained,
+        &mut empty.overlays,
+        &viewport,
+        empty.metrics.as_ref(),
+        false,
+    );
+    assert_eq!(builder.measure_owner("empty", 600.0, &theme), Some(0.0));
+}
+
+#[test]
+fn measured_field_defers_viewport_updates_until_the_owner_is_placed() {
+    let node = Node::new(
+        "form",
+        Kind::Fields {
+            fields: vec![misa_proto::view::Field {
+                id: "text".into(),
+                label: "Text".into(),
+                value: "short".into(),
+                hint: None,
+                kind: FieldKind::Inline,
+                read_only: false,
+                secret: false,
+            }],
+        },
+    )
+    .id("owner");
+    let mut app = DocumentUi::new(node, test_metrics());
+    app.retained.begin_frame(200, Duration::ZERO);
+    let initial = FieldViewport {
+        x: 10_000.0,
+        line: 0,
+    };
+    app.drafts.set_viewport("owner", "text", initial);
+    let viewport = app.viewport;
+    let theme = Theme::dark();
+    let mut builder = super::layout::LayoutBuilder::new(
+        &app.document,
+        &mut app.drafts,
+        &mut app.interaction,
+        &mut app.retained,
+        &mut app.overlays,
+        &viewport,
+        app.metrics.as_ref(),
+        false,
+    );
+    assert!(builder.measure_owner("owner", 160.0, &theme).is_some());
+    assert_eq!(builder.drafts.viewport("owner", "text"), initial);
+    assert!(builder.interaction.hits().is_empty());
+    drop(builder);
+    app.frame_at(200, 480, Duration::ZERO);
+    assert_eq!(app.drafts.viewport("owner", "text").x, 45.0);
+}
+
+#[test]
+fn measured_composites_match_placed_owners_without_placing_hits() {
+    let cases = [
+        Node::section("status.indicators").id("owner").child(
+            Node::new(
+                "indicator.activity",
+                Kind::Status {
+                    text: "working".into(),
+                },
+            )
+            .id("activity"),
+        ),
+        Node::section("message.group.footer").id("owner").child(
+            Node::new(
+                "fact",
+                Kind::Fact {
+                    value: Value::from(3),
+                },
+            )
+            .id("fact"),
+        ),
+        Node::section("queue")
+            .id("owner")
+            .child(Node::text("queue.item", [Span::plain("queued")]).id("item")),
+    ];
+    for node in cases {
+        let mut standard = DocumentUi::new(node.clone(), test_metrics());
+        standard.frame_at(640, 480, Duration::ZERO);
+        let mut measured = DocumentUi::new(node, test_metrics());
+        let viewport = measured.viewport;
+        let theme = Theme::dark();
+        let mut builder = super::layout::LayoutBuilder::new(
+            &measured.document,
+            &mut measured.drafts,
+            &mut measured.interaction,
+            &mut measured.retained,
+            &mut measured.overlays,
+            &viewport,
+            measured.metrics.as_ref(),
+            false,
+        );
+        assert_eq!(
+            builder.measure_owner("owner", 600.0, &theme),
+            Some(standard.retained.cached("owner").height)
+        );
+        assert_eq!(
+            format!("{:?}", builder.retained.cached("owner").ops),
+            format!("{:?}", standard.retained.cached("owner").ops)
+        );
+        assert!(builder.interaction.hits().is_empty());
+    }
+}
+
+#[test]
 fn consecutive_frames_drop_quote_prefix_and_stale_hits() {
     let control = Control::Action {
         node: "quoted".into(),
@@ -542,7 +789,7 @@ fn scrolling_a_moving_status_out_and_back_suspends_pulse_wakeups() {
     let status = app.retained.cached("status").ops.clone();
     let before = app.retained.cached("before.0").ops.clone();
     let after = app.retained.cached("after.0").ops.clone();
-    let bounds = app.retained.indicators("session")[0].clone();
+    let bounds = app.retained.placed_indicators()[0].clone();
     assert_eq!(bounds.id, "status");
     assert!(bounds.top > size.height as f32);
     assert!(bounds.bottom < app.viewport.content_height() - size.height as f32);

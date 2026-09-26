@@ -18,6 +18,8 @@ pub(super) struct LayoutBuilder<'a> {
     pub(super) colors: crate::appearance::Palette,
     pub(super) theme: Arc<Theme>,
     pub(super) prefixes: Vec<(Style, String)>,
+    retain_only: bool,
+    viewport_effects: Vec<(Control, FieldViewport)>,
 }
 
 impl<'a> LayoutBuilder<'a> {
@@ -43,19 +45,33 @@ impl<'a> LayoutBuilder<'a> {
             colors: crate::appearance::Palette::new(light),
             theme: Arc::new(if light { Theme::light() } else { Theme::dark() }),
             prefixes: Vec::new(),
+            retain_only: false,
+            viewport_effects: Vec::new(),
         }
     }
 
-    pub(super) fn present(
+    /// Retain one owner's exact laid-out display list without placing it in the
+    /// frame. This path leaves the frame's hits and persistent editor scroll alone.
+    #[allow(dead_code)] // Used by the next owner-placement stage; exercised by parity tests now.
+    pub(super) fn measure_owner(&mut self, id: &str, width: f32, theme: &Theme) -> Option<f32> {
+        self.retain_only = true;
+        let cached = self.retain_owner(id, width, theme);
+        self.retain_only = false;
+        self.viewport_effects.clear();
+        cached.map(|group| group.height)
+    }
+
+    fn retain_owner(
         &mut self,
         id: &str,
-        x: f32,
-        y: &mut f32,
         width: f32,
         theme: &Theme,
-        scene: &mut Scene,
-    ) {
+    ) -> Option<Arc<super::retained::Cached>> {
         let cached = if let Some(cached) = self.retained.get(id, width) {
+            if self.retain_only {
+                self.viewport_effects
+                    .extend(cached.viewport_effects.iter().cloned());
+            }
             cached
         } else {
             let synthetic;
@@ -65,8 +81,9 @@ impl<'a> LayoutBuilder<'a> {
             } else if let Some(node) = self.document.stream_or_node(id) {
                 node
             } else {
-                return;
+                return None;
             };
+            let effect_start = self.viewport_effects.len();
             let outer = self.interaction.take_group();
             let mut local = Scene::default();
             let mut height = 0.0;
@@ -80,9 +97,32 @@ impl<'a> LayoutBuilder<'a> {
                 local.ops,
                 geometry,
                 node.role == "status.indicators",
+                self.viewport_effects[effect_start..].to_vec(),
             )
         };
-        self.retained.place(&cached, *y);
+        Some(cached)
+    }
+
+    pub(super) fn present(
+        &mut self,
+        id: &str,
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        theme: &Theme,
+        scene: &mut Scene,
+    ) {
+        let Some(cached) = self.retain_owner(id, width, theme) else {
+            return;
+        };
+        self.retained.place(id, &cached, *y);
+        if !self.retain_only {
+            for (control, viewport) in &cached.viewport_effects {
+                if let Control::Field { node, field } = control {
+                    self.drafts.set_viewport(node, field, *viewport);
+                }
+            }
+        }
         scene.ops.push(Op::Group {
             x,
             y: *y,
@@ -193,6 +233,7 @@ impl LayoutBuilder<'_> {
     }
     pub(super) fn layout(&mut self, width: u32, height: u32) -> (Scene, f32) {
         self.interaction.begin_frame();
+        self.retained.begin_placement();
         let mut scene = Scene {
             width: width as f32,
             height: height as f32,
@@ -418,10 +459,16 @@ impl LayoutBuilder<'_> {
         }
         .place(self.metrics, &mut viewport);
         let (control, viewport) = self.interaction.place_field(scene, placed);
-        match &control {
-            Control::Field { node, field } => self.drafts.set_viewport(node, field, viewport),
-            Control::SavePath => self.overlays.set_save_viewport(viewport),
-            _ => {}
+        if self.retain_only {
+            if matches!(control, Control::Field { .. }) {
+                self.viewport_effects.push((control, viewport));
+            }
+        } else {
+            match &control {
+                Control::Field { node, field } => self.drafts.set_viewport(node, field, viewport),
+                Control::SavePath => self.overlays.set_save_viewport(viewport),
+                _ => {}
+            }
         }
     }
 }

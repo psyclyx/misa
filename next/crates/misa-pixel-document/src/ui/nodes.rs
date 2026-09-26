@@ -163,8 +163,78 @@ impl LayoutBuilder<'_> {
             node.role.as_str(),
             "status.indicators" | "message.group.footer" | "queue"
         ) {
-            // Indexed nodes contain no children. A registered composite owns its
-            // subtree, so materialize that subtree only when its cache is dirty.
+            self.paint_self(node, x, y, width, theme, scene);
+            return;
+        }
+        #[cfg(test)]
+        {
+            self.retained.node_rendered();
+        }
+        // A railed block is a card: remember where its ops begin so the surface and
+        // the full-height rail can be painted behind them once its extent is known.
+        let card = theme
+            .rail(&node.role)
+            .map(|(_, rail_style)| (scene.ops.len(), *y, rail_style));
+        let (children, quote_prefix) = self.paint_self(node, x, y, width, theme, scene);
+        if children {
+            self.paint_children(node, x, y, width, theme, scene);
+        }
+        if quote_prefix {
+            self.prefixes.pop();
+        }
+        // Actions belong to this owner, but historically follow its children.
+        self.paint_self_actions(node, x, y, width, scene);
+        *y += 5.0;
+        if let Some((start, first, rail_style)) = card {
+            let last = *y - 5.0;
+            if last > first {
+                let height = last - first;
+                let mut at = start;
+                if let Some(surface) = theme.surface(&node.role)
+                    && surface.bg != misa_style::Color::Default
+                {
+                    scene.ops.insert(
+                        at,
+                        Op::Rect {
+                            x: x - 6.0,
+                            y: first - 4.0,
+                            width: (width + 12.0).min((scene.width - x + 6.0).max(1.0)),
+                            height: height + 8.0,
+                            style: Style::fg(surface.bg),
+                        },
+                    );
+                    at += 1;
+                }
+                scene.ops.insert(
+                    at,
+                    Op::Rect {
+                        x: x - 4.0,
+                        y: first,
+                        width: 2.0,
+                        height,
+                        style: rail_style,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Paint the node's own label and kind. Children are a separate traversal;
+    /// quote state remains active through that traversal.
+    fn paint_self(
+        &mut self,
+        node: &Node,
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        theme: &Theme,
+        scene: &mut Scene,
+    ) -> (bool, bool) {
+        if matches!(
+            node.role.as_str(),
+            "status.indicators" | "message.group.footer" | "queue"
+        ) {
+            // A registered composite owns its subtree, including the indexed children.
             let model = self
                 .document
                 .subtree(&node.id)
@@ -177,17 +247,8 @@ impl LayoutBuilder<'_> {
                 "message.group.footer" => self.group_footer(&model, x, y, width, theme, scene),
                 _ => self.queue(&model, x, y, width, theme, scene),
             }
-            return;
+            return (false, false);
         }
-        #[cfg(test)]
-        {
-            self.retained.node_rendered();
-        }
-        // A railed block is a card: remember where its ops begin so the surface and
-        // the full-height rail can be painted behind them once its extent is known.
-        let card = theme
-            .rail(&node.role)
-            .map(|(_, rail_style)| (scene.ops.len(), *y, rail_style));
         if let Some(label) = &node.label {
             self.row(
                 scene,
@@ -446,39 +507,7 @@ impl LayoutBuilder<'_> {
                     *y += height + 2.0;
                 }
             }
-            Kind::List {
-                ordered,
-                items,
-                markers,
-            } => {
-                for (index, item) in items.iter().enumerate() {
-                    self.row(
-                        scene,
-                        x,
-                        *y,
-                        width,
-                        vec![(
-                            theme.role(&node.role),
-                            match markers.get(index).copied().flatten() {
-                                Some(true) => "☑".into(),
-                                Some(false) => "☐".into(),
-                                None if *ordered => format!("{}.", index + 1),
-                                None => "•".into(),
-                            },
-                        )],
-                    );
-                    for child in item {
-                        self.node_uncached(
-                            child,
-                            x + 25.0,
-                            y,
-                            (width - 25.0).max(10.0),
-                            theme,
-                            scene,
-                        );
-                    }
-                }
-            }
+            Kind::List { .. } => {}
             Kind::Image { blob, alt, .. } => {
                 if let Some(image) = self.document.image_ref(&blob.hash) {
                     let scale = (width / image.width() as f32)
@@ -573,28 +602,71 @@ impl LayoutBuilder<'_> {
                 *y += self.line_height();
             }
         }
-        if children {
-            for id in self.document.children(&node.id) {
-                self.present(&id, x, y, width, theme, scene);
-            }
-            for child in &node.children {
-                self.node_uncached(child, x, y, width, theme, scene);
-            }
-            if node.id == self.document.stream_parent()
-                && !self.document.visible_streams().is_empty()
-            {
-                self.present("streams", x, y, width, theme, scene);
-            }
-            if node.id == "streams" {
-                let ids = self.document.visible_streams();
-                for id in ids {
-                    self.present(&id, x, y, width, theme, scene);
+        (children, quote_prefix)
+    }
+
+    /// Emit indexed owner groups and embedded children in their original order.
+    fn paint_children(
+        &mut self,
+        node: &Node,
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        theme: &Theme,
+        scene: &mut Scene,
+    ) {
+        if let Kind::List {
+            ordered,
+            items,
+            markers,
+        } = &node.kind
+        {
+            for (index, item) in items.iter().enumerate() {
+                self.row(
+                    scene,
+                    x,
+                    *y,
+                    width,
+                    vec![(
+                        theme.role(&node.role),
+                        match markers.get(index).copied().flatten() {
+                            Some(true) => "☑".into(),
+                            Some(false) => "☐".into(),
+                            None if *ordered => format!("{}.", index + 1),
+                            None => "•".into(),
+                        },
+                    )],
+                );
+                for child in item {
+                    self.node_uncached(child, x + 25.0, y, (width - 25.0).max(10.0), theme, scene);
                 }
             }
         }
-        if quote_prefix {
-            self.prefixes.pop();
+        for id in self.document.children(&node.id) {
+            self.present(&id, x, y, width, theme, scene);
         }
+        for child in &node.children {
+            self.node_uncached(child, x, y, width, theme, scene);
+        }
+        if node.id == self.document.stream_parent() && !self.document.visible_streams().is_empty() {
+            self.present("streams", x, y, width, theme, scene);
+        }
+        if node.id == "streams" {
+            let ids = self.document.visible_streams();
+            for id in ids {
+                self.present(&id, x, y, width, theme, scene);
+            }
+        }
+    }
+
+    fn paint_self_actions(
+        &mut self,
+        node: &Node,
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        scene: &mut Scene,
+    ) {
         for action in &node.actions {
             let control = Control::Action {
                 node: node.id.clone(),
@@ -635,39 +707,6 @@ impl LayoutBuilder<'_> {
                 control: button.id,
             });
             *y += 39.0;
-        }
-        *y += 5.0;
-        if let Some((start, first, rail_style)) = card {
-            let last = *y - 5.0;
-            if last > first {
-                let height = last - first;
-                let mut at = start;
-                if let Some(surface) = theme.surface(&node.role)
-                    && surface.bg != misa_style::Color::Default
-                {
-                    scene.ops.insert(
-                        at,
-                        Op::Rect {
-                            x: x - 6.0,
-                            y: first - 4.0,
-                            width: (width + 12.0).min((scene.width - x + 6.0).max(1.0)),
-                            height: height + 8.0,
-                            style: Style::fg(surface.bg),
-                        },
-                    );
-                    at += 1;
-                }
-                scene.ops.insert(
-                    at,
-                    Op::Rect {
-                        x: x - 4.0,
-                        y: first,
-                        width: 2.0,
-                        height,
-                        style: rail_style,
-                    },
-                );
-            }
         }
     }
 }
