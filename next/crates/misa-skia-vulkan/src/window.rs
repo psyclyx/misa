@@ -1,5 +1,5 @@
 //! Direct Ganesh rendering into acquired Vulkan swapchain images.
-use super::{Renderer, error};
+use super::{Renderer, error, instance_lifetime, loader_entry};
 use ash::{vk, vk::Handle};
 use misa_pixel_ui::Scene;
 use misa_skia_paint::draw_scene;
@@ -128,7 +128,8 @@ pub struct WindowRenderer {
 impl WindowRenderer {
     /// The caller keeps both handles' window and display alive until this renderer is dropped.
     pub fn new(display: RawDisplayHandle, window: RawWindowHandle) -> Result<Self, String> {
-        let entry = unsafe { ash::Entry::load() }.map_err(|e| error("Vulkan loader", e))?;
+        let lifetime = instance_lifetime();
+        let entry = loader_entry()?;
         let extensions = ash_window::enumerate_required_extensions(display)
             .map_err(|e| error("surface extensions", e))?;
         let name = CString::new("misa-skia-vulkan").unwrap();
@@ -149,7 +150,10 @@ impl WindowRenderer {
                 }
             };
         let renderer = Renderer::with_instance(entry, instance, Some(surface))?;
-        let surfaces = ash::khr::surface::Instance::new(&renderer._entry, &renderer.instance);
+        // Release before any later fallible step: an error here drops `renderer`,
+        // whose Drop must acquire the same lock to tear down the instance.
+        drop(lifetime);
+        let surfaces = ash::khr::surface::Instance::new(renderer._entry, &renderer.instance);
         let swaps = ash::khr::swapchain::Device::new(&renderer.instance, &renderer.device);
         let fence = unsafe {
             renderer
@@ -595,6 +599,9 @@ mod tests {
 
 impl Drop for WindowRenderer {
     fn drop(&mut self) {
+        // The renderer field drops after this method returns and takes the lock
+        // itself. Never carry this guard across that implicit field drop.
+        let _lifetime = instance_lifetime();
         unsafe {
             let _ = self.renderer.device.device_wait_idle();
             self.renderer

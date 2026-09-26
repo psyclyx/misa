@@ -3,7 +3,33 @@ use misa_pixel_ui::{Op, Scene};
 use misa_proto::view::{Node, Span};
 use misa_skia_vulkan::Renderer;
 use misa_style::Color;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Barrier},
+    time::Duration,
+};
+
+#[test]
+fn concurrent_renderer_instances() {
+    const WORKERS: usize = 4;
+    let start = Arc::new(Barrier::new(WORKERS));
+    let created = Arc::new(Barrier::new(WORKERS));
+    std::thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for _ in 0..WORKERS {
+            let start = Arc::clone(&start);
+            let created = Arc::clone(&created);
+            workers.push(scope.spawn(move || {
+                start.wait();
+                let renderer = Renderer::new().expect("concurrent Vulkan/Ganesh device");
+                created.wait(); // All four instances must coexist before teardown.
+                drop(renderer);
+            }));
+        }
+        for worker in workers {
+            worker.join().expect("renderer worker");
+        }
+    });
+}
 
 const BG: Color = Color::Rgb(20, 22, 26);
 

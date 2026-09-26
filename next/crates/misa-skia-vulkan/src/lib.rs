@@ -11,7 +11,26 @@ use skia_safe::{AlphaType, ColorType, ImageInfo, gpu};
 use std::{
     ffi::{CStr, CString},
     ptr,
+    sync::{Mutex, MutexGuard, OnceLock},
 };
+
+// Ash's loaded entry owns libvulkan. Keep it resident even after the last
+// renderer goes away: the loader may still have ICD state in other threads.
+static ENTRY: OnceLock<Result<ash::Entry, String>> = OnceLock::new();
+static INSTANCE_LIFETIME: Mutex<()> = Mutex::new(());
+
+fn loader_entry() -> Result<&'static ash::Entry, String> {
+    ENTRY
+        .get_or_init(|| unsafe { ash::Entry::load() }.map_err(|e| error("Vulkan loader", e)))
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+fn instance_lifetime() -> MutexGuard<'static, ()> {
+    // A poisoned lock does not make Vulkan teardown optional. No user code runs
+    // while holding it; still serialize cleanup after a panic.
+    INSTANCE_LIFETIME.lock().unwrap_or_else(|e| e.into_inner())
+}
 #[cfg(feature = "window")]
 pub use window::WindowRenderer;
 
@@ -26,7 +45,7 @@ pub struct Renderer {
     context: Option<gpu::DirectContext>,
     device: ash::Device,
     instance: ash::Instance,
-    _entry: ash::Entry,
+    _entry: &'static ash::Entry,
     physical: vk::PhysicalDevice,
     graphics_queue: vk::Queue,
     surface: Option<vk::SurfaceKHR>,
@@ -39,8 +58,8 @@ impl Renderer {
     /// Load the system Vulkan loader and choose a graphics-capable device.
     /// No ICD or no compatible device is an error, never a CPU fallback.
     pub fn new() -> Result<Self, String> {
-        // SAFETY: the entry keeps the loader library loaded until after instance/device teardown.
-        let entry = unsafe { ash::Entry::load() }.map_err(|e| error("Vulkan loader", e))?;
+        let _lifetime = instance_lifetime();
+        let entry = loader_entry()?;
         let name = CString::new("misa-skia-vulkan").expect("static name");
         let app = vk::ApplicationInfo::default()
             .application_name(&name)
@@ -54,7 +73,7 @@ impl Renderer {
     }
 
     fn with_instance(
-        entry: ash::Entry,
+        entry: &'static ash::Entry,
         instance: ash::Instance,
         surface: Option<vk::SurfaceKHR>,
     ) -> Result<Self, String> {
@@ -262,6 +281,7 @@ impl Renderer {
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        let _lifetime = instance_lifetime();
         unsafe {
             let _ = self.device.device_wait_idle();
         }
