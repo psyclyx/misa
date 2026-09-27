@@ -37,6 +37,7 @@ pub(super) struct SessionViews {
     panel: String,
     panel_focus: bool,
     panel_top: f32,
+    background_waker: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 impl SessionViews {
     pub(super) fn new(
@@ -61,7 +62,52 @@ impl SessionViews {
             panel: "status".into(),
             panel_focus: false,
             panel_top: f32::MAX,
+            background_waker: None,
         }
+    }
+    /// Hand every presented document the host's generic poll wake. The callback
+    /// may run on a layout worker and must only request a UI poll.
+    pub(super) fn enable_background(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
+        self.background_waker = Some(waker);
+        self.refresh_background();
+    }
+    /// Parked scopes and hidden panels keep their measurements but never run.
+    pub(super) fn pause_background(&mut self) {
+        self.background_waker = None;
+        self.refresh_background();
+    }
+    pub(super) fn refresh_background(&mut self) {
+        let waker = self.background_waker.clone();
+        for scope in self.parked.values_mut() {
+            scope.app.pause_background();
+            for panel in scope.panels.values_mut() {
+                panel.pause_background();
+            }
+        }
+        let Some(waker) = waker else {
+            self.app.pause_background();
+            for panel in self.panels.values_mut() {
+                panel.pause_background();
+            }
+            return;
+        };
+        self.app.enable_background(waker.clone());
+        for (id, panel) in &mut self.panels {
+            if id == &self.panel {
+                panel.enable_background(waker.clone());
+            } else {
+                panel.pause_background();
+            }
+        }
+    }
+    /// Advance bounded prewarm work on the UI thread for presented documents.
+    pub(super) fn poll_background(&mut self) -> usize {
+        self.refresh_background();
+        let mut installed = self.app.poll_background();
+        if let Some(panel) = self.panels.get_mut(&self.panel) {
+            installed += panel.poll_background();
+        }
+        installed
     }
     pub(super) fn notice(&mut self, message: &str) {
         self.app.notice(message);
@@ -124,7 +170,7 @@ impl SessionViews {
     fn park(&mut self) {
         let key = self.active.take();
         self.local.deactivate();
-        let parked = ParkedSession {
+        let mut parked = ParkedSession {
             app: std::mem::replace(
                 &mut self.app,
                 DocumentUi::new(
@@ -139,6 +185,11 @@ impl SessionViews {
             panel_top: std::mem::replace(&mut self.panel_top, f32::MAX),
             generation: self.generation,
         };
+        // A scope that is not on screen keeps its measurements but never runs.
+        parked.app.pause_background();
+        for panel in parked.panels.values_mut() {
+            panel.pause_background();
+        }
         if let Some(key) = key {
             self.parked.insert(key, parked);
         }
@@ -431,6 +482,9 @@ impl SessionViews {
             }
             (scene, next_deadline)
         };
+        // Selection can settle inside the frame (a panel may arrive late), so
+        // prewarm workers follow the presented documents afterwards.
+        self.refresh_background();
         Ok((scene, next_deadline))
     }
 }
@@ -561,6 +615,7 @@ mod document_adapter_tests {
 mod session_tests {
     use super::*;
     use misa_proto::observation::{Scope, ScopeId};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn key(id: &str) -> ScopeKey {
         (
@@ -570,6 +625,59 @@ mod session_tests {
                 incarnation: "one".into(),
             },
         )
+    }
+
+    #[test]
+    fn only_presented_documents_run_workers_and_parked_scopes_pause() {
+        let metrics = misa_skia_paint::text_metrics().unwrap();
+        let mut views =
+            SessionViews::new(misa_proto::Node::section("main"), metrics.clone(), false);
+        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        views.enable_background(waker);
+        views.select(key("a"), 1);
+        views.panels.insert(
+            "status".into(),
+            DocumentUi::new(misa_proto::Node::section("shown"), metrics.clone()),
+        );
+        views.panels.insert(
+            "other".into(),
+            DocumentUi::new(misa_proto::Node::section("hidden"), metrics),
+        );
+        views.refresh_background();
+        assert!(views.app.background_work_pending());
+        assert!(views.panels["status"].background_work_pending());
+        assert!(!views.panels["other"].background_work_pending());
+        views.select(key("b"), 2);
+        let parked = views.parked.values().next().unwrap();
+        assert!(!parked.app.background_work_pending());
+        assert!(
+            parked
+                .panels
+                .values()
+                .all(|panel| !panel.background_work_pending())
+        );
+        views.pause_background();
+        assert!(!views.app.background_work_pending());
+        assert_eq!(views.poll_background(), 0);
+    }
+
+    #[test]
+    fn polling_without_work_never_rewakes_the_host() {
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&wakes);
+        let metrics = misa_skia_paint::text_metrics().unwrap();
+        let mut views = SessionViews::new(misa_proto::Node::section("main"), metrics, false);
+        views.enable_background(Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        for _ in 0..64 {
+            views.poll_background();
+        }
+        assert!(
+            wakes.load(Ordering::SeqCst) <= 4,
+            "re-arming the same wake must not loop: {} wakes",
+            wakes.load(Ordering::SeqCst)
+        );
     }
 
     #[test]

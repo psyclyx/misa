@@ -7,6 +7,7 @@ use misa_window_core::{Clock, Event, MonotonicClock, Size};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use session_views::{SessionViews, StateChange};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
@@ -27,6 +28,7 @@ pub fn run(
     let outgoing = live.then(|| connection::start(ticket, events.create_proxy()));
     let metrics = misa_skia_paint::text_metrics()
         .map_err(|error| format!("Cannot load Skia text metrics: {error}"))?;
+    let layout_wake = Arc::new(AtomicBool::new(false));
     let mut host = Host {
         appearance: crate::preferences::appearance(),
         appearance_writer: crate::preferences::appearance_writer(events.create_proxy()),
@@ -44,6 +46,9 @@ pub fn run(
         deadline: None,
         redraw_pending: false,
         wsi_retry_pending: false,
+        layout_wake,
+        paint_needed: true,
+        skipped_frames: 0,
     };
     events
         .run_app(&mut host)
@@ -67,6 +72,13 @@ struct Host {
     deadline: Option<Duration>,
     redraw_pending: bool,
     wsi_retry_pending: bool,
+    /// Set by the layout worker; a wake that only carries background results
+    /// must not force another frame or present.
+    layout_wake: Arc<AtomicBool>,
+    /// Whether an external event requires a painted and presented frame.
+    paint_needed: bool,
+    /// Consecutive background-only wakes that painted nothing.
+    skipped_frames: u32,
 }
 impl Drop for Host {
     fn drop(&mut self) {
@@ -87,6 +99,7 @@ impl Host {
     fn redraw(&mut self) {
         // An external event grants a fresh, bounded WSI retry opportunity.
         self.wsi_retry_pending = false;
+        self.paint_needed = true;
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -136,11 +149,23 @@ impl Host {
             return Ok(());
         };
         let size = window.inner_size();
-        self.deadline = None;
-        self.redraw_pending = false;
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
+        // Bounded background layout advances on every wake, painted or not.
+        self.views.poll_background();
+        // A wake carrying only background results needs no frame: exact
+        // offscreen heights and display lists never change the screen, so
+        // building or presenting one would be pure GPU waste.
+        let layout_wake = self.layout_wake.swap(false, Ordering::AcqRel);
+        if skip_layout_frame(layout_wake, self.paint_needed, self.skipped_frames) {
+            self.skipped_frames += 1;
+            return Ok(());
+        }
+        self.skipped_frames = 0;
+        self.paint_needed = false;
+        self.deadline = None;
+        self.redraw_pending = false;
         let elapsed = self.clock.elapsed();
         let light = self
             .appearance
@@ -167,12 +192,36 @@ impl Host {
         }
         let outcome = surface.present(&scene, colors.background, size.width, size.height)?;
         if retry_once(outcome.needs_redraw(), &mut self.wsi_retry_pending) {
+            // A WSI retry must build and present a real frame.
+            self.paint_needed = true;
             // Do not go through redraw(): it resets the external-event retry budget.
             window.request_redraw();
         }
         Ok(())
     }
 }
+/// A wake that only delivered background layout results needs no frame: every
+/// content change marks a paint, so the presented frame is already current and
+/// offscreen measurements change nothing on screen. The bounded failsafe
+/// repaints anyway after `MAX_SKIPPED_FRAMES` consecutive skips, for any
+/// platform that does not preserve a presented buffer across a redraw request.
+const MAX_SKIPPED_FRAMES: u32 = 32;
+fn skip_layout_frame(layout_wake: bool, paint_needed: bool, skipped: u32) -> bool {
+    layout_wake && !paint_needed && skipped < MAX_SKIPPED_FRAMES
+}
+
+/// The layout worker's only host contact: record that background results are
+/// ready and request a UI poll. It never builds or presents a frame itself.
+fn layout_waker(window: &Arc<Window>, wake: Arc<AtomicBool>) -> Arc<dyn Fn() + Send + Sync> {
+    let window = Arc::downgrade(window);
+    Arc::new(move || {
+        wake.store(true, Ordering::Release);
+        if let Some(window) = window.upgrade() {
+            window.request_redraw();
+        }
+    })
+}
+
 /// At most one self-requested redraw per external event, even for persistent OUT_OF_DATE.
 fn retry_once(needs_redraw: bool, pending: &mut bool) -> bool {
     if !needs_redraw {
@@ -188,6 +237,7 @@ fn retry_once(needs_redraw: bool, pending: &mut bool) -> bool {
 
 impl ApplicationHandler<Update> for Host {
     fn suspended(&mut self, _: &ActiveEventLoop) {
+        self.views.pause_background();
         self.surface.take();
         self.window.take();
     }
@@ -212,6 +262,8 @@ impl ApplicationHandler<Update> for Host {
                 window.display_handle().map_err(|e| e.to_string())?.as_raw(),
                 window.window_handle().map_err(|e| e.to_string())?.as_raw(),
             )?);
+            self.views
+                .enable_background(layout_waker(&window, Arc::clone(&self.layout_wake)));
             self.window = Some(window);
             self.redraw();
             Ok::<_, String>(())
@@ -384,6 +436,18 @@ impl ApplicationHandler<Update> for Host {
 #[cfg(test)]
 mod pulse_tests {
     use super::*;
+
+    #[test]
+    fn background_wakes_skip_frames_unless_an_event_requires_one() {
+        // Layout results are offscreen by construction: no frame, no present.
+        assert!(skip_layout_frame(true, false, 0));
+        // Input, updates, retries and compositor redraws always paint.
+        assert!(!skip_layout_frame(true, true, 0));
+        assert!(!skip_layout_frame(false, false, 0));
+        assert!(!skip_layout_frame(false, true, 0));
+        // A platform that discards presented buffers still gets a repaint.
+        assert!(!skip_layout_frame(true, false, MAX_SKIPPED_FRAMES));
+    }
 
     #[test]
     fn wsi_retry_is_bounded_until_external_redraw() {
