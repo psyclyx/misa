@@ -20,6 +20,9 @@ pub(super) struct LayoutBuilder<'a> {
     pub(super) theme: Arc<Theme>,
     pub(super) prefixes: Vec<(Style, String)>,
     retain_only: bool,
+    /// A private measurement store shrinks indexed containers to one row; this
+    /// maps that row back to its original marker and content index.
+    pub(super) row_content_index: Option<usize>,
     viewport_effects: Vec<(Control, FieldViewport)>,
 }
 
@@ -46,8 +49,21 @@ impl<'a> LayoutBuilder<'a> {
             theme: Arc::new(if light { Theme::light() } else { Theme::dark() }),
             prefixes: Vec::new(),
             retain_only: false,
+            row_content_index: None,
             viewport_effects: Vec::new(),
         }
+    }
+
+    /// Retain one owner's exact laid-out display list without placing it in the
+    /// frame. This path leaves the frame's hits and persistent editor scroll alone.
+    pub(super) fn measure_owner(&mut self, id: &str, width: f32, theme: &Theme) -> Option<f32> {
+        #[cfg(test)]
+        self.retained.owner_measured();
+        self.retain_only = true;
+        let cached = self.retain_owner(id, width, theme);
+        self.retain_only = false;
+        self.viewport_effects.clear();
+        cached.map(|group| group.height)
     }
 
     pub(super) fn measure_flow(&mut self, flow: &FlowId, width: f32, theme: &Theme) -> Option<f32> {
@@ -105,9 +121,12 @@ impl<'a> LayoutBuilder<'a> {
                 } => self.list_item(
                     node,
                     *ordered,
-                    markers.get(*index).copied().flatten(),
+                    markers
+                        .get(self.row_content_index.unwrap_or(*index))
+                        .copied()
+                        .flatten(),
                     *index,
-                    items.get(*index)?,
+                    items.get(self.row_content_index.unwrap_or(*index))?,
                     0.0,
                     &mut height,
                     width,
@@ -115,10 +134,11 @@ impl<'a> LayoutBuilder<'a> {
                     &mut scene,
                 ),
                 Kind::Table { head, rows, .. } => {
-                    let row = if *index == 0 {
+                    let actual = self.row_content_index.unwrap_or(*index);
+                    let row = if actual == 0 {
                         head
                     } else {
-                        rows.get(index - 1)?
+                        rows.get(actual - 1)?
                     };
                     self.table_row(
                         row,

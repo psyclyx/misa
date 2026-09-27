@@ -125,15 +125,18 @@ and disclosure work to fewer than 32 measured/placed owners. These are separate
 code revisions with different scene composition and single-session samples, not
 an interleaved A/B comparison or native-window latency. Readback and swapchain
 presentation have different costs. Measure native frame-to-present before
-claiming a user-visible win. Offscreen height backfilling is not implemented;
-seeking into unknown content still measures exact owners synchronously.
+claiming a user-visible win.
 
-Two background prototypes were **reverted**, not shipped. A height-only worker
+Background prewarm now exists and is documented in `docs/background-layout.md`:
+one worker per presented document measures owners away from the frame, keeps
+exact heights in a lazy index, retains display lists only near the viewport in
+a bounded cache, and can advance all of it without presenting another frame.
+Two earlier prototypes were **reverted**, not shipped. A height-only worker
 stored exact offscreen heights but remeasured them on first visible placement,
 so it added work without avoiding the expensive font layout. A later worker
 prewarmed complete retained scenes and reused nearby geometry, but a full
 history scan retained unbounded offscreen scene data and woke the native GPU
 painter for each batch. A two-job channel bounded in-flight work, not retained
-memory or total presentations. Any future backfill needs a lightweight exact
-height index separate from a bounded near-viewport scene cache, plus a UI wake
-that can advance indexing without presenting another identical frame.
+memory or total presentations. The shipped design keeps the exact height index
+separate from a bounded near-viewport scene cache and advances indexing on a
+wake that paints nothing.

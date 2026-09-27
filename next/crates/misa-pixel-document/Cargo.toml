@@ -17,6 +17,6 @@ misa-style.workspace = true
 misa-syntax.workspace = true
 misa-value.workspace = true
 misa-window-core = { path = "../misa-window-core" }
-
-[dev-dependencies]
+# Owner snapshots are bounded by their serialized input size before cloning.
+serde.workspace = true
 serde_json.workspace = true

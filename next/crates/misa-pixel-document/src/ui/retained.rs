@@ -17,6 +17,11 @@ pub(super) struct IndicatorBounds {
     pub(super) bottom: f32,
 }
 
+/// Owner display lists kept beyond the visible frame. Exact heights live in the
+/// viewport's measurement index; this cache is a bounded prewarm and may drop
+/// any owner at any time without changing what a frame paints.
+pub(super) const SCENE_CACHE_OWNERS: usize = 384;
+
 struct Placement {
     id: String,
     y: f32,
@@ -36,6 +41,8 @@ pub(super) struct Cached {
 #[derive(Default)]
 pub(super) struct RetainedScenes {
     cache: BTreeMap<String, Arc<Cached>>,
+    used: BTreeMap<String, u64>,
+    clock: u64,
     row_keys: BTreeMap<String, BTreeSet<String>>,
     moving: BTreeSet<String>,
     stack: Vec<Vec<Placement>>,
@@ -54,27 +61,86 @@ pub(super) struct RetainedScenes {
 impl RetainedScenes {
     pub(super) fn clear(&mut self) {
         self.cache.clear();
+        self.used.clear();
         self.row_keys.clear();
         self.moving.clear();
         self.stack.clear();
         self.placed.clear();
     }
 
+    fn touch(&mut self, id: &str) {
+        self.clock += 1;
+        self.used.insert(id.to_owned(), self.clock);
+    }
+
+    /// The owner that owns a row or trailing fragment's bookkeeping.
+    fn owner_of(key: &str) -> Option<String> {
+        if let Some(rest) = key.strip_prefix("\0row:") {
+            rest.rsplit_once(':').map(|(owner, _)| owner.to_owned())
+        } else {
+            key.strip_prefix("\0end:").map(str::to_owned)
+        }
+    }
+
+    fn evict(&mut self, key: &str) {
+        self.cache.remove(key);
+        self.used.remove(key);
+        self.moving.remove(key);
+        if let Some(owner) = Self::owner_of(key)
+            && let Some(keys) = self.row_keys.get_mut(&owner)
+        {
+            keys.remove(key);
+        }
+    }
+
+    /// Bound prewarm memory: evict the least recently used owner display lists.
+    /// Visible owners are touched every frame and cannot be evicted.
+    fn trim_to_limit(&mut self) {
+        if self.cache.len() <= SCENE_CACHE_OWNERS {
+            return;
+        }
+        let mut order: Vec<(u64, String)> = self
+            .cache
+            .keys()
+            .map(|key| (self.used.get(key).copied().unwrap_or(0), key.clone()))
+            .collect();
+        order.sort_unstable();
+        for (_, key) in order
+            .into_iter()
+            .take(self.cache.len() - SCENE_CACHE_OWNERS)
+        {
+            self.evict(&key);
+        }
+    }
+
+    /// Install one background result's owner display lists. Entries are keyed
+    /// exactly as the frame keys them, so a current result never shadows a
+    /// differently measured owner.
+    pub(super) fn install(&mut self, other: Self) {
+        for (owner, keys) in other.row_keys {
+            self.row_keys.entry(owner).or_default().extend(keys);
+        }
+        for id in other.moving {
+            self.moving.insert(id);
+        }
+        for (key, cached) in other.cache {
+            self.cache.insert(key.clone(), cached);
+            self.touch(&key);
+        }
+        self.trim_to_limit();
+    }
+
     pub(super) fn clear_owner(&mut self, id: &str) {
         if let Some(keys) = self.row_keys.remove(id) {
             for key in keys {
-                self.cache.remove(&key);
+                self.evict(&key);
             }
         }
-        self.cache.remove(id);
+        self.evict(id);
     }
 
     pub(super) fn invalidate_end(&mut self, id: &str) {
-        let key = format!("\0end:{id}");
-        self.cache.remove(&key);
-        if let Some(keys) = self.row_keys.get_mut(id) {
-            keys.remove(&key);
-        }
+        self.evict(&format!("\0end:{id}"));
     }
 
     pub(super) fn row_keys(&self, id: &str) -> impl Iterator<Item = &String> {
@@ -95,15 +161,10 @@ impl RetainedScenes {
             return;
         }
         if let Some((owner, row)) = document.fragment_owner(id) {
-            let key = format!("\0row:{owner}:{row}");
-            self.cache.remove(&key);
-            if let Some(keys) = self.row_keys.get_mut(owner) {
-                keys.remove(&key);
-            }
+            self.evict(&format!("\0row:{owner}:{row}"));
             let mut cursor = Some(owner);
             while let Some(id) = cursor {
-                self.cache.remove(id);
-                self.moving.remove(id);
+                self.evict(id);
                 cursor = document.parent(id);
             }
         } else {
@@ -151,11 +212,16 @@ impl RetainedScenes {
         self.phase
     }
 
-    pub(super) fn get(&self, id: &str, width: f32) -> Option<Arc<Cached>> {
-        self.cache
+    pub(super) fn get(&mut self, id: &str, width: f32) -> Option<Arc<Cached>> {
+        let cached = self
+            .cache
             .get(id)
             .filter(|cached| cached.width == width)
-            .cloned()
+            .cloned();
+        if cached.is_some() {
+            self.touch(id);
+        }
+        cached
     }
 
     pub(super) fn begin_group(&mut self) {
@@ -219,22 +285,22 @@ impl RetainedScenes {
                 .insert(id.to_owned());
         }
         self.cache.insert(id.to_string(), cached.clone());
+        self.touch(id);
+        self.trim_to_limit();
         cached
     }
 
     pub(super) fn place(&mut self, id: &str, cached: &Cached, y: f32) {
-        if let Some(parent) = self.stack.last_mut() {
-            if cached.has_moving {
-                parent.push(Placement {
-                    id: id.to_string(),
-                    y,
-                });
-            }
-        } else {
+        if self.stack.is_empty() {
             // Only a placed root makes its descendants visible. Walk the retained
             // owner links, not the document or its unplaced cached groups.
-            for child in &cached.children {
-                Self::collect_placed(&self.cache, &child.id, y + child.y, &mut self.placed);
+            let children: Vec<(String, f32)> = cached
+                .children
+                .iter()
+                .map(|child| (child.id.clone(), y + child.y))
+                .collect();
+            for (child, child_y) in children {
+                self.collect_placed(&child, child_y);
             }
             if cached.phase.is_some() {
                 // Root itself may be the moving owner.
@@ -244,27 +310,36 @@ impl RetainedScenes {
                     bottom: y + cached.height,
                 });
             }
+            return;
+        }
+        if cached.has_moving {
+            self.stack
+                .last_mut()
+                .expect("retained group stack")
+                .push(Placement {
+                    id: id.to_string(),
+                    y,
+                });
         }
     }
 
-    fn collect_placed(
-        cache: &BTreeMap<String, Arc<Cached>>,
-        id: &str,
-        y: f32,
-        placed: &mut Vec<IndicatorBounds>,
-    ) {
-        let Some(cached) = cache.get(id) else {
+    /// Children of a placed owner stay as recently used as their parent: an
+    /// evicted child would silently freeze its pulse indicator.
+    fn collect_placed(&mut self, id: &str, y: f32) {
+        self.touch(id);
+        let Some(cached) = self.cache.get(id).cloned() else {
             return;
         };
         if cached.phase.is_some() {
-            placed.push(IndicatorBounds {
+            self.placed.push(IndicatorBounds {
                 id: id.to_string(),
                 top: y,
                 bottom: y + cached.height,
             });
         }
         for child in &cached.children {
-            Self::collect_placed(cache, &child.id, y + child.y, placed);
+            let (child, child_y) = (child.id.clone(), y + child.y);
+            self.collect_placed(&child, child_y);
         }
     }
 

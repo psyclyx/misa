@@ -101,6 +101,32 @@ impl<Id: Clone + Eq + Hash> FlowViewport<Id> {
         self.heights.clear();
     }
 
+    /// Install an exact height measured away from the frame. Stale widths and
+    /// style generations are rejected: an owner measured for another layout
+    /// must never influence this one. Returns whether the height was adopted.
+    pub fn install_measurement(
+        &mut self,
+        id: Id,
+        width: f32,
+        style_generation: u64,
+        height: f32,
+    ) -> bool {
+        assert!(height.is_finite() && height >= 0.0);
+        if self.measure_key != Some((width.to_bits(), style_generation)) {
+            return false;
+        }
+        self.heights.insert(id, height);
+        true
+    }
+
+    /// Exact heights installed or measured at the current layout key.
+    pub fn measured_height(&self, id: &Id) -> Option<f32> {
+        self.heights.get(id).copied()
+    }
+    pub fn measured_count(&self) -> usize {
+        self.heights.len()
+    }
+
     /// Call when an owner's content changes without changing its stable ID.
     pub fn invalidate(&mut self, id: &Id) {
         self.heights.remove(id);

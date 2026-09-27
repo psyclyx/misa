@@ -18,6 +18,7 @@ use misa_window_core::{Event, Output, Size};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod background;
 mod document;
 mod drafts;
 mod flow;
@@ -27,6 +28,7 @@ mod interaction;
 #[cfg(test)]
 mod interaction_tests;
 mod layout;
+mod measurement;
 mod nodes;
 mod overlays;
 mod retained;
@@ -115,6 +117,7 @@ pub struct DocumentUi {
     drafts: drafts::Drafts,
     viewport: FlowViewport<flow::FlowId>,
     offline_elapsed: Duration,
+    background: Option<background::Background>,
 }
 impl DocumentUi {
     pub fn new(view: Node, metrics: Arc<dyn TextMetrics>) -> Self {
@@ -135,6 +138,7 @@ impl DocumentUi {
             drafts: drafts::Drafts::default(),
             viewport: FlowViewport::default(),
             offline_elapsed: Duration::ZERO,
+            background: None,
         };
         app.set_view(view);
         app
@@ -186,7 +190,56 @@ impl DocumentUi {
         if self.light != light {
             self.light = light;
             self.retained.clear();
+            self.cancel_background(false);
         }
+    }
+    /// The theme every layout path measures against.
+    pub(super) fn theme(&self) -> Theme {
+        if self.light {
+            Theme::light()
+        } else {
+            Theme::dark()
+        }
+    }
+    /// Any content change can move an owner's height: results measured against
+    /// the previous content may never be installed.
+    fn cancel_background(&mut self, restart: bool) {
+        if let Some(background) = &mut self.background {
+            background.cancel(restart);
+        }
+    }
+    /// Prewarm exact owner measurements on one protocol-free worker. The waker
+    /// may be called from that worker and must only request a UI poll; layout
+    /// results never enter the connection-update path.
+    pub fn enable_background(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
+        match &mut self.background {
+            Some(background) => background.resume(waker),
+            None => {
+                self.background = Some(background::Background::start(self.metrics.clone(), waker));
+            }
+        }
+    }
+    /// Stop prewarming and stop waking the host. In-flight work drains silently.
+    pub fn pause_background(&mut self) {
+        if let Some(background) = &mut self.background {
+            background.pause();
+        }
+    }
+    /// Advance bounded prewarm work on the UI thread. Installing an offscreen
+    /// height or display list never changes the current frame.
+    pub fn poll_background(&mut self) -> usize {
+        let Some(mut background) = self.background.take() else {
+            return 0;
+        };
+        let installed = background::poll(&mut background, self);
+        self.background = Some(background);
+        installed
+    }
+    /// Whether prewarm work remains: queued results, or an unexhausted cursor.
+    pub fn background_work_pending(&self) -> bool {
+        self.background
+            .as_ref()
+            .is_some_and(background::Background::work_pending)
     }
     /// Only painted moving groups intersecting the viewport need a pulse.
     pub fn animating(&self) -> bool {
@@ -284,6 +337,7 @@ impl DocumentUi {
     }
 
     fn invalidate(&mut self, id: &str) {
+        self.cancel_background(false);
         if let Some((owner, index)) = self.document.fragment_owner(id) {
             self.viewport
                 .invalidate(&flow::FlowId::Row(owner.to_owned(), index));
@@ -330,6 +384,7 @@ impl DocumentUi {
         self.drafts.focus_changed(self.interaction.focus());
     }
     fn invalidate_document(&mut self, changes: document::Changes) {
+        self.cancel_background(changes.full);
         if changes.full {
             self.interaction.clear_selection();
         }

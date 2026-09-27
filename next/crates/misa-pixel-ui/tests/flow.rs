@@ -305,3 +305,40 @@ fn bounded_nested_flow_uses_child_clip_and_bubbles_unused_wheel() {
     assert_eq!(outer.visible().first().unwrap().id, 1);
     assert_eq!(outer.constraints().height, 60.0);
 }
+
+#[test]
+fn installed_heights_are_exact_and_only_at_the_current_layout_key() {
+    let mut src = Indexed::new(1_000);
+    let mut view = FlowViewport::default();
+    // Nothing is measured yet: an installation cannot guess the layout key.
+    assert!(!view.install_measurement(500, 100.0, 0, 33.0));
+    view.layout(&mut src, size(100.0, 45.0));
+    src.take();
+    let baseline = view.measured_count();
+    assert!(view.install_measurement(500, 100.0, 0, 33.0));
+    assert_eq!(view.measured_height(&500), Some(33.0));
+    // Another width or style generation is another layout, never reused.
+    assert!(!view.install_measurement(501, 40.0, 0, 33.0));
+    assert!(!view.install_measurement(502, 100.0, 7, 33.0));
+    assert_eq!(view.measured_height(&501), None);
+    assert_eq!(view.measured_height(&502), None);
+    assert_eq!(view.measured_count(), baseline + 1);
+}
+
+#[test]
+fn prewarmed_heights_spare_the_source_a_measurement() {
+    let mut src = Indexed::new(100);
+    let mut view = FlowViewport::default();
+    view.layout(&mut src, size(100.0, 45.0));
+    src.take();
+    assert!(view.install_measurement(50, 100.0, 0, 20.0));
+    view.anchor(50, 0.0, 0.0);
+    view.layout(&mut src, size(100.0, 45.0));
+    let visited = src.take();
+    assert!(
+        !visited.contains(&50),
+        "an exact installed height is never measured again: {visited:?}"
+    );
+    let row = view.visible().iter().find(|p| p.id == 50).unwrap();
+    assert_eq!(row.height, 20.0);
+}

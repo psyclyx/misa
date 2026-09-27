@@ -2827,6 +2827,7 @@ dependencies = [
  "misa-syntax",
  "misa-value",
  "misa-window-core",
+ "serde",
  "serde_json",
 ]
 

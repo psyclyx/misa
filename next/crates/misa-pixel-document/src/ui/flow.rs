@@ -99,7 +99,7 @@ impl DocumentStore {
             FlowId::Node(parent.to_owned())
         }
     }
-    fn previous_flow(&self, id: &FlowId, theme: &Theme) -> Option<FlowId> {
+    pub(super) fn previous_flow(&self, id: &FlowId, theme: &Theme) -> Option<FlowId> {
         match id {
             FlowId::Top => None,
             FlowId::Bottom => Some(self.last_flow(self.root(), theme)),
@@ -132,7 +132,7 @@ impl DocumentStore {
             }),
         }
     }
-    fn next_flow(&self, id: &FlowId, theme: &Theme) -> Option<FlowId> {
+    pub(super) fn next_flow(&self, id: &FlowId, theme: &Theme) -> Option<FlowId> {
         match id {
             FlowId::Top => Some(self.first_flow(self.root(), theme)),
             FlowId::Bottom => None,
@@ -204,7 +204,7 @@ impl DocumentStore {
         }
         (at_ordinal.unwrap_or(last), surviving)
     }
-    fn contains_flow(&self, id: &FlowId, theme: &Theme) -> bool {
+    pub(super) fn contains_flow(&self, id: &FlowId, theme: &Theme) -> bool {
         match id {
             FlowId::Top | FlowId::Bottom => true,
             FlowId::Node(id) => self.contains(id) && !self.structural(id, theme),

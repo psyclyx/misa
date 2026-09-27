@@ -72,6 +72,10 @@ impl DocumentStore {
     pub fn node(&self, id: &str) -> Option<&Node> {
         self.tree.node(id)
     }
+    /// Column alignment measured on the live table, replayed in a private store.
+    pub(super) fn set_measurement_columns(&mut self, id: &str, columns: usize) {
+        self.table_columns.insert(id.to_owned(), columns);
+    }
     pub(super) fn table_columns(&self, id: &str) -> usize {
         self.table_columns.get(id).copied().unwrap_or(1)
     }
@@ -190,6 +194,28 @@ impl DocumentStore {
     }
     pub fn image_ref(&self, hash: &str) -> Option<&Arc<image::RgbaImage>> {
         self.images.get(hash)
+    }
+    /// Install already-projected, owner-scoped resources in a private measurement
+    /// store. No live stream source text or markdown parser state is copied.
+    pub(super) fn install_measurement_resources(
+        &mut self,
+        streams: Vec<Node>,
+        images: BTreeMap<String, Arc<image::RgbaImage>>,
+    ) {
+        self.images = images;
+        for node in streams {
+            let id = node.id.clone();
+            self.streams.insert(
+                id.clone(),
+                LiveStream {
+                    role: node.role.clone(),
+                    text: String::new(),
+                    parsed: None,
+                    node,
+                },
+            );
+            self.insert_stream_key(&id);
+        }
     }
     pub fn has_image(&self, hash: &str) -> bool {
         self.images.contains_key(hash)
