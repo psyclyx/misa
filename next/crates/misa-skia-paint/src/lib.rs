@@ -2,7 +2,7 @@
 use misa_pixel_ui::{LineMetrics, Op, Scene, TextMetrics};
 use misa_style::Color;
 use skia_safe::{
-    Canvas, Font, FontMgr, FontStyle, Paint as SkPaint, PaintStyle, Rect, Typeface, surfaces,
+    Canvas, Font, FontMgr, FontStyle, Paint as SkPaint, PaintStyle, RRect, Rect, Typeface, surfaces,
 };
 use std::{
     collections::HashMap,
@@ -474,6 +474,22 @@ fn draw_ops(canvas: &Canvas, ops: &[Op], fonts: &Fonts, fill: &mut SkPaint) {
                 fill.set_style(PaintStyle::Fill);
                 fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xff9a_a2ad)));
                 canvas.draw_rect(Rect::from_xywh(*x, *y, *width, *height), fill);
+            }
+            Op::RoundedRect {
+                x,
+                y,
+                width,
+                height,
+                radius,
+                style,
+            } => {
+                fill.set_style(PaintStyle::Fill);
+                fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xff9a_a2ad)));
+                // The radius is the corner radius, clamped to what fits.
+                let corner = radius.min(*width / 2.0).min(*height / 2.0).max(0.0);
+                let rect =
+                    RRect::new_rect_xy(Rect::from_xywh(*x, *y, *width, *height), corner, corner);
+                canvas.draw_rrect(rect, fill);
             }
             Op::Text {
                 x,

@@ -278,7 +278,7 @@ fn prewarm_never_changes_what_the_frame_paints() {
             .iter()
             .filter(|op| {
                 !matches!(op, misa_pixel_ui::Op::ClipRect { x, width, .. }
-                    if *x >= scene.width - 9.0 && *width <= 6.0)
+                    if *x >= scene.width - 13.0 && *width <= 6.0)
             })
             .map(|op| format!("{op:?}"))
             .collect()

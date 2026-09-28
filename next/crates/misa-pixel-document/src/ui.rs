@@ -118,6 +118,9 @@ pub struct DocumentUi {
     drafts: drafts::Drafts,
     viewport: FlowViewport<flow::FlowId>,
     offline_elapsed: Duration,
+    /// The last exact scroll metrics: a bar must not flicker away during the
+    /// brief gaps an edit opens in the height index.
+    last_scroll: Option<misa_pixel_ui::flow::Scroll>,
     background: Option<background::Background>,
 }
 impl DocumentUi {
@@ -139,6 +142,7 @@ impl DocumentUi {
             drafts: drafts::Drafts::default(),
             viewport: FlowViewport::default(),
             offline_elapsed: Duration::ZERO,
+            last_scroll: None,
             background: None,
         };
         app.set_view(view);
@@ -813,17 +817,9 @@ impl DocumentUi {
         }
     }
 
-    /// The transcript's scrollbar, once the measured heights cover the whole
-    /// source: a thumb that lies about where the reader is costs more than
-    /// none at all.
-    fn scrollbar(&mut self) -> Option<misa_pixel_ui::PlacedScrollbar<Control>> {
-        if !self
-            .background
-            .as_ref()
-            .is_some_and(background::Background::sweep_complete)
-        {
-            return None;
-        }
+    /// Exact scroll metrics when the height index covers the source, sticky
+    /// across the brief gaps an edit opens in it.
+    fn scroll_metrics(&mut self) -> Option<misa_pixel_ui::flow::Scroll> {
         let mut builder = layout::LayoutBuilder::new(
             &self.document,
             &mut self.drafts,
@@ -833,15 +829,37 @@ impl DocumentUi {
             self.metrics.as_ref(),
             self.light,
         );
-        let scroll = self.viewport.scroll(&mut builder)?;
+        match self.viewport.scroll(&mut builder) {
+            Some(scroll) => {
+                self.last_scroll = Some(scroll);
+                Some(scroll)
+            }
+            None => self.last_scroll,
+        }
+    }
+
+    /// The transcript's scrollbar, when the content overflows its window.
+    fn scrollbar(&mut self) -> Option<misa_pixel_ui::PlacedScrollbar<Control>> {
+        if !self
+            .background
+            .as_ref()
+            .is_some_and(background::Background::sweep_complete)
+        {
+            return None;
+        }
+        let scroll = self.scroll_metrics()?;
+        if scroll.content <= scroll.window {
+            // Nothing to scroll: no bar. The column it would draw in stays.
+            return None;
+        }
         let colors = crate::appearance::Palette::new(self.light);
         Some(
             misa_pixel_ui::Scrollbar {
                 id: Control::Scroll,
                 bounds: misa_pixel_ui::Rect {
-                    x: self.size.width as f32 - 9.0,
+                    x: self.size.width as f32 - 20.0 + (20.0 - SCROLLBAR_WIDTH) / 2.0,
                     y: 0.0,
-                    width: 6.0,
+                    width: SCROLLBAR_WIDTH,
                     height: self.viewport.constraints().height,
                 },
                 scroll,
@@ -855,16 +873,7 @@ impl DocumentUi {
     /// The exact height this document wants, or `None` while its measurements
     /// are incomplete. Hosts size panels to their content; nothing estimates.
     pub fn content_height(&mut self) -> Option<f32> {
-        let mut builder = layout::LayoutBuilder::new(
-            &self.document,
-            &mut self.drafts,
-            &mut self.interaction,
-            &mut self.retained,
-            &mut self.overlays,
-            self.metrics.as_ref(),
-            self.light,
-        );
-        let scroll = self.viewport.scroll(&mut builder)?;
+        let scroll = self.scroll_metrics()?;
         let pinned = (self.size.height as f32 - self.viewport.constraints().height).max(0.0);
         Some(scroll.content + pinned)
     }
@@ -1252,6 +1261,9 @@ pub(super) const CARD_TRAILING: f32 = 2.0 * CARD_PADDING_Y + 6.0;
 pub(super) const PARAGRAPH_GAP: f32 = 5.0;
 /// Owners one drag step walks toward its target before the next event.
 pub(super) const SCROLL_BUDGET: usize = 256;
+/// The scrollbar's width; it centers in the transcript's margin, taking the
+/// space that is its without reflowing the content.
+pub(super) const SCROLLBAR_WIDTH: f32 = 6.0;
 pub(super) const GUTTER: f32 = 12.0;
 pub(super) const RAIL: f32 = 2.0;
 fn text(x: f32, y: f32, value: &str, style: Style) -> Op {

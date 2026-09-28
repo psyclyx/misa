@@ -94,6 +94,15 @@ pub enum Op {
         height: f32,
         style: Style,
     },
+    /// A filled rectangle with rounded corners: `radius` is the corner radius.
+    RoundedRect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radius: f32,
+        style: Style,
+    },
 }
 
 /// A drawable frame.

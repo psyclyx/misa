@@ -6,8 +6,9 @@ use crate::{Op, Rect};
 use misa_style::Style;
 use std::sync::Arc;
 
-/// The shortest thumb, so a huge document stays draggable.
-pub const MIN_THUMB: f32 = 16.0;
+/// The shortest thumb. Proportional size is the honest size; this floor only
+/// keeps something grabbable when the ratio would be a sliver.
+pub const MIN_THUMB: f32 = 4.0;
 
 pub struct Scrollbar<Id> {
     pub id: Id,
@@ -78,6 +79,13 @@ impl<Id> Scrollbar<Id> {
             width: self.bounds.width,
             height: thumb_height,
         };
+        // Pill track and pill thumb: chrome, not another content box.
+        let track = Rect {
+            x: self.bounds.x + (self.bounds.width - 2.0).max(0.0) / 2.0,
+            y: self.bounds.y,
+            width: 2.0,
+            height: self.bounds.height.max(0.0),
+        };
         PlacedScrollbar {
             id: self.id,
             ops: vec![Op::ClipRect {
@@ -86,18 +94,20 @@ impl<Id> Scrollbar<Id> {
                 width: self.bounds.width.max(0.0),
                 height: self.bounds.height.max(0.0),
                 ops: Arc::new(vec![
-                    Op::Rect {
-                        x: self.bounds.x,
-                        y: self.bounds.y,
-                        width: self.bounds.width.max(0.0),
-                        height: self.bounds.height.max(0.0),
+                    Op::RoundedRect {
+                        x: track.x,
+                        y: track.y,
+                        width: track.width,
+                        height: track.height,
+                        radius: 1.0,
                         style: self.track,
                     },
-                    Op::Rect {
+                    Op::RoundedRect {
                         x: thumb.x,
                         y: thumb.y,
                         width: thumb.width.max(0.0),
                         height: thumb.height,
+                        radius: self.bounds.width / 2.0,
                         style: self.thumb_style,
                     },
                 ]),
@@ -136,10 +146,10 @@ mod tests {
     #[test]
     fn thumb_size_and_position_reflect_exact_metrics() {
         let placed = bar(450.0, 1000.0, 100.0);
-        // 10% of a 100px track is below the draggable floor: the floor wins.
-        assert_eq!(placed.thumb.height, MIN_THUMB);
+        // Proportional size is the honest size: 10% of the track.
+        assert_eq!(placed.thumb.height, 10.0);
         // 450 of the 900 scrollable pixels: halfway down the travel.
-        assert_eq!(placed.thumb.y, 42.0);
+        assert_eq!(placed.thumb.y, 45.0);
     }
 
     #[test]

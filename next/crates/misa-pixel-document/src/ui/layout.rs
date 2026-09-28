@@ -389,7 +389,7 @@ impl DocumentUi {
             builder.paint_report(&mut scene, width, height);
             scene
         };
-        // The scrollbar sits over the transcript: exact metrics or nothing.
+        // The scrollbar draws in the column the transcript reserved for it.
         if let Some(bar) = self.scrollbar() {
             self.interaction.add_hit(super::Hit {
                 x: bar.bounds.x,

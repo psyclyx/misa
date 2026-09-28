@@ -432,7 +432,9 @@ fn frame_positions_nonempty_runs_and_uses_syntax_colours() {
             runs += 1;
             keyword |= *style == Theme::dark().token("keyword");
         }
-        Op::Image { width, height, .. } | Op::Rect { width, height, .. } => {
+        Op::Image { width, height, .. }
+        | Op::Rect { width, height, .. }
+        | Op::RoundedRect { width, height, .. } => {
             assert!(*width > 0.0 && *height > 0.0);
         }
         Op::Group { .. } | Op::ClipRect { .. } => {}
