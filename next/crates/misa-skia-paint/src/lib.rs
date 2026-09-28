@@ -1,22 +1,38 @@
 //! Shared Skia canvas painting for raster exports and Ganesh targets.
 use misa_pixel_ui::{LineMetrics, Op, Scene, TextMetrics};
 use misa_style::Color;
-use skia_safe::{Canvas, Font, FontMgr, FontStyle, Paint as SkPaint, PaintStyle, Rect, surfaces};
+use skia_safe::{
+    Canvas, Font, FontMgr, FontStyle, Paint as SkPaint, PaintStyle, Rect, Typeface, surfaces,
+};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
+/// The font stack: the face the user's font configuration resolves first, plus
+/// a per-glyph fallback for whatever that face cannot draw. Measurement and
+/// painting share one stack, so a line lays out exactly as it draws — including
+/// the glyphs the primary face is missing.
+pub struct Fonts {
+    primary: Typeface,
+    /// Faces chosen for characters the primary face cannot draw. `None` is
+    /// cached too: no installed face covers the character, and that answer is
+    /// stable for the process.
+    fallbacks: Mutex<HashMap<char, Option<Typeface>>>,
+    /// Sizing is keyed by the face and the exact size: measuring a run and
+    /// painting it must use the same Skia Font, not two configurations.
+    sized: Mutex<HashMap<(u32, u32), Font>>,
+}
+
 // Cache only successful resolution. A missing font remains retryable if the
 // system's installed fonts change; the lock serializes first-use resolution.
-static TYPEFACE: OnceLock<skia_safe::Typeface> = OnceLock::new();
-static TYPEFACE_INIT: Mutex<()> = Mutex::new(());
-// The size key is exact: measuring a run and painting it must use the same
-// Skia Font, not independently configured fonts at approximately equal sizes.
-static FONTS: OnceLock<Mutex<HashMap<u32, Font>>> = OnceLock::new();
+static FONTS: OnceLock<Fonts> = OnceLock::new();
+static FONTS_INIT: Mutex<()> = Mutex::new(());
 
-fn resolve_typeface(fonts: &FontMgr) -> Result<skia_safe::Typeface, String> {
+fn resolve_typeface(fonts: &FontMgr) -> Result<Typeface, String> {
+    // "monospace" is fontconfig's alias for whatever the user configured; only
+    // when their configuration offers nothing does any installed face do.
     fonts
         .match_family_style("monospace", FontStyle::default())
         .or_else(|| {
@@ -27,77 +43,170 @@ fn resolve_typeface(fonts: &FontMgr) -> Result<skia_safe::Typeface, String> {
         .ok_or_else(|| "no typeface available; install a font".to_string())
 }
 
-/// Reuse the same resolved typeface on raster and GPU canvases.
-fn cached_typeface() -> Result<&'static skia_safe::Typeface, String> {
-    if let Some(typeface) = TYPEFACE.get() {
-        return Ok(typeface);
-    }
-    let _guard = TYPEFACE_INIT.lock().unwrap_or_else(|err| err.into_inner());
-    if TYPEFACE.get().is_none() {
-        let fonts = FontMgr::default();
-        TYPEFACE
-            .set(resolve_typeface(&fonts)?)
-            .ok()
-            .expect("typeface initialized under lock");
-    }
-    Ok(TYPEFACE.get().expect("typeface initialized under lock"))
-}
-
-fn cached_font(typeface: &skia_safe::Typeface, size: f32) -> Font {
-    let mut fonts = FONTS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
-    fonts
-        .entry(size.to_bits())
-        .or_insert_with(|| Font::from_typeface(typeface.clone(), size))
-        .clone()
-}
-
-/// Skia measurements backed by the painter's cached typeface and sized fonts.
-pub struct SkiaTextMetrics {
-    typeface: skia_safe::Typeface,
-}
-
-/// Resolve the paint font now, rather than deferring a missing-font failure to
-/// a layout or draw call. No substitute measurement is used in production.
-pub fn text_metrics() -> Result<Arc<dyn TextMetrics>, String> {
-    Ok(Arc::new(SkiaTextMetrics {
-        typeface: cached_typeface()?.clone(),
-    }))
-}
-
-impl TextMetrics for SkiaTextMetrics {
-    fn measure(&self, text: &str, size: f32) -> f32 {
-        cached_font(&self.typeface, size).measure_str(text, None).0
+impl Fonts {
+    fn new() -> Result<Fonts, String> {
+        let mgr = FontMgr::default();
+        Ok(Fonts {
+            primary: resolve_typeface(&mgr)?,
+            fallbacks: Mutex::new(HashMap::new()),
+            sized: Mutex::new(HashMap::new()),
+        })
     }
 
-    fn advances(&self, text: &str, size: f32) -> Vec<f32> {
-        let font = cached_font(&self.typeface, size);
-        // draw_str and measure_str both convert UTF-8 to glyph IDs without
-        // shaping; get_widths uses the same glyph advance as measure_str.
-        let glyphs = font.text_to_glyphs_vec(text);
-        let mut widths = vec![0.0; glyphs.len()];
-        font.get_widths(&glyphs, &mut widths);
-        let mut advances = Vec::with_capacity(widths.len() + 1);
-        advances.push(0.0);
+    /// The face the user's font configuration resolves first.
+    pub fn primary(&self) -> &Typeface {
+        &self.primary
+    }
+
+    fn font(&self, face: &Typeface, size: f32) -> Font {
+        self.sized
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entry((face.unique_id(), size.to_bits()))
+            .or_insert_with(|| Font::from_typeface(face.clone(), size))
+            .clone()
+    }
+
+    /// The face that draws `ch`, or `None` when the primary face does.
+    pub fn fallback(&self, ch: char) -> Option<Typeface> {
+        let mut cache = self.fallbacks.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(cached) = cache.get(&ch) {
+            return cached.clone();
+        }
+        // Prefer a face from the user's own configuration; only then any face
+        // that can draw the character at all. The manager is created per
+        // resolution (cache misses only): Skia's is not shareable across
+        // threads, and the resolved faces are.
+        let mgr = FontMgr::default();
+        let found = mgr
+            .match_family_style_character("monospace", FontStyle::default(), &[], ch as i32)
+            .filter(|face| face.unichar_to_glyph(ch as i32) != 0)
+            .or_else(|| {
+                (0..mgr.count_families()).find_map(|index| {
+                    mgr.match_family_style(&mgr.family_name(index), FontStyle::default())
+                        .filter(|face| face.unichar_to_glyph(ch as i32) != 0)
+                })
+            });
+        cache.insert(ch, found.clone());
+        found
+    }
+
+    fn font_for(&self, face: Option<&Typeface>, size: f32) -> Font {
+        self.font(face.unwrap_or(&self.primary), size)
+    }
+
+    /// Split `text` into runs of one face, in order. Only characters the
+    /// primary face cannot draw leave it.
+    pub fn runs<'a>(&self, text: &'a str, size: f32) -> Vec<(Font, &'a str)> {
+        let mut runs: Vec<(Font, &str)> = Vec::new();
+        let mut start = 0usize;
+        let mut face: Option<Typeface> = None; // None: the primary face
+        for (index, ch) in text.char_indices() {
+            let next = if self.primary.unichar_to_glyph(ch as i32) != 0 {
+                None
+            } else {
+                self.fallback(ch)
+            };
+            let same = match (&face, &next) {
+                (None, None) => true,
+                (Some(have), Some(want)) => have.unique_id() == want.unique_id(),
+                _ => false,
+            };
+            if !same {
+                if start < index {
+                    runs.push((self.font_for(face.as_ref(), size), &text[start..index]));
+                }
+                start = index;
+                face = next;
+            }
+        }
+        if start < text.len() {
+            runs.push((self.font_for(face.as_ref(), size), &text[start..]));
+        }
+        runs
+    }
+
+    /// The advance width of `text`, measured run by run with the same fonts
+    /// that paint it.
+    pub fn measure(&self, text: &str, size: f32) -> f32 {
+        self.runs(text, size)
+            .into_iter()
+            .map(|(font, run)| font.measure_str(run, None).0)
+            .sum()
+    }
+
+    /// Per-character advance boundaries: `advances[i]` is the x of the i-th
+    /// character boundary, and the last equals [`Self::measure`].
+    pub fn advances(&self, text: &str, size: f32) -> Vec<f32> {
+        let mut advances = vec![0.0];
         let mut x = 0.0;
-        for width in widths {
-            x += width;
-            advances.push(x);
+        for (font, run) in self.runs(text, size) {
+            // draw_str and measure_str both convert UTF-8 to glyph IDs without
+            // shaping; get_widths uses the same glyph advance as measure_str.
+            let glyphs = font.text_to_glyphs_vec(run);
+            let mut widths = vec![0.0; glyphs.len()];
+            font.get_widths(&glyphs, &mut widths);
+            for width in widths {
+                x += width;
+                advances.push(x);
+            }
         }
         debug_assert_eq!(advances.len(), text.chars().count() + 1);
         advances
     }
 
-    fn line_metrics(&self, size: f32) -> LineMetrics {
-        let (line_height, metrics) = cached_font(&self.typeface, size).metrics();
+    /// The line box of the primary face. A fallback glyph taller than it is
+    /// painted in its own metrics but reserves no extra line height, so layout
+    /// stays stable across fonts.
+    pub fn line_metrics(&self, size: f32) -> LineMetrics {
+        let (line_height, metrics) = self.font(&self.primary, size).metrics();
         LineMetrics {
             ascent: metrics.ascent,
             descent: metrics.descent,
             leading: metrics.leading,
             line_height,
         }
+    }
+}
+
+/// The shared font stack. Cache only successful resolution: a missing font
+/// remains retryable if the system's installed fonts change.
+fn fonts() -> Result<&'static Fonts, String> {
+    if let Some(fonts) = FONTS.get() {
+        return Ok(fonts);
+    }
+    let _guard = FONTS_INIT.lock().unwrap_or_else(|err| err.into_inner());
+    if FONTS.get().is_none() {
+        FONTS
+            .set(Fonts::new()?)
+            .ok()
+            .expect("fonts initialized under lock");
+    }
+    Ok(FONTS.get().expect("fonts initialized under lock"))
+}
+
+/// Skia measurements backed by the painter's own font stack.
+pub struct SkiaTextMetrics {
+    fonts: &'static Fonts,
+}
+
+/// Resolve the font stack now, rather than deferring a missing-font failure to
+/// a layout or draw call. No substitute measurement is used in production.
+pub fn text_metrics() -> Result<Arc<dyn TextMetrics>, String> {
+    Ok(Arc::new(SkiaTextMetrics { fonts: fonts()? }))
+}
+
+impl TextMetrics for SkiaTextMetrics {
+    fn measure(&self, text: &str, size: f32) -> f32 {
+        self.fonts.measure(text, size)
+    }
+
+    fn advances(&self, text: &str, size: f32) -> Vec<f32> {
+        self.fonts.advances(text, size)
+    }
+
+    fn line_metrics(&self, size: f32) -> LineMetrics {
+        self.fonts.line_metrics(size)
     }
 }
 
@@ -146,6 +255,35 @@ mod metrics_tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn fallback_faces_cover_what_the_primary_face_cannot_draw() {
+        let fonts = fonts().unwrap();
+        for ch in ['界', '🙂', '😀', '→', '🟠', '한'] {
+            if fonts.primary().unichar_to_glyph(ch as i32) != 0 {
+                continue; // this machine's primary face draws it
+            }
+            let face = fonts
+                .fallback(ch)
+                .unwrap_or_else(|| panic!("{ch} has no fallback face"));
+            assert_ne!(
+                face.unichar_to_glyph(ch as i32),
+                0,
+                "{ch} fallback must be a real glyph"
+            );
+            // Whatever the fallback adds to a line, runs split at its boundary
+            // and measurement stays exactly where painting advances to.
+            let text = format!("a{ch}b");
+            let runs = fonts.runs(&text, 15.0);
+            assert!(runs.len() >= 2, "{ch} must leave the primary face's run");
+            let advances = fonts.advances(&text, 15.0);
+            assert_eq!(
+                advances[2] - advances[1],
+                fonts.measure(&ch.to_string(), 15.0),
+                "{ch} measures as its own run"
+            );
         }
     }
 }
@@ -210,17 +348,14 @@ fn raster_impl<const PROFILE: bool, const CACHE: bool>(
     }
 
     let start = if PROFILE { Some(Instant::now()) } else { None };
-    // Keep the manager alive through painting in the uncached reference,
-    // as in the original per-frame implementation.
-    let fonts = if CACHE {
-        None
+    // The uncached reference rebuilds the whole stack per frame, as the
+    // original implementation resolved its typeface per frame.
+    let uncached;
+    let fonts: &Fonts = if CACHE {
+        fonts()?
     } else {
-        Some(FontMgr::default())
-    };
-    let typeface = if CACHE {
-        cached_typeface()?.clone()
-    } else {
-        resolve_typeface(fonts.as_ref().expect("uncached font manager"))?
+        uncached = Fonts::new()?;
+        &uncached
     };
     if PROFILE {
         phases.font_resolver = start.expect("profile clock").elapsed();
@@ -229,7 +364,7 @@ fn raster_impl<const PROFILE: bool, const CACHE: bool>(
     let start = if PROFILE { Some(Instant::now()) } else { None };
     let mut fill = SkPaint::default();
     fill.set_anti_alias(true);
-    draw_ops(canvas, &scene.ops, &typeface, CACHE, &mut fill);
+    draw_ops(canvas, &scene.ops, fonts, &mut fill);
     if PROFILE {
         phases.draw_ops = start.expect("profile clock").elapsed();
     }
@@ -276,26 +411,20 @@ pub fn draw_scene_scaled(
     fill.set_anti_alias(true);
     canvas.save();
     canvas.scale((scale, scale));
-    draw_ops(canvas, &scene.ops, cached_typeface()?, true, &mut fill);
+    draw_ops(canvas, &scene.ops, fonts()?, &mut fill);
     canvas.restore();
     Ok(())
 }
 
 /// Paint the retained operations onto any Skia canvas (raster or Ganesh).
 /// The caller owns the surface, clear, and readback; paint order is identical.
-fn draw_ops(
-    canvas: &Canvas,
-    ops: &[Op],
-    typeface: &skia_safe::Typeface,
-    cache_fonts: bool,
-    fill: &mut SkPaint,
-) {
+fn draw_ops(canvas: &Canvas, ops: &[Op], fonts: &Fonts, fill: &mut SkPaint) {
     for op in ops {
         match op {
             Op::Group { x, y, ops } => {
                 canvas.save();
                 canvas.translate((*x, *y));
-                draw_ops(canvas, ops, typeface, cache_fonts, fill);
+                draw_ops(canvas, ops, fonts, fill);
                 canvas.restore();
             }
             Op::ClipRect {
@@ -307,7 +436,7 @@ fn draw_ops(
             } => {
                 canvas.save();
                 canvas.clip_rect(Rect::from_xywh(*x, *y, *width, *height), None, true);
-                draw_ops(canvas, ops, typeface, cache_fonts, fill);
+                draw_ops(canvas, ops, fonts, fill);
                 canvas.restore();
             }
             Op::Image {
@@ -353,16 +482,17 @@ fn draw_ops(
                 style,
                 text,
             } => {
-                let font = if cache_fonts {
-                    cached_font(typeface, *size)
-                } else {
-                    Font::from_typeface(typeface.clone(), *size)
-                };
                 fill.set_style(PaintStyle::Fill);
                 fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xffe9_ebee)));
-                // The scene's y is the line top; use the measured ascent to
-                // locate the baseline, just as measured layout will.
-                canvas.draw_str(text, (*x, *y - font.metrics().1.ascent), &font, fill);
+                // The scene's y is the line top; every run sits on the primary
+                // face's baseline and advances by its own measured width, so
+                // painting matches measurement run for run.
+                let baseline = *y - fonts.line_metrics(*size).ascent;
+                let mut x = *x;
+                for (font, run) in fonts.runs(text, *size) {
+                    canvas.draw_str(run, (x, baseline), &font, fill);
+                    x += font.measure_str(run, None).0;
+                }
             }
         }
     }

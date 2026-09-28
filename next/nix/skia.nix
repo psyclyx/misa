@@ -46,6 +46,20 @@ let
     FONTCONFIG_PATH = "${fontconfig.out}/etc/fonts";
     LD_LIBRARY_PATH = lib.makeLibraryPath [ vulkan-loader ];
   };
+  runtimeEnv = {
+    # What a shipped app and the dev shell see: the fonts the machine actually
+    # has — distro fonts, system profiles, the user's own XDG directory (added
+    # by makeFontsConf) — with DejaVu last so some face always exists. Tests
+    # build against `headlessEnv` only, where the font is fixed.
+    FONTCONFIG_FILE = makeFontsConf {
+      fontDirectories = [
+        "/usr/share/fonts"
+        "/usr/local/share/fonts"
+        "/run/current-system/sw/share/fonts"
+        dejavu_fonts
+      ];
+    };
+  };
 in
 {
   nativeBuildInputs = [ pkg-config ];
@@ -58,7 +72,7 @@ in
     # depending on a host GPU or a display server in the build sandbox.
     export VK_ICD_FILENAMES=${mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json
   '';
-  inherit headlessEnv;
+  inherit headlessEnv runtimeEnv;
   env = headlessEnv // {
     LD_LIBRARY_PATH = lib.makeLibraryPath (headlessLibraries ++ windowLibraries);
   };

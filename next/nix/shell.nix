@@ -53,6 +53,9 @@ mkShell (
   }
   // skia.env
   // {
+    # The dev shell runs and tests the app against the machine's own fonts;
+    # nix builds keep skia.env's pinned DejaVu for reproducible tests.
+    FONTCONFIG_FILE = skia.runtimeEnv.FONTCONFIG_FILE;
     inherit (misa-android) ANDROID_HOME ANDROID_SDK_ROOT;
   }
 )
