@@ -28,13 +28,15 @@ pub struct Size {
     pub height: u32,
 }
 
-/// The phase of a pointer gesture: a press, a move while held, or the release.
-/// A click is a press and a release on one target; a drag is a press followed
-/// by moves. Widgets must be able to tell them apart.
+/// The phase of a pointer gesture: a press, a move while held, a hover with
+/// nothing held, or the release. A click is a press and a release on one
+/// target; a drag is a press followed by moves. Widgets must be able to tell
+/// them apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerPhase {
     Press,
     Move,
+    Hover,
     Release,
 }
 
@@ -53,6 +55,14 @@ impl Event {
             x,
             y,
             phase: PointerPhase::Move,
+        }
+    }
+    /// A pointer move with nothing held at `(x, y)`.
+    pub fn hover(x: f32, y: f32) -> Self {
+        Event::Pointer {
+            x,
+            y,
+            phase: PointerPhase::Hover,
         }
     }
     /// A pointer release at `(x, y)`.
@@ -102,6 +112,21 @@ pub struct Output<C, F> {
     pub frame: Option<F>,
     pub redraw: bool,
     pub deadline: Option<Duration>,
+    /// What the pointer is over, for the host cursor.
+    pub cursor: CursorIcon,
+    /// What the pointer is over when it promises something: a link's target.
+    pub hover: Option<String>,
+}
+
+/// The cursor shape for what the pointer is over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorIcon {
+    /// Regular content.
+    Default,
+    /// Selectable text.
+    Text,
+    /// Something that acts when clicked.
+    Pointer,
 }
 
 impl<C, F> Default for Output<C, F> {
@@ -111,6 +136,8 @@ impl<C, F> Default for Output<C, F> {
             frame: None,
             redraw: false,
             deadline: None,
+            cursor: CursorIcon::Default,
+            hover: None,
         }
     }
 }

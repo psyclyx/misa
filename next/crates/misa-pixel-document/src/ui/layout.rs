@@ -3,7 +3,7 @@ use super::{
     CARD_PADDING_X, CARD_PADDING_Y, CARD_TRAILING, Control, DocumentUi, FONT_SIZE, FieldViewport,
     PARAGRAPH_GAP, PULSE_PERIOD, RAIL, text,
 };
-use misa_pixel_ui::{FieldMode, FlowConstraints, FlowViewport, Op, Scene};
+use misa_pixel_ui::{FieldMode, FlowConstraints, FlowViewport, Op, Scene, TextFlow};
 use misa_proto::view::{FieldKind, Kind, Node};
 use misa_render::Theme;
 use misa_style::Style;
@@ -399,6 +399,25 @@ impl DocumentUi {
                 control: Control::Scroll,
             });
             scene.ops.extend(bar.ops);
+        }
+        // What the pointer promises, where the pointer is: a hint over the
+        // scene, never part of the document.
+        if let Some((href, x, y)) = self.hover.clone() {
+            let colors = crate::appearance::Palette::new(self.light);
+            let hint = TextFlow::new(self.metrics.as_ref(), FONT_SIZE)
+                .clip(&href, (width as f32 - 80.0).max(1.0))
+                .0;
+            let box_width = self.metrics.measure(&hint, FONT_SIZE) + 16.0;
+            let x = (x + 12.0).min((width as f32 - box_width - 8.0).max(8.0));
+            let y = (y + 18.0).min((height as f32 - 28.0).max(0.0));
+            scene.ops.push(Op::Rect {
+                x: x - 4.0,
+                y: y - 2.0,
+                width: box_width + 8.0,
+                height: 24.0,
+                style: colors.surface,
+            });
+            scene.ops.push(text(x, y, &hint, colors.muted));
         }
         if let Some((control, mut state)) = self.choice.take() {
             if let Some(widget) = self.choice_widget(&control) {

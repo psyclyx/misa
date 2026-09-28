@@ -1,8 +1,9 @@
 use super::{FONT_SIZE, GUTTER, layout::LayoutBuilder};
 use misa_pixel_ui::{Rect, Scene, TextFlow};
-use misa_proto::view::{Node, Span};
+use misa_proto::view::{Node, Span, SpanKind};
 use misa_render::Theme;
 use misa_style::Style;
+use std::sync::Arc;
 
 impl LayoutBuilder<'_> {
     pub(super) fn line_height(&self) -> f32 {
@@ -28,10 +29,26 @@ impl LayoutBuilder<'_> {
         width: f32,
         spans: Vec<(Style, String)>,
     ) {
+        self.row_sized(scene, x, y, width, spans, FONT_SIZE, Arc::new([]));
+    }
+
+    /// One measured line of text at an explicit size. A heading is the same
+    /// content as prose at its own size; the layout measures whatever it gets.
+    /// `links` are source ranges of what the text promises when clicked.
+    pub(super) fn row_sized(
+        &mut self,
+        scene: &mut Scene,
+        x: f32,
+        y: f32,
+        width: f32,
+        spans: Vec<(Style, String)>,
+        size: f32,
+        links: Arc<[(usize, usize, String)]>,
+    ) {
         // Gutter bands hold rails and disclosure marks, drawn beside the text:
         // a copied row carries content only, never chrome characters.
         let gutter = self.gutter_width();
-        let flow = TextFlow::new(self.metrics, FONT_SIZE);
+        let flow = TextFlow::new(self.metrics, size);
         let bounds = Rect {
             x: x + gutter,
             y,
@@ -42,7 +59,7 @@ impl LayoutBuilder<'_> {
         // The entire bounded row is selectable, including blank lines and
         // the space after the last glyph (which maps to the final caret).
         self.interaction
-            .add_row(bounds.x, y, bounds.width, bounds.height, geometry, 0);
+            .add_row(bounds.x, y, bounds.width, bounds.height, geometry, 0, links);
     }
 
     pub(super) fn wrapped(
@@ -55,13 +72,40 @@ impl LayoutBuilder<'_> {
         base: Style,
         theme: &Theme,
     ) {
+        self.wrapped_sized(scene, x, y, width, spans, base, theme, FONT_SIZE);
+    }
+
+    /// Wrapped text at an explicit size: the same layout, measured at `size`.
+    pub(super) fn wrapped_sized(
+        &mut self,
+        scene: &mut Scene,
+        x: f32,
+        y: &mut f32,
+        width: f32,
+        spans: &[Span],
+        base: Style,
+        theme: &Theme,
+        size: f32,
+    ) {
         let gutter = self.gutter_width();
         let runs = spans
             .iter()
             .map(|span| (crate::span_style(theme, span, base), span.text.clone()))
             .collect();
+        // Links are recorded in the owner's source coordinates: what this text
+        // promises when clicked survives wrapping and framing.
+        let mut links = Vec::new();
+        let mut at = 0usize;
+        for span in spans {
+            let end = at + span.text.chars().count();
+            if let SpanKind::Link { href } = &span.kind {
+                links.push((at, end, href.clone()));
+            }
+            at = end;
+        }
+        let links = Arc::from(links);
         let mut previous_end = 0;
-        for (index, (line, start, end)) in TextFlow::new(self.metrics, FONT_SIZE)
+        for (index, (line, start, end)) in TextFlow::new(self.metrics, size)
             .wrap_with_ranges(runs, (width - gutter).max(0.0))
             .into_iter()
             .enumerate()
@@ -69,9 +113,9 @@ impl LayoutBuilder<'_> {
             if index > 0 {
                 self.interaction.continue_row(start - previous_end);
             }
-            self.row(scene, x, *y, width, line);
+            self.row_sized(scene, x, *y, width, line, size, Arc::clone(&links));
             previous_end = end;
-            *y += self.line_height();
+            *y += self.metrics.line_metrics(size).line_height;
         }
     }
 

@@ -39,6 +39,8 @@ pub(super) struct SessionViews {
     panel_top: f32,
     /// The panel's last known content height; panels are bar-sized documents.
     panel_height: f32,
+    /// What the last pointer event was over.
+    cursor_icon: misa_window_core::CursorIcon,
     background_waker: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 impl SessionViews {
@@ -65,6 +67,7 @@ impl SessionViews {
             panel_focus: false,
             panel_top: f32::MAX,
             panel_height: 0.0,
+            cursor_icon: misa_window_core::CursorIcon::Default,
             background_waker: None,
         }
     }
@@ -308,6 +311,7 @@ impl SessionViews {
         elapsed: Duration,
         cursor: (f32, f32),
     ) -> Vec<Action> {
+        let mut pointer_cursor = misa_window_core::CursorIcon::Default;
         let commands = match event {
             Event::Pointer { x, y, phase } => {
                 if let Some(commands) = self.local.pointer(x, y, phase) {
@@ -318,28 +322,22 @@ impl SessionViews {
                         self.panels
                             .get_mut(&self.panel)
                             .map(|panel| {
-                                panel
-                                    .drive(
-                                        Event::Pointer {
-                                            x,
-                                            y: y - self.panel_top,
-                                            phase,
-                                        },
-                                        elapsed,
-                                    )
-                                    .commands
-                                    .into_iter()
-                                    .map(Action::Ui)
-                                    .collect()
+                                let output = panel.drive(
+                                    Event::Pointer {
+                                        x,
+                                        y: y - self.panel_top,
+                                        phase,
+                                    },
+                                    elapsed,
+                                );
+                                pointer_cursor = output.cursor;
+                                output.commands.into_iter().map(Action::Ui).collect()
                             })
                             .unwrap_or_default()
                     } else {
-                        self.app
-                            .drive(Event::Pointer { x, y, phase }, elapsed)
-                            .commands
-                            .into_iter()
-                            .map(Action::Ui)
-                            .collect()
+                        let output = self.app.drive(Event::Pointer { x, y, phase }, elapsed);
+                        pointer_cursor = output.cursor;
+                        output.commands.into_iter().map(Action::Ui).collect()
                     }
                 }
             }
@@ -391,7 +389,13 @@ impl SessionViews {
             Event::Resize(_) | Event::Theme { .. } => vec![],
             Event::Redraw(_) => unreachable!("paint handles redraw"),
         };
+        self.cursor_icon = pointer_cursor;
         commands
+    }
+
+    /// What the pointer is over, for the host cursor.
+    pub(super) fn cursor_icon(&self) -> misa_window_core::CursorIcon {
+        self.cursor_icon
     }
     fn input_event(&mut self, event: Event, elapsed: Duration) -> Vec<Action> {
         if let Some(commands) = self.local.input(event.clone()) {

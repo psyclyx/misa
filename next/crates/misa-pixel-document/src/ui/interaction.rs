@@ -2,7 +2,7 @@
 use super::{Control, text};
 use misa_pixel_ui::{FieldViewport, LaidOutRow, Op, PlacedField, Scene};
 use misa_style::Style;
-use misa_window_core::PointerPhase;
+use misa_window_core::{CursorIcon, PointerPhase};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -32,6 +32,8 @@ pub(super) struct TextRow {
     /// Soft wrap versus explicit source break / separate logical row.
     continued: bool,
     break_before: bool,
+    /// Links in the owner's source coordinates: what a click promises.
+    links: Arc<[(usize, usize, String)]>,
 }
 impl TextRow {
     fn column(&self, x: f32) -> usize {
@@ -108,6 +110,8 @@ pub(super) enum PointerResult {
     Held(Control),
     /// A non-text control was pressed and released on.
     Activate(Control),
+    /// Text was clicked without dragging and it promised a link.
+    Open(String),
 }
 impl InteractionMap {
     pub(super) fn is_expanded(&self, id: &str) -> bool {
@@ -171,6 +175,7 @@ impl InteractionMap {
     }
     pub(super) fn pointer(&mut self, x: f32, y: f32, phase: PointerPhase) -> PointerResult {
         match phase {
+            PointerPhase::Hover => PointerResult::None,
             PointerPhase::Press => {
                 // The topmost hit owns the click; the topmost text row owns the
                 // selection. A block whose click target is the whole block can
@@ -263,8 +268,15 @@ impl InteractionMap {
                 let Some(control) = pressed else {
                     return PointerResult::None;
                 };
-                if moved || matches!(control, Control::Text(_)) {
+                if moved {
                     return PointerResult::None;
+                }
+                if let Control::Text(index) = control {
+                    // A click on text that promises a link opens it; a click
+                    // elsewhere in the text leaves the selection alone.
+                    return self
+                        .link_at(index, x)
+                        .map_or(PointerResult::None, PointerResult::Open);
                 }
                 // A click (no drag) activates, even when it started on text
                 // inside the control's block.
@@ -347,6 +359,7 @@ impl InteractionMap {
             prefix: row.prefix,
             continued: row.continued,
             break_before: row.break_before,
+            links: Arc::clone(&row.links),
         }));
         self.hits.extend(group.hits.iter().map(|hit| {
             let mut hit = hit.clone();
@@ -384,6 +397,7 @@ impl InteractionMap {
         height: f32,
         geometry: LaidOutRow,
         prefix: usize,
+        links: Arc<[(usize, usize, String)]>,
     ) {
         let index = self.rows.len();
         self.add_hit(Hit {
@@ -417,7 +431,39 @@ impl InteractionMap {
             prefix,
             continued,
             break_before,
+            links,
         });
+    }
+
+    /// The link under a column of a row, in the owner's source coordinates.
+    fn link_at(&self, index: usize, x: f32) -> Option<String> {
+        let row = self.rows.get(index)?;
+        let source = row.source_start + row.column(x).saturating_sub(row.prefix);
+        row.links
+            .iter()
+            .find(|(start, end, _)| source >= *start && source < *end)
+            .map(|(_, _, href)| href.clone())
+    }
+
+    /// What the pointer is over: the cursor it deserves and the link it promises.
+    pub(super) fn hover(&self, x: f32, y: f32) -> (CursorIcon, Option<String>) {
+        let Some(hit) = self.hits.iter().rev().find(|hit| hit.contains(x, y)) else {
+            return (CursorIcon::Default, None);
+        };
+        match &hit.control {
+            Control::Text(index) => {
+                let link = self.link_at(*index, x);
+                (
+                    if link.is_some() {
+                        CursorIcon::Pointer
+                    } else {
+                        CursorIcon::Text
+                    },
+                    link,
+                )
+            }
+            _ => (CursorIcon::Pointer, None),
+        }
     }
     fn set_selection(&mut self, a: (usize, usize), b: (usize, usize)) {
         let (start, end) = if a <= b { (a, b) } else { (b, a) };

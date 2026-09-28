@@ -3249,3 +3249,45 @@ fn the_composer_pins_to_the_bottom_and_never_scrolls() {
         cursor = next;
     }
 }
+
+#[test]
+fn clicking_a_link_opens_it_and_dragging_across_it_selects() {
+    let view = Node::text(
+        "text",
+        [
+            Span::plain("see "),
+            Span::link("the docs", "https://example.com/docs"),
+        ],
+    )
+    .id("body");
+    let mut app = DocumentUi::new(view, test_metrics());
+    let scene = app.frame(400, 120);
+    assert!(!scene.ops.is_empty());
+    let (row_x, x, y) = {
+        let row = app
+            .interaction
+            .rows()
+            .iter()
+            .find(|row| row.geometry.text.contains("the docs"))
+            .expect("the link row");
+        (row.x, row.x + row.edge(6) + 0.1, row.y + 1.0)
+    };
+    // A click on the link opens what it promises.
+    assert_eq!(
+        click(&mut app, x, y),
+        vec![Command::OpenUrl("https://example.com/docs".into())]
+    );
+    // A drag across the same text selects it instead of opening anything.
+    app.pointer(x, y, PointerPhase::Press);
+    app.pointer(x + 30.0, y, PointerPhase::Move);
+    assert!(!app.selected_text().is_empty());
+    app.pointer(x + 30.0, y, PointerPhase::Release);
+    // Hovering points at the link and says where it goes.
+    let output = app.drive(Event::hover(x, y), Duration::ZERO);
+    assert_eq!(output.cursor, misa_window_core::CursorIcon::Pointer);
+    assert_eq!(output.hover.as_deref(), Some("https://example.com/docs"));
+    // Hovering plain text is text, promising nothing.
+    let plain = app.drive(Event::hover(row_x + 1.0, y), Duration::ZERO);
+    assert_eq!(plain.cursor, misa_window_core::CursorIcon::Text);
+    assert!(plain.hover.is_none());
+}

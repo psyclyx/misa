@@ -61,9 +61,14 @@ pub enum DocumentUpdate<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Intent(Intent),
-    Save { node: String, destination: String },
+    Save {
+        node: String,
+        destination: String,
+    },
     LoadImage(misa_proto::view::BlobRef),
     Copy(String),
+    /// Open a link the text promised. The host decides how.
+    OpenUrl(String),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Control {
@@ -121,6 +126,9 @@ pub struct DocumentUi {
     /// The last exact scroll metrics: a bar must not flicker away during the
     /// brief gaps an edit opens in the height index.
     last_scroll: Option<misa_pixel_ui::flow::Scroll>,
+    /// What the pointer is over: its cursor, and the link it promises.
+    cursor_icon: misa_window_core::CursorIcon,
+    hover: Option<(String, f32, f32)>,
     background: Option<background::Background>,
 }
 impl DocumentUi {
@@ -143,6 +151,8 @@ impl DocumentUi {
             viewport: FlowViewport::default(),
             offline_elapsed: Duration::ZERO,
             last_scroll: None,
+            cursor_icon: misa_window_core::CursorIcon::Default,
+            hover: None,
             background: None,
         };
         app.set_view(view);
@@ -188,6 +198,8 @@ impl DocumentUi {
                 }
             }
         }
+        output.cursor = self.cursor_icon;
+        output.hover = self.hover.as_ref().map(|(href, ..)| href.clone());
         output
     }
 
@@ -804,6 +816,12 @@ impl DocumentUi {
         commands
     }
     fn pointer_inner(&mut self, x: f32, y: f32, phase: PointerPhase) -> Vec<Command> {
+        if phase == PointerPhase::Hover {
+            let (cursor, hover) = self.interaction.hover(x, y);
+            self.cursor_icon = cursor;
+            self.hover = hover.map(|href| (href, x, y));
+            return vec![];
+        }
         match self.interaction.pointer(x, y, phase) {
             PointerResult::None | PointerResult::SelectionChanged => vec![],
             PointerResult::Held(control) => {
@@ -812,6 +830,7 @@ impl DocumentUi {
                 }
                 vec![]
             }
+            PointerResult::Open(url) => vec![Command::OpenUrl(url)],
             PointerResult::Activate(control) => {
                 self.anchor_action_at(y);
                 self.activate(control)

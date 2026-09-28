@@ -100,6 +100,14 @@ impl Host {
     fn input(&mut self, event: Event) {
         let commands = self.views.input(event, self.clock.elapsed(), self.cursor);
         self.commands(commands);
+        // What the pointer is over decides the cursor the platform shows.
+        if let Some(window) = &self.window {
+            window.set_cursor(match self.views.cursor_icon() {
+                misa_window_core::CursorIcon::Default => winit::window::CursorIcon::Default,
+                misa_window_core::CursorIcon::Text => winit::window::CursorIcon::Text,
+                misa_window_core::CursorIcon::Pointer => winit::window::CursorIcon::Pointer,
+            });
+        }
     }
     fn key(&mut self, key: Key) {
         self.input(Event::Key(key));
@@ -127,6 +135,10 @@ impl Host {
                     self.views
                         .notice("Appearance storage is busy; choice was not saved");
                 }
+            } else if let Action::Ui(Command::OpenUrl(url)) = command {
+                // Platform effect: open what the text promised. The toolkit
+                // decides what a link is; the host decides how to open one.
+                open_url(&url);
             } else if let Action::Ui(Command::Copy(text)) = command {
                 self.views.notice(&match self
                     .clipboard
@@ -223,6 +235,18 @@ impl Host {
 const MAX_SKIPPED_FRAMES: u32 = 32;
 fn skip_layout_frame(layout_wake: bool, paint_needed: bool, skipped: u32) -> bool {
     layout_wake && !paint_needed && skipped < MAX_SKIPPED_FRAMES
+}
+
+/// Platform effect: open a link target with whatever the machine uses.
+fn open_url(url: &str) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(opener).arg(url).spawn();
 }
 
 /// The layout worker's only host contact: record that background results are
@@ -325,6 +349,8 @@ impl ApplicationHandler<Update> for Host {
                         y: self.cursor.1,
                         phase: PointerPhase::Move,
                     });
+                } else {
+                    self.input(Event::hover(self.cursor.0, self.cursor.1));
                 }
             }
             WindowEvent::MouseInput {

@@ -10,6 +10,16 @@ use misa_proto::view::{FieldKind, Kind, Node};
 use misa_render::Theme;
 use misa_style::Style;
 
+/// Markdown heading levels are size structure, not decoration.
+fn heading_size(level: u8) -> f32 {
+    match level {
+        1 => 26.0,
+        2 => 22.0,
+        3 => 19.0,
+        _ => super::FONT_SIZE,
+    }
+}
+
 /// What sits beside a block's content: a rail, or the mark that opens it.
 enum GutterMark {
     /// A quote's rail, spanning the quoted content.
@@ -664,7 +674,9 @@ impl LayoutBuilder<'_> {
                 if *level == 1 {
                     base = base.underline();
                 }
-                self.wrapped(scene, x, y, width, spans, base, theme);
+                // Heading levels are size structure: a level is a size, and the
+                // layout measures whatever size it is handed.
+                self.wrapped_sized(scene, x, y, width, spans, base, theme, heading_size(*level));
             }
             Kind::Quote => {
                 // A quote is a quote, not a row of glyphs: its rail is drawn

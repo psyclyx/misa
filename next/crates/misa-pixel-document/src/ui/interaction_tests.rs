@@ -2,6 +2,7 @@ use super::Control;
 use super::interaction::{Hit, InteractionMap, PointerResult};
 use misa_pixel_ui::{LaidOutRow, Rect};
 use misa_window_core::PointerPhase;
+use std::sync::Arc;
 
 fn row(map: &mut InteractionMap, text: &str) {
     map.add_row(
@@ -21,6 +22,7 @@ fn row(map: &mut InteractionMap, text: &str) {
             runs: vec![],
         },
         0,
+        Arc::new([]),
     );
 }
 
