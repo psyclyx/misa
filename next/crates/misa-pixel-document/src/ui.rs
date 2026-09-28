@@ -14,7 +14,7 @@ use misa_render::Theme;
 use misa_style::Style;
 use misa_value::Value;
 pub use misa_window_core::Key;
-use misa_window_core::{Event, Output, Size};
+use misa_window_core::{Event, Output, PointerPhase, Size};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -165,8 +165,8 @@ impl DocumentUi {
                 self.open_menu(x, y);
                 output.redraw = true;
             }
-            Event::Pointer { x, y, dragging } => {
-                output.commands = self.pointer(x, y, dragging);
+            Event::Pointer { x, y, phase } => {
+                output.commands = self.pointer(x, y, phase);
                 output.redraw = true;
             }
             Event::Wheel { delta } => {
@@ -771,9 +771,9 @@ impl DocumentUi {
         self.viewport.wheel(&mut builder, delta);
         self.sync_visible_moving();
     }
-    pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
+    pub fn pointer(&mut self, x: f32, y: f32, phase: PointerPhase) -> Vec<Command> {
         if let Some((control, mut state)) = self.choice.take() {
-            if !dragging {
+            if phase == PointerPhase::Release {
                 if let Some(widget) = self.choice_widget(&control) {
                     let result = widget.click(self.metrics.as_ref(), &mut state, x, y);
                     self.finish_choice(control, state, result);
@@ -784,7 +784,7 @@ impl DocumentUi {
             return vec![];
         }
         if self.menu.is_some() {
-            if dragging {
+            if phase != PointerPhase::Release {
                 return vec![];
             }
             let mut menu = self.menu.take().unwrap();
@@ -798,19 +798,21 @@ impl DocumentUi {
             return vec![];
         }
         self.invalidate_focus();
-        let commands = self.pointer_inner(x, y, dragging);
+        let commands = self.pointer_inner(x, y, phase);
         self.invalidate_focus();
         self.drafts.focus_changed(self.interaction.focus());
         commands
     }
-    fn pointer_inner(&mut self, x: f32, y: f32, dragging: bool) -> Vec<Command> {
-        match self.interaction.pointer(x, y, dragging) {
+    fn pointer_inner(&mut self, x: f32, y: f32, phase: PointerPhase) -> Vec<Command> {
+        match self.interaction.pointer(x, y, phase) {
             PointerResult::None | PointerResult::SelectionChanged => vec![],
-            PointerResult::Activate(control) => {
+            PointerResult::Held(control) => {
                 if matches!(control, Control::Scroll) {
                     self.scroll_drag(y);
-                    return vec![];
                 }
+                vec![]
+            }
+            PointerResult::Activate(control) => {
                 self.anchor_action_at(y);
                 self.activate(control)
             }
@@ -1253,7 +1255,7 @@ const FONT_SIZE: f32 = 16.0;
 /// content, the gap one carded block leaves for the next, and one level of
 /// quote/disclosure indent. These are drawn, never glyphs: a font can lack a
 /// box-drawing character, but not a rectangle.
-pub(super) const CARD_PADDING_X: f32 = 8.0;
+pub(super) const CARD_PADDING_X: f32 = 12.0;
 pub(super) const CARD_PADDING_Y: f32 = 6.0;
 /// Content to content across two cards: both paddings plus the gap between.
 pub(super) const CARD_TRAILING: f32 = 2.0 * CARD_PADDING_Y + 6.0;

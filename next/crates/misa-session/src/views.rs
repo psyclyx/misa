@@ -676,14 +676,31 @@ pub(crate) fn call_node(message: &str, call: &Value, position: usize) -> Node {
         .map(|id| format!("{message}.call.{id}"))
         .unwrap_or_else(|| format!("{message}.call.{position}"));
     let status = text_at(call, "status");
-    let mut node = Node::new(
-        "tool.call",
-        Kind::Collapsible {
-            summary: vec![Span::strong(name.to_string()), Span::plain(" ")],
-        },
-    )
-    .id(&id)
-    .label(if name.is_empty() { "tool" } else { name });
+    // The collapsed row is the short form of the call: what it asked for and
+    // how it ended. The name is the title above it and is never repeated here.
+    let args = clip(
+        &format!("{}", call.get("args").cloned().unwrap_or(Value::Null))
+            .lines()
+            .collect::<Vec<_>>()
+            .join(" "),
+        120,
+    );
+    let mut summary = Vec::new();
+    if !args.is_empty() && args != "null" {
+        summary.push(Span::plain(args));
+    }
+    if !matches!(status, "" | "ok") {
+        if !summary.is_empty() {
+            summary.push(Span::plain(" · "));
+        }
+        summary.push(Span::plain(status.to_string()));
+    }
+    if summary.is_empty() {
+        summary.push(Span::plain("called"));
+    }
+    let mut node = Node::new("tool.call", Kind::Collapsible { summary })
+        .id(&id)
+        .label(if name.is_empty() { "tool" } else { name });
     node.state = Some(match status {
         "pending" => State::Pending,
         "running" => State::Streaming,

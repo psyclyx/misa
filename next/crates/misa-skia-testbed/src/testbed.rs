@@ -12,7 +12,7 @@ use misa_pixel_testbed::Dashboard;
 use misa_pixel_ui::TextMetrics;
 use misa_proto::view::{Action, ActionOn, Field, FieldKind, Kind, Node, Span};
 use misa_style::Style;
-use misa_window_core::{Event, Size};
+use misa_window_core::{Event, PointerPhase, Size};
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(any(feature = "native", test))]
@@ -123,30 +123,22 @@ impl Fixtures {
                     self.semantic_input(Event::Text(text), elapsed);
                 }
             }
-            Event::Pointer {
-                x,
-                y,
-                dragging: false,
-            } => {
+            Event::Pointer { x, y, phase } => {
                 if self.mode == Mode::Native {
-                    self.native.click(x, y, width, self.metrics.as_ref());
+                    // The native fixture models clicks; a release without a
+                    // drag away is the click.
+                    if phase == PointerPhase::Release {
+                        self.native.click(x, y, width, self.metrics.as_ref());
+                    }
                 } else {
-                    self.semantic_input(
-                        Event::Pointer {
-                            x,
-                            y,
-                            dragging: false,
-                        },
-                        elapsed,
-                    );
+                    self.semantic_input(Event::Pointer { x, y, phase }, elapsed);
                 }
             }
             Event::ContextMenu { x, y } if self.mode == Mode::Native => {
                 self.native.context_menu(x, y)
             }
             Event::Wheel { delta } if self.mode == Mode::Native => self.native.scroll(delta),
-            Event::Pointer { .. }
-            | Event::ContextMenu { .. }
+            Event::ContextMenu { .. }
             | Event::Wheel { .. }
             | Event::Resize(_)
             | Event::Theme { .. }

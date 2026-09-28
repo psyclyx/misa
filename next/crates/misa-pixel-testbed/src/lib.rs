@@ -6,7 +6,7 @@ pub mod flow_demo;
 use misa_pixel_ui::{ListKey, MenuKey, Scene, TextMetrics};
 use misa_skia_vulkan::Renderer;
 use misa_style::Color;
-use misa_window_core::{Event, Key, Size};
+use misa_window_core::{Event, Key, PointerPhase, Size};
 use std::sync::Arc;
 
 const BACKGROUND: Color = Color::Rgb(20, 22, 26);
@@ -44,6 +44,12 @@ impl Headless {
         &self.renderer.device_name
     }
 
+    /// A press and a release on one target: the click controls activate on.
+    pub fn click(&mut self, x: f32, y: f32) {
+        self.input(Event::press(x, y));
+        self.input(Event::release(x, y));
+    }
+
     /// Only normalized physical-pixel events are accepted. Text space is the
     /// window adapter's representation of the Space key.
     pub fn input(&mut self, event: Event) {
@@ -72,7 +78,7 @@ impl Headless {
             && !matches!(
                 event,
                 Event::Pointer {
-                    dragging: false,
+                    phase: PointerPhase::Release,
                     ..
                 } | Event::ContextMenu { .. }
                     | Event::Wheel { .. }
@@ -130,7 +136,7 @@ impl Headless {
             Event::Pointer {
                 x,
                 y,
-                dragging: false,
+                phase: PointerPhase::Release,
             } => {
                 self.dashboard
                     .click(x, y, self.size.width, self.metrics.as_ref());
@@ -165,11 +171,7 @@ pub fn run() -> Result<(), String> {
     })?;
     println!("Native headless Vulkan/Ganesh: {}", host.device_name());
     let initial = host.frame()?;
-    host.input(Event::Pointer {
-        x: 40.0,
-        y: 155.0,
-        dragging: false,
-    });
+    host.click(40.0, 155.0);
     let selected = host.frame()?;
     if initial.pixels == selected.pixels {
         return Err("pointer input did not alter GPU readback".into());
@@ -229,11 +231,7 @@ mod tests {
         let closed = host.frame().unwrap();
         assert_eq!(pixel(&initial, 10, 190), pixel(&closed, 10, 190));
         host.input(Event::ContextMenu { x: 125.0, y: 285.0 });
-        host.input(Event::Pointer {
-            x: 1.0,
-            y: 1.0,
-            dragging: false,
-        });
+        host.click(1.0, 1.0);
         assert!(!host.dashboard.menu_open());
         host.input(Event::ContextMenu { x: 125.0, y: 285.0 });
         host.input(Event::Key(Key::Escape));
@@ -248,11 +246,7 @@ mod tests {
         })
         .expect("GPU readback required");
         host.frame().unwrap();
-        host.input(Event::Pointer {
-            x: 90.0,
-            y: 220.0,
-            dragging: false,
-        });
+        host.click(90.0, 220.0);
         assert!(host.dashboard.combo_open());
         host.input(Event::ContextMenu { x: 125.0, y: 285.0 });
         assert!(!host.dashboard.combo_open());
@@ -275,11 +269,7 @@ mod tests {
         })
         .expect("GPU readback required");
         let before = host.frame().unwrap();
-        host.input(Event::Pointer {
-            x: 90.0,
-            y: 220.0,
-            dragging: false,
-        });
+        host.click(90.0, 220.0);
         let opened = host.frame().unwrap();
         assert!(host.dashboard.combo_open());
         assert_ne!(before.pixels, opened.pixels);
@@ -331,11 +321,7 @@ mod tests {
         })
         .expect("Vulkan ICD and GPU readback required; configure VK_ICD_FILENAMES");
         let initial = host.frame().unwrap();
-        host.input(Event::Pointer {
-            x: 40.0,
-            y: 50.0,
-            dragging: false,
-        });
+        host.click(40.0, 50.0);
         let focused = host.frame().unwrap();
         assert_ne!(pixel(&initial, 35, 50), pixel(&focused, 35, 50));
         host.input(Event::Text("éabcdefghijklmnop".into()));
@@ -373,11 +359,7 @@ mod tests {
         let wide = host.frame().unwrap();
         assert_eq!(wide.pixels.len(), 500 * 320 * 4);
         assert!((43..87).any(|x| (50..65).any(|y| pixel(&erased, x, y) != pixel(&wide, x, y))));
-        host.input(Event::Pointer {
-            x: 0.0,
-            y: 0.0,
-            dragging: false,
-        });
+        host.click(0.0, 0.0);
         host.input(Event::Text("ignored".into()));
         host.input(Event::Key(Key::Backspace));
         assert_eq!(host.dashboard.note(), "éabcdefghijklmno");
@@ -396,11 +378,7 @@ mod tests {
             misa_pixel_ui::Op::ClipRect { y, .. } => *y as usize,
             _ => panic!("list clip missing"),
         };
-        host.input(Event::Pointer {
-            x: 40.0,
-            y: list_top as f32 + 5.0,
-            dragging: false,
-        });
+        host.click(40.0, list_top as f32 + 5.0);
         let selected = host.frame().unwrap();
         assert_eq!(host.dashboard.list_selection(), Some(0));
         assert_ne!(pixel(&top, 40, 197), pixel(&selected, 40, 197));
@@ -470,17 +448,9 @@ mod tests {
                 ..
             }
         )));
-        host.input(Event::Pointer {
-            x: 94.0,
-            y: 135.0,
-            dragging: false,
-        });
+        host.click(94.0, 135.0);
         assert!(host.dashboard.checked()); // half-open hit bound
-        host.input(Event::Pointer {
-            x: 40.0,
-            y: 135.0,
-            dragging: false,
-        });
+        host.click(40.0, 135.0);
         assert!(!host.dashboard.checked());
         assert_ne!(narrow.pixels, host.frame().unwrap().pixels);
     }
@@ -496,19 +466,11 @@ mod tests {
         let initial = host.frame().unwrap();
         assert_eq!(pixel(&initial, 0, 0), [20, 22, 26, 255]);
         assert_eq!(pixel(&initial, 50, 160), [65, 74, 86, 255]);
-        host.input(Event::Pointer {
-            x: 40.0,
-            y: 155.0,
-            dragging: false,
-        });
+        host.click(40.0, 155.0);
         let keyed = host.frame().unwrap();
         assert_eq!(pixel(&keyed, 50, 160), [45, 105, 150, 255]);
         assert_ne!(initial.pixels, keyed.pixels);
-        host.input(Event::Pointer {
-            x: 40.0,
-            y: 155.0,
-            dragging: false,
-        });
+        host.click(40.0, 155.0);
         assert_eq!(initial.pixels, host.frame().unwrap().pixels);
         host.input(Event::Text(" ".into()));
         assert_eq!(keyed.pixels, host.frame().unwrap().pixels);
@@ -527,11 +489,7 @@ mod tests {
         assert_eq!(narrow.pixels.len(), 130 * 300 * 4);
         // The 58px-wide button ends at x=94 after resize.
         assert_eq!(pixel(&narrow, 80, 160), [45, 105, 150, 255]);
-        host.input(Event::Pointer {
-            x: 94.0,
-            y: 155.0,
-            dragging: false,
-        });
+        host.click(94.0, 155.0);
         assert_eq!(narrow.pixels, host.frame().unwrap().pixels);
     }
 }

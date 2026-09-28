@@ -915,6 +915,13 @@ fn changing_local_theme_preserves_drafts_and_rebuilds_cached_colors() {
 use super::*;
 use misa_proto::view::{Action, Field, Span};
 use misa_value::Value;
+
+/// A press and a release on one target: the click that activates a control.
+fn click(app: &mut DocumentUi, x: f32, y: f32) -> Vec<Command> {
+    app.pointer(x, y, PointerPhase::Press);
+    app.pointer(x, y, PointerPhase::Release)
+}
+
 #[test]
 fn command_picker_filters_navigates_and_inserts_without_sending() {
     let mut view = form("compose", FieldKind::Inline);
@@ -953,7 +960,7 @@ fn empty_picker_and_modal_input_preserve_draft() {
     app.key(Key::Commands);
     app.drive(Event::Text("query".into()), Duration::ZERO)
         .commands;
-    assert!(app.pointer(80.0, 55.0, false).is_empty());
+    assert!(click(&mut app, 80.0, 55.0).is_empty());
     assert!(app.key(Key::Enter { newline: false }).is_empty());
     let scene = app.frame(900, 720);
     assert!(any_op(
@@ -1397,10 +1404,10 @@ fn select_all_is_bound_to_the_focused_draft_across_tab_and_return() {
         field: "value".into(),
     };
     let (x, y) = app.control_center(&a).unwrap();
-    app.pointer(x, y, false);
+    click(&mut app, x, y);
     app.drive(Event::Text("alpha".into()), Duration::ZERO);
     let (x, y) = app.control_center(&b).unwrap();
-    app.pointer(x, y, false);
+    click(&mut app, x, y);
     app.drive(Event::Text("beta".into()), Duration::ZERO);
     app.key(Key::SelectAll);
     app.key(Key::Tab { backward: true });
@@ -1509,7 +1516,7 @@ fn boolean_widget_uses_draft_hit_focus_and_existing_cycle_policy() {
         |op| matches!(op, Op::Text { text, .. } if text.contains("[✓]"))
     ));
     assert_eq!(app.field_text("one", "value"), Some("true"));
-    assert!(app.pointer(x, y, false).is_empty());
+    assert!(click(&mut app, x, y).is_empty());
     assert_eq!(app.interaction.focus(), Some(&control));
     assert_eq!(app.field_text("one", "value"), Some("false"));
     let off = app.frame(400, 240);
@@ -1542,7 +1549,7 @@ fn boolean_widget_uses_draft_hit_focus_and_existing_cycle_policy() {
     app.set_view(view);
     assert_eq!(app.field_text("one", "value"), Some("true"));
     app.frame(400, 240);
-    app.pointer(x, y, false);
+    click(&mut app, x, y);
     assert_eq!(app.field_text("one", "value"), Some("false"));
     assert!(matches!(&app.submit("one", "answer")[..],
         [Command::Intent(Intent::Action { fields, .. })] if fields[0].value == "false"));
@@ -1565,7 +1572,7 @@ fn read_only_boolean_has_no_hit_and_secret_boolean_stays_masked() {
         })
         .is_none()
     );
-    assert!(app.pointer(40.0, 70.0, false).is_empty());
+    assert!(click(&mut app, 40.0, 70.0).is_empty());
     assert!(matches!(&app.submit("one", "answer")[..],
         [Command::Intent(Intent::Action { fields, .. })] if fields[0].value == "true"));
     let Kind::Fields { fields } = &mut view.kind else {
@@ -1599,7 +1606,7 @@ fn disclosure_state_and_unicode_copy_are_local() {
     app.frame(500, 500);
     let disclosure = Control::Disclosure("tool".into());
     let (x, y) = app.control_center(&disclosure).unwrap();
-    app.pointer(x, y, false);
+    click(&mut app, x, y);
     assert!(app.interaction.is_expanded("tool"));
     let open = app.frame(500, 500);
     assert!(any_op(
@@ -1616,7 +1623,7 @@ fn disclosure_state_and_unicode_copy_are_local() {
         |op| matches!(op, Op::Text { text, .. } if text == "héllo λ")
     ));
     let (x, y) = app.control_center(&disclosure).unwrap();
-    app.pointer(x, y, false);
+    click(&mut app, x, y);
     let closed = app.frame(500, 500);
     assert!(!app.interaction.is_expanded("tool"));
     assert!(!any_op(
@@ -1624,7 +1631,7 @@ fn disclosure_state_and_unicode_copy_are_local() {
         |op| matches!(op, Op::Text { text, .. } if text == "héllo λ")
     ));
     let (x, y) = app.control_center(&disclosure).unwrap();
-    app.pointer(x, y, false);
+    click(&mut app, x, y);
     app.frame(500, 500);
     app.focus_control(None);
     app.key(Key::SelectAll);
@@ -1876,16 +1883,16 @@ fn live_updates_do_not_steal_the_local_save_dialog() {
 fn pointer_selection_uses_measured_unicode_boundaries() {
     let mut app = DocumentUi::new(Node::text("text", [Span::plain("界hi")]), test_metrics());
     app.frame(400, 200);
-    app.pointer(20.0 + 18.1, 25.0, false);
-    app.pointer(20.0 + 27.1, 25.0, true);
+    app.pointer(20.0 + 18.1, 25.0, PointerPhase::Press);
+    app.pointer(20.0 + 27.1, 25.0, PointerPhase::Move);
     assert_eq!(app.selected_text(), "h");
 }
 #[test]
 fn context_menu_selection_keyboard_and_outside_preserve_focus() {
     let mut app = DocumentUi::new(Node::text("text", [Span::plain("界hi")]), test_metrics());
     app.frame(400, 200);
-    app.pointer(38.1, 25.0, false);
-    app.pointer(47.1, 25.0, true);
+    app.pointer(38.1, 25.0, PointerPhase::Press);
+    app.pointer(47.1, 25.0, PointerPhase::Move);
     assert_eq!(app.selected_text(), "h");
     app.drive(Event::ContextMenu { x: 40.0, y: 25.0 }, Duration::ZERO);
     assert!(app.menu.is_some());
@@ -1905,7 +1912,7 @@ fn context_menu_selection_keyboard_and_outside_preserve_focus() {
     app.key(Key::Enter { newline: false });
     assert_eq!(app.selected_text(), "界hi");
     app.key(Key::Menu);
-    app.pointer(399.0, 199.0, false);
+    click(&mut app, 399.0, 199.0);
     assert!(app.menu.is_none());
     assert_eq!(app.selected_text(), "界hi");
 }
@@ -1968,7 +1975,7 @@ fn blank_text_row_accepts_pointer_selection_across_its_width() {
         .find(|(_, row)| row.geometry.text.is_empty())
         .map(|(index, row)| (index, row.x, row.y))
         .expect("blank row");
-    app.pointer(blank.1 + 5.0, blank.2 + 1.0, false);
+    click(&mut app, blank.1 + 5.0, blank.2 + 1.0);
     assert_eq!(
         app.interaction.selection(),
         Some((
@@ -1997,8 +2004,8 @@ fn styled_narrow_unicode_rows_share_paint_hit_and_selection_positions() {
     ));
     let x = row.x;
     let y = row.y + 1.0;
-    app.pointer(x + 18.0, y, false);
-    app.pointer(x + 30.0, y, true);
+    app.pointer(x + 18.0, y, PointerPhase::Press);
+    app.pointer(x + 30.0, y, PointerPhase::Move);
     assert_eq!(app.selected_text(), "ill");
     let selected = app.frame(400, 200);
     assert!(any_op(
@@ -2067,8 +2074,8 @@ fn giant_unwrapped_status_and_label_only_measure_and_paint_visible_prefixes() {
     assert_bounded(&scene);
     let row = &app.interaction.rows()[1];
     let (x, y) = (row.x, row.y + 1.0);
-    app.pointer(x + 1.0, y, false);
-    app.pointer(x + 14.0, y, true);
+    app.pointer(x + 1.0, y, PointerPhase::Press);
+    app.pointer(x + 14.0, y, PointerPhase::Move);
     assert_eq!(app.selected_text(), "W");
     assert_bounded(&app.frame(100, 120)); // selection repaint must not convert the tail
     app.key(Key::SelectAll);
@@ -2790,17 +2797,7 @@ fn headless_driver_uses_fake_clock_and_never_presents() {
         app.drive(Event::Theme { light: true }, clock.elapsed())
             .redraw
     );
-    assert!(
-        app.drive(
-            Event::Pointer {
-                x: 0.0,
-                y: 0.0,
-                dragging: false
-            },
-            clock.elapsed()
-        )
-        .redraw
-    );
+    assert!(app.drive(Event::press(0.0, 0.0), clock.elapsed()).redraw);
     assert!(
         app.drive(Event::Wheel { delta: 12.0 }, clock.elapsed())
             .redraw
@@ -3010,7 +3007,7 @@ fn choice_popup_keeps_local_value_on_refresh() {
         field: "value".into(),
     };
     let (x, y) = app.control_center(&control).unwrap();
-    assert!(app.pointer(x, y, false).is_empty());
+    assert!(click(&mut app, x, y).is_empty());
     assert!(app.choice.is_some());
     let popup = app.frame(240, 400);
     assert!(matches!(popup.ops.last(), Some(Op::ClipRect { ops, .. })
@@ -3025,8 +3022,8 @@ fn choice_popup_keeps_local_value_on_refresh() {
     assert!(app.choice.is_none());
     assert_eq!(app.field_text("choice", "value"), Some("first"));
     // Outside dismissal does not change either the focused control or local value.
-    app.pointer(x, y, false);
-    app.pointer(0.0, 0.0, false);
+    click(&mut app, x, y);
+    click(&mut app, 0.0, 0.0);
     assert!(app.choice.is_none());
     assert_eq!(app.interaction.focus(), Some(&control));
     assert_eq!(app.field_text("choice", "value"), Some("first"));
@@ -3079,7 +3076,7 @@ fn secret_choice_cycles_on_click_and_space_without_exposing_labels() {
     let (x, y) = app.control_center(&control).unwrap();
     assert!(!format!("{:?}", scene.ops).contains("Hidden"));
     assert!(!format!("{:?}", scene.ops).contains("first"));
-    app.pointer(x, y, false);
+    click(&mut app, x, y);
     assert!(app.choice.is_none());
     assert_eq!(app.field_text("choice", "value"), Some("second"));
     let scene = app.frame(360, 300);

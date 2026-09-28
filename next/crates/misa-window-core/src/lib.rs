@@ -28,15 +28,54 @@ pub struct Size {
     pub height: u32,
 }
 
+/// The phase of a pointer gesture: a press, a move while held, or the release.
+/// A click is a press and a release on one target; a drag is a press followed
+/// by moves. Widgets must be able to tell them apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerPhase {
+    Press,
+    Move,
+    Release,
+}
+
+impl Event {
+    /// A pointer press at `(x, y)`.
+    pub fn press(x: f32, y: f32) -> Self {
+        Event::Pointer {
+            x,
+            y,
+            phase: PointerPhase::Press,
+        }
+    }
+    /// A pointer move while held at `(x, y)`.
+    pub fn hold(x: f32, y: f32) -> Self {
+        Event::Pointer {
+            x,
+            y,
+            phase: PointerPhase::Move,
+        }
+    }
+    /// A pointer release at `(x, y)`.
+    pub fn release(x: f32, y: f32) -> Self {
+        Event::Pointer {
+            x,
+            y,
+            phase: PointerPhase::Release,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Key(Key),
     /// Committed IME text or printable/pasted text; never a physical keycode.
     Text(String),
+    /// A pointer gesture. A click is a press and release on one target; a drag
+    /// is a press followed by moves. Widgets distinguish them.
     Pointer {
         x: f32,
         y: f32,
-        dragging: bool,
+        phase: PointerPhase,
     },
     /// Normalized context request in physical window pixels (pointer or keyboard).
     ContextMenu {

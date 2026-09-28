@@ -2,6 +2,7 @@
 use super::{Control, text};
 use misa_pixel_ui::{FieldViewport, LaidOutRow, Op, PlacedField, Scene};
 use misa_style::Style;
+use misa_window_core::PointerPhase;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -74,6 +75,12 @@ pub(super) struct InteractionMap {
     hits: Vec<Hit>,
     rows: Vec<TextRow>,
     focus: Option<Control>,
+    /// The control a pointer press grabbed, until the matching release.
+    pressed: Option<Control>,
+    /// The text row the same press grabbed, when it began a selection.
+    pressed_text: Option<Control>,
+    /// Whether the pointer moved between press and release.
+    moved: bool,
     expanded: BTreeSet<String>,
     selection: Option<Selection>,
     owner: String,
@@ -97,6 +104,9 @@ impl GroupGeometry {
 pub(super) enum PointerResult {
     None,
     SelectionChanged,
+    /// A non-text control owns the pointer: pressed or moving while held.
+    Held(Control),
+    /// A non-text control was pressed and released on.
     Activate(Control),
 }
 impl InteractionMap {
@@ -159,14 +169,65 @@ impl InteractionMap {
         };
         self.focus = Some(controls[next].clone());
     }
-    pub(super) fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> PointerResult {
-        let Some(hit) = self.hits.iter().rev().find(|hit| hit.contains(x, y)) else {
-            return PointerResult::None;
-        };
-        if let Control::Text(index) = &hit.control {
-            let point = (*index, self.rows[*index].column(x));
-            if dragging {
-                if let Some(selection) = &self.selection {
+    pub(super) fn pointer(&mut self, x: f32, y: f32, phase: PointerPhase) -> PointerResult {
+        match phase {
+            PointerPhase::Press => {
+                // The topmost hit owns the click; the topmost text row owns the
+                // selection. A block whose click target is the whole block can
+                // still contain selectable text.
+                let mut pressed = None;
+                let mut text = None;
+                for hit in self.hits.iter().rev() {
+                    if !hit.contains(x, y) {
+                        continue;
+                    }
+                    if pressed.is_none() {
+                        pressed = Some(hit.control.clone());
+                    }
+                    if text.is_none() && matches!(hit.control, Control::Text(_)) {
+                        text = Some(hit.control.clone());
+                    }
+                    if pressed.is_some() && text.is_some() {
+                        break;
+                    }
+                }
+                self.pressed = pressed;
+                self.pressed_text = text.clone();
+                self.moved = false;
+                match text {
+                    Some(Control::Text(index)) => {
+                        let point = (index, self.rows[index].column(x));
+                        self.set_selection(point, point);
+                        self.focus = None;
+                        PointerResult::SelectionChanged
+                    }
+                    _ => {
+                        if let Some(control) = &self.pressed {
+                            self.selection = None;
+                            self.focus = Some(control.clone());
+                        }
+                        PointerResult::None
+                    }
+                }
+            }
+            PointerPhase::Move => {
+                self.moved = true;
+                if let Some(Control::Text(_)) = self.pressed_text.clone() {
+                    // Extend the selection from its anchor to the pointer.
+                    let Some(hit) =
+                        self.hits.iter().rev().find(|hit| {
+                            matches!(hit.control, Control::Text(_)) && hit.contains(x, y)
+                        })
+                    else {
+                        return PointerResult::None;
+                    };
+                    let Control::Text(index) = &hit.control else {
+                        unreachable!("the hit is text");
+                    };
+                    let point = (*index, self.rows[*index].column(x));
+                    let Some(selection) = &self.selection else {
+                        return PointerResult::None;
+                    };
                     let anchor = &selection.anchor;
                     let candidates = self.rows.iter().enumerate().filter_map(|(i, row)| {
                         let length = row.geometry.text.chars().count().saturating_sub(row.prefix);
@@ -184,22 +245,42 @@ impl InteractionMap {
                         return PointerResult::None;
                     };
                     self.set_selection((row_index, column), point);
-                    return PointerResult::SelectionChanged;
+                    PointerResult::SelectionChanged
+                } else {
+                    match self.pressed.clone() {
+                        Some(control) if !matches!(control, Control::Text(_)) => {
+                            PointerResult::Held(control)
+                        }
+                        _ => PointerResult::None,
+                    }
                 }
-            } else {
-                self.set_selection(point, point);
-                self.focus = None;
-                return PointerResult::SelectionChanged;
             }
-            return PointerResult::None;
+            PointerPhase::Release => {
+                let pressed = self.pressed.take();
+                self.pressed_text = None;
+                let moved = self.moved;
+                self.moved = false;
+                let Some(control) = pressed else {
+                    return PointerResult::None;
+                };
+                if moved || matches!(control, Control::Text(_)) {
+                    return PointerResult::None;
+                }
+                // A click (no drag) activates, even when it started on text
+                // inside the control's block.
+                let clicked = self
+                    .hits
+                    .iter()
+                    .rev()
+                    .find(|hit| hit.contains(x, y))
+                    .map(|hit| &hit.control);
+                if clicked == Some(&control) {
+                    PointerResult::Activate(control)
+                } else {
+                    PointerResult::None
+                }
+            }
         }
-        if dragging {
-            return PointerResult::None;
-        }
-        let control = hit.control.clone();
-        self.selection = None;
-        self.focus = Some(control.clone());
-        PointerResult::Activate(control)
     }
     pub(super) fn begin_frame(&mut self) {
         self.hits.clear();

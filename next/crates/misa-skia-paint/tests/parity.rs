@@ -454,13 +454,13 @@ fn render_ui_probe() {
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
     std::fs::write(
-        "/tmp/ui-tail.png",
+        "/tmp/ui-tail2.png",
         png(&app.frame_at(1200, 560, Duration::ZERO), BACKGROUND).unwrap(),
     )
     .unwrap();
     app.pin_to_top();
     std::fs::write(
-        "/tmp/ui-top.png",
+        "/tmp/ui-blocks.png",
         png(&app.frame_at(1200, 560, Duration::ZERO), BACKGROUND).unwrap(),
     )
     .unwrap();

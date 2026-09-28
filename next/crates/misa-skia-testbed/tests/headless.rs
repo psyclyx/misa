@@ -1,7 +1,7 @@
 //! Real Vulkan/Ganesh integration tests: a missing ICD is a failure, not a skip.
 use misa_pixel_ui::Op;
 use misa_skia_testbed::testbed::headless::Headless;
-use misa_window_core::{Event, Key, Size};
+use misa_window_core::{Event, Key, PointerPhase, Size};
 use std::time::Duration;
 
 fn text(ops: &[Op]) -> String {
@@ -33,11 +33,7 @@ fn native_key_pointer_and_resize_reach_gpu_readback() {
     assert!(text(&keyed.scene.ops).contains("Selected"));
     assert_ne!(keyed.pixels, initial.pixels);
     assert_eq!(keyed.pixels.get_pixel(50, 160).0, [45, 105, 150, 255]);
-    host.input(Event::Pointer {
-        x: 40.0,
-        y: 155.0,
-        dragging: false,
-    });
+    host.click(40.0, 155.0);
     let clicked = host.frame().unwrap();
     assert_eq!(clicked.pixels, initial.pixels);
     host.input(Event::Resize(Size {
@@ -57,11 +53,7 @@ fn native_note_soft_wrap_newline_and_resize_reach_offscreen_gpu() {
         height: 320,
     })
     .unwrap();
-    host.input(Event::Pointer {
-        x: 40.0,
-        y: 50.0,
-        dragging: false,
-    });
+    host.click(40.0, 50.0);
     let empty = host.frame().unwrap();
     host.input(Event::Text("a long unbroken word for wrapping".into()));
     host.input(Event::Key(Key::Enter { newline: true }));
@@ -127,11 +119,7 @@ fn semantic_text_pointer_resize_and_fake_clock_paint_glyphs_on_gpu() {
     // Hit a semantic field through the same pointer event the native host sends.
     // The field location is obtained from the DocumentUi's hit map, not guessed geometry.
     let field = host.field_hit().expect("visible note field");
-    host.input(Event::Pointer {
-        x: field.0,
-        y: field.1,
-        dragging: false,
-    });
+    host.click(field.0, field.1);
     host.input(Event::Text("?".into()));
     let pointed = host.frame().unwrap();
     assert!(text(&pointed.scene.ops).contains("Local draft!?"));

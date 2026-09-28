@@ -10,12 +10,12 @@ use misa_proto::view::{FieldKind, Kind, Node};
 use misa_render::Theme;
 use misa_style::Style;
 
-/// What a gutter band holds beside its block's content.
+/// What sits beside a block's content: a rail, or the mark that opens it.
 enum GutterMark {
     /// A quote's rail, spanning the quoted content.
     Rail,
     /// A disclosure mark; the bool is whether the block is open.
-    Disclosure(bool),
+    Disclosure { open: bool, style: Style },
 }
 
 /// A disclosure mark drawn from rectangles: a triangle of bars. No glyph can be
@@ -224,7 +224,7 @@ impl LayoutBuilder<'_> {
             self.paint_children(node, x, y, width, theme, scene);
         }
         if let Some(mark) = mark {
-            self.finish_gutter(mark, x, mark_start, y, scene, &node.id);
+            self.finish_gutter(mark, x, width, mark_start, y, scene, &node.id);
         }
         // Actions belong to this owner, but historically follow its children.
         self.paint_self_actions(node, x, y, width, scene);
@@ -266,45 +266,49 @@ impl LayoutBuilder<'_> {
 
     /// Rails and disclosure marks live in the gutter band beside the content:
     /// drawn geometry, so no font can be missing them.
+    /// Rails and disclosure marks live beside the block: drawn geometry, so no
+    /// font can be missing them. A disclosure owns its whole block — clicking
+    /// anywhere on it opens or closes it — while drags still select text.
     fn finish_gutter(
         &mut self,
         mark: GutterMark,
         x: f32,
+        width: f32,
         start: f32,
         y: &mut f32,
         scene: &mut Scene,
         id: &str,
     ) {
-        let level = self.gutters.len();
-        let style = self.gutters.pop().expect("gutter style");
-        let band = x + (level - 1) as f32 * GUTTER;
         match mark {
-            GutterMark::Rail => scene.ops.push(Op::Rect {
-                x: band + 4.0,
-                y: start,
-                width: RAIL,
-                height: (*y - start).max(0.0),
-                style,
-            }),
-            GutterMark::Disclosure(open) => {
+            GutterMark::Rail => {
+                let level = self.gutters.len();
+                let style = self.gutters.pop().expect("gutter style");
+                let band = x + (level - 1) as f32 * GUTTER;
+                scene.ops.push(Op::Rect {
+                    x: band + 4.0,
+                    y: start,
+                    width: RAIL,
+                    height: (*y - start).max(0.0),
+                    style,
+                });
+            }
+            GutterMark::Disclosure { open, style } => {
+                // The mark sits in the card's own padding: block content lines
+                // up with every other block's.
                 chevron(
                     scene,
-                    band + 3.0,
+                    x - 7.0,
                     start + (self.line_height() - 6.0) / 2.0,
                     open,
                     style,
                 );
-                if open {
-                    // The mark's band collapses the block; its body stays
-                    // selectable text everywhere else.
-                    self.interaction.add_hit(Hit {
-                        x: band,
-                        y: start,
-                        width: GUTTER,
-                        height: (*y - start).max(0.0),
-                        control: Control::Disclosure(id.to_owned()),
-                    });
-                }
+                self.interaction.add_hit(Hit {
+                    x,
+                    y: start,
+                    width,
+                    height: (*y - start).max(self.line_height()),
+                    control: Control::Disclosure(id.to_owned()),
+                });
             }
         }
     }
@@ -358,49 +362,23 @@ impl LayoutBuilder<'_> {
             Kind::Section => {}
             Kind::Collapsible { summary } => {
                 let open = self.interaction.is_expanded(&node.id);
-                let control = Control::Disclosure(node.id.clone());
                 let style = theme.role(&node.role);
                 if let Some(label) = &node.label {
                     // A labelled disclosure (a tool call) names itself in a
                     // title row. Its summary is the short form: it never shows
                     // beside the body it previews.
-                    chevron(scene, x + 4.0, *y + 9.0, open, style);
-                    self.row(
-                        scene,
-                        x + GUTTER,
-                        *y,
-                        (width - GUTTER).max(0.0),
-                        vec![(style, label.clone())],
-                    );
-                    self.interaction.add_hit(Hit {
-                        x,
-                        y: *y,
-                        width,
-                        height: 25.0,
-                        control: control.clone(),
-                    });
+                    self.row(scene, x, *y, width, vec![(style, label.clone())]);
                     *y += 25.0;
                     if !open {
                         self.wrapped(scene, x, y, width, summary, style, theme);
                     }
-                } else {
+                } else if !open {
                     // A label-less short form is its own block: the preview is
-                    // its content, the long form replaces that content, and the
-                    // gutter holds the mark that opens and closes it.
-                    self.gutters.push(style);
-                    mark = Some(GutterMark::Disclosure(open));
-                    if !open {
-                        let start = *y;
-                        self.wrapped(scene, x, y, width, summary, style, theme);
-                        self.interaction.add_hit(Hit {
-                            x,
-                            y: start,
-                            width,
-                            height: (*y - start).max(0.0),
-                            control,
-                        });
-                    }
+                    // its content, and the long form replaces it.
+                    self.wrapped(scene, x, y, width, summary, style, theme);
                 }
+                // The mark and the whole block belong to the disclosure.
+                mark = Some(GutterMark::Disclosure { open, style });
                 children = open;
             }
             Kind::Fields { fields } => {

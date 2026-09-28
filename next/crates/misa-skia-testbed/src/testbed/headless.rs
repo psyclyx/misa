@@ -5,7 +5,7 @@ use super::Fixtures;
 use misa_pixel_document::ui::Control;
 use misa_skia_vulkan::Renderer;
 use misa_style::Color;
-use misa_window_core::{Clock, Event, Key, Size};
+use misa_window_core::{Clock, Event, Key, PointerPhase, Size};
 use std::time::Duration;
 
 const BACKGROUND: Color = Color::Rgb(20, 22, 26);
@@ -85,6 +85,12 @@ impl Headless {
             .input(event, self.clock.elapsed(), self.size.width);
     }
 
+    /// A press and a release on one target: the click controls activate on.
+    pub fn click(&mut self, x: f32, y: f32) {
+        self.input(Event::press(x, y));
+        self.input(Event::release(x, y));
+    }
+
     /// A redraw drives DocumentUi::drive(Event::Redraw), which calls DocumentUi::frame_at,
     /// then renders that same scene through the Vulkan offscreen readback path.
     pub fn frame(&mut self) -> Result<Snapshot, String> {
@@ -118,11 +124,7 @@ pub fn run() -> Result<(), String> {
     if native.pixels == selected.pixels {
         return Err("native key input did not alter GPU readback".into());
     }
-    host.input(Event::Pointer {
-        x: 40.0,
-        y: 155.0,
-        dragging: false,
-    });
+    host.click(40.0, 155.0);
     if host.frame()?.pixels != native.pixels {
         return Err("native pointer input did not restore GPU readback".into());
     }

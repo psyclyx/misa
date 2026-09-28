@@ -3,7 +3,7 @@ use crate::connection::{self, Update};
 use crate::workspace::Action;
 use misa_pixel_document::ui::{Command, Key};
 mod session_views;
-use misa_window_core::{Clock, Event, MonotonicClock, Size};
+use misa_window_core::{Clock, Event, MonotonicClock, PointerPhase, Size};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use session_views::{SessionViews, StateChange};
 use std::sync::Arc;
@@ -323,7 +323,7 @@ impl ApplicationHandler<Update> for Host {
                     self.input(Event::Pointer {
                         x: self.cursor.0,
                         y: self.cursor.1,
-                        dragging: true,
+                        phase: PointerPhase::Move,
                     });
                 }
             }
@@ -333,13 +333,15 @@ impl ApplicationHandler<Update> for Host {
                 ..
             } => {
                 self.dragging = state == ElementState::Pressed;
-                if self.dragging {
-                    self.input(Event::Pointer {
-                        x: self.cursor.0,
-                        y: self.cursor.1,
-                        dragging: false,
-                    });
-                }
+                self.input(Event::Pointer {
+                    x: self.cursor.0,
+                    y: self.cursor.1,
+                    phase: if self.dragging {
+                        PointerPhase::Press
+                    } else {
+                        PointerPhase::Release
+                    },
+                });
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,

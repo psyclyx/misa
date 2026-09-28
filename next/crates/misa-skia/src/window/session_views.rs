@@ -309,8 +309,8 @@ impl SessionViews {
         cursor: (f32, f32),
     ) -> Vec<Action> {
         let commands = match event {
-            Event::Pointer { x, y, dragging } => {
-                if let Some(commands) = self.local.pointer(x, y, dragging) {
+            Event::Pointer { x, y, phase } => {
+                if let Some(commands) = self.local.pointer(x, y, phase) {
                     commands
                 } else {
                     self.panel_focus = y >= self.panel_top;
@@ -323,7 +323,7 @@ impl SessionViews {
                                         Event::Pointer {
                                             x,
                                             y: y - self.panel_top,
-                                            dragging,
+                                            phase,
                                         },
                                         elapsed,
                                     )
@@ -335,7 +335,7 @@ impl SessionViews {
                             .unwrap_or_default()
                     } else {
                         self.app
-                            .drive(Event::Pointer { x, y, dragging }, elapsed)
+                            .drive(Event::Pointer { x, y, phase }, elapsed)
                             .commands
                             .into_iter()
                             .map(Action::Ui)

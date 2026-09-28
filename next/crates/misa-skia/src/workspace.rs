@@ -6,6 +6,7 @@ use misa_proto::view::{Action as ViewAction, ActionOn, Node};
 #[cfg(test)]
 use misa_proto::view::{Field, FieldKind, Kind};
 use misa_value::Value;
+use misa_window_core::PointerPhase;
 use std::{collections::BTreeMap, sync::Arc};
 
 mod chooser;
@@ -632,8 +633,8 @@ impl Local {
             .commands;
         Some(self.convert(commands))
     }
-    pub fn pointer(&mut self, x: f32, y: f32, dragging: bool) -> Option<Vec<Action>> {
-        let commands = self.app()?.pointer(x, y, dragging);
+    pub fn pointer(&mut self, x: f32, y: f32, phase: PointerPhase) -> Option<Vec<Action>> {
+        let commands = self.app()?.pointer(x, y, phase);
         Some(self.convert(commands))
     }
     fn convert(&mut self, commands: Vec<Command>) -> Vec<Action> {

@@ -143,13 +143,13 @@ impl Palette {
             constant: hex(0xb4a4da),
             escape: hex(0xd5b783),
             selection: hex(0x3b5260),
-            user_surface: hex(0x1d2824),
-            assistant_surface: hex(0x1e252f),
-            thinking_surface: hex(0x282330),
-            tool_surface: hex(0x2b2820),
-            error_surface: hex(0x322329),
-            dialog_surface: hex(0x242b33),
-            code_surface: hex(0x151b23),
+            user_surface: hex(0x25322c),
+            assistant_surface: hex(0x262e39),
+            thinking_surface: hex(0x312b3c),
+            tool_surface: hex(0x343026),
+            error_surface: hex(0x3d2c33),
+            dialog_surface: hex(0x2d343e),
+            code_surface: hex(0x1d252e),
         }
     }
 
@@ -175,13 +175,13 @@ impl Palette {
             constant: hex(0x8866a4),
             escape: hex(0x9c752f),
             selection: hex(0xcddfe3),
-            user_surface: hex(0xeef5f0),
-            assistant_surface: hex(0xeef2f8),
-            thinking_surface: hex(0xf4eff7),
-            tool_surface: hex(0xf7f3e9),
-            error_surface: hex(0xfaeef0),
-            dialog_surface: hex(0xeef2f4),
-            code_surface: hex(0xe2e8ef),
+            user_surface: hex(0xe5efe8),
+            assistant_surface: hex(0xe5ecf4),
+            thinking_surface: hex(0xebe1f1),
+            tool_surface: hex(0xeee5d2),
+            error_surface: hex(0xf2dfe4),
+            dialog_surface: hex(0xe4e9ed),
+            code_surface: hex(0xd9e1ea),
         }
     }
 
@@ -727,7 +727,7 @@ mod tests {
         assert_eq!(light.role("header.title").fg, Color::Rgb(0x26, 0x7c, 0x83));
         assert_eq!(
             light.surface("message.user").unwrap().bg,
-            Color::Rgb(0xee, 0xf5, 0xf0)
+            Color::Rgb(0xe5, 0xef, 0xe8)
         );
     }
 

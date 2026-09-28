@@ -2,7 +2,7 @@
 use super::{Fixtures, Mode};
 use misa_pixel_document::ui::Key;
 use misa_style::Color;
-use misa_window_core::{Clock, Event, MonotonicClock, Size};
+use misa_window_core::{Clock, Event, MonotonicClock, PointerPhase, Size};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -194,14 +194,18 @@ impl ApplicationHandler for Host {
                 self.cursor = (position.x as f32, position.y as f32)
             }
             WindowEvent::MouseInput {
-                state: ElementState::Pressed,
+                state,
                 button: MouseButton::Left,
                 ..
             } => {
                 self.input(Event::Pointer {
                     x: self.cursor.0,
                     y: self.cursor.1,
-                    dragging: false,
+                    phase: if state == ElementState::Pressed {
+                        PointerPhase::Press
+                    } else {
+                        PointerPhase::Release
+                    },
                 });
             }
             WindowEvent::MouseInput {

@@ -500,6 +500,13 @@ fn draw_ops(canvas: &Canvas, ops: &[Op], fonts: &Fonts, fill: &mut SkPaint) {
             } => {
                 fill.set_style(PaintStyle::Fill);
                 fill.set_color(skia_safe::Color::from(skia_color(style.fg, 0xffe9_ebee)));
+                // Dimmed text steps back from the page rather than changing
+                // hue: reasoning aloud should read lighter than the answer.
+                if style.dim {
+                    fill.set_alpha(170);
+                } else {
+                    fill.set_alpha(255);
+                }
                 // The scene's y is the line top; every run sits on the primary
                 // face's baseline and advances by its own measured width, so
                 // painting matches measurement run for run.

@@ -5,7 +5,7 @@ use super::{CARD_PADDING_X, CARD_PADDING_Y, Control, DocumentUi, DocumentUpdate,
 use misa_pixel_ui::{FlowPosition, Op};
 use misa_proto::sync::{Stream, StreamUpdate, ViewOp};
 use misa_proto::view::{Field, FieldKind, Kind, Node, Span};
-use misa_window_core::Key;
+use misa_window_core::{Key, PointerPhase};
 
 fn select(app: &mut DocumentUi, first: &str, first_column: usize, last: &str, last_column: usize) {
     let point = |text: &str, column: usize| {
@@ -19,8 +19,14 @@ fn select(app: &mut DocumentUi, first: &str, first_column: usize, last: &str, la
     };
     let (x, y) = point(first, first_column);
     let (end_x, end_y) = point(last, last_column);
-    app.pointer(x, y, false);
-    app.pointer(end_x, end_y, true);
+    app.pointer(x, y, PointerPhase::Press);
+    app.pointer(end_x, end_y, PointerPhase::Move);
+}
+
+/// A press and a release on one target: the click that activates a control.
+fn click(app: &mut DocumentUi, x: f32, y: f32) {
+    app.pointer(x, y, PointerPhase::Press);
+    app.pointer(x, y, PointerPhase::Release);
 }
 
 fn walk_ops(ops: &[Op], visit: &mut impl FnMut(&Op)) {
@@ -293,7 +299,7 @@ fn clicking_disclosure_anchors_its_header_not_a_later_visible_message() {
         .find(|p| p.id == FlowId::Node("details".into()))
         .unwrap()
         .y;
-    app.pointer(x, before_y, false);
+    click(&mut app, x, before_y);
     app.frame(320, 180);
     let after_top = app
         .viewport
