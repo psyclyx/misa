@@ -250,7 +250,7 @@ fn snapshot_scene(
     metrics: std::sync::Arc<dyn misa_pixel_ui::TextMetrics>,
 ) -> misa_pixel_ui::Scene {
     // Size the offline frame using the resolved paint typeface's measurements.
-    let font_size = 15.0;
+    let font_size = 16.0;
     let margin = 24.0;
     let width = (margin * 2.0 + columns as f32 * metrics.measure("M", font_size)).ceil() as u32;
     let height =

@@ -49,6 +49,7 @@ pub fn run(
         layout_wake,
         paint_needed: true,
         skipped_frames: 0,
+        scale: 1.0,
     };
     events
         .run_app(&mut host)
@@ -79,6 +80,8 @@ struct Host {
     paint_needed: bool,
     /// Consecutive background-only wakes that painted nothing.
     skipped_frames: u32,
+    /// Device pixels per logical pixel. Layout and input use logical units.
+    scale: f32,
 }
 impl Drop for Host {
     fn drop(&mut self) {
@@ -86,6 +89,14 @@ impl Drop for Host {
     }
 }
 impl Host {
+    /// Device pixels to logical pixels. Every layout and hit test works in
+    /// logical units; only presentation converts to device pixels.
+    fn logical(&self, size: winit::dpi::PhysicalSize<u32>) -> Size {
+        Size {
+            width: (size.width as f32 / self.scale).floor().max(1.0) as u32,
+            height: (size.height as f32 / self.scale).floor().max(1.0) as u32,
+        }
+    }
     fn input(&mut self, event: Event) {
         let commands = self.views.input(event, self.clock.elapsed(), self.cursor);
         self.commands(commands);
@@ -148,10 +159,11 @@ impl Host {
         let Some(window) = &self.window else {
             return Ok(());
         };
-        let size = window.inner_size();
-        if size.width == 0 || size.height == 0 {
+        let device = window.inner_size();
+        if device.width == 0 || device.height == 0 {
             return Ok(());
         }
+        self.scale = window.scale_factor() as f32;
         // Bounded background layout advances on every wake, painted or not.
         self.views.poll_background();
         // A wake carrying only background results needs no frame: exact
@@ -172,10 +184,7 @@ impl Host {
             .light(window.theme() == Some(winit::window::Theme::Light));
         let colors = misa_pixel_document::appearance::Palette::new(light);
         let (scene, deadline) = self.views.frame(
-            Size {
-                width: size.width,
-                height: size.height,
-            },
+            self.logical(device),
             elapsed,
             light,
             self.appearance,
@@ -190,7 +199,13 @@ impl Host {
                 .save(path)
                 .map_err(|error| error.to_string())?;
         }
-        let outcome = surface.present(&scene, colors.background, size.width, size.height)?;
+        let outcome = surface.present(
+            &scene,
+            colors.background,
+            device.width,
+            device.height,
+            self.scale,
+        )?;
         if retry_once(outcome.needs_redraw(), &mut self.wsi_retry_pending) {
             // A WSI retry must build and present a real frame.
             self.paint_needed = true;
@@ -294,13 +309,16 @@ impl ApplicationHandler<Update> for Host {
                     events.exit();
                 }
             }
-            WindowEvent::Resized(size) => self.input(Event::Resize(Size {
-                width: size.width,
-                height: size.height,
-            })),
+            WindowEvent::Resized(size) => self.input(Event::Resize(self.logical(size))),
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale = scale_factor as f32;
+            }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x as f32, position.y as f32);
+                self.cursor = (
+                    position.x as f32 / self.scale,
+                    position.y as f32 / self.scale,
+                );
                 if self.dragging {
                     self.input(Event::Pointer {
                         x: self.cursor.0,
@@ -336,7 +354,7 @@ impl ApplicationHandler<Update> for Host {
             WindowEvent::MouseWheel { delta, .. } => {
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -y * 60.0,
-                    MouseScrollDelta::PixelDelta(position) => -position.y as f32,
+                    MouseScrollDelta::PixelDelta(position) => -position.y as f32 / self.scale,
                 };
                 self.input(Event::Wheel { delta });
             }

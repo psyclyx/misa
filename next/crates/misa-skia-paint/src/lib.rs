@@ -252,11 +252,32 @@ fn raster_impl<const PROFILE: bool, const CACHE: bool>(
 
 /// Clear and paint a scene on any Skia canvas (raster or Ganesh).
 /// The caller owns the surface and any readback.
+/// Draw a scene laid out in logical pixels to a canvas of the same pixel size.
 pub fn draw_scene(canvas: &Canvas, scene: &Scene, background: Color) -> Result<(), String> {
+    draw_scene_scaled(canvas, scene, background, 1.0)
+}
+
+/// Draw a scene laid out in logical pixels onto a device canvas, where one
+/// logical pixel is `scale` device pixels. Layout and measurement stay in
+/// logical units; only presentation converts to device pixels, so text and
+/// hit targets keep the same size at every display density.
+pub fn draw_scene_scaled(
+    canvas: &Canvas,
+    scene: &Scene,
+    background: Color,
+    scale: f32,
+) -> Result<(), String> {
+    assert!(
+        scale.is_finite() && scale > 0.0,
+        "device scale must be positive"
+    );
     canvas.clear(skia_safe::Color::from(skia_color(background, 0xff14_161a)));
     let mut fill = SkPaint::default();
     fill.set_anti_alias(true);
+    canvas.save();
+    canvas.scale((scale, scale));
     draw_ops(canvas, &scene.ops, cached_typeface()?, true, &mut fill);
+    canvas.restore();
     Ok(())
 }
 

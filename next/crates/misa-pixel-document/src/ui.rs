@@ -1158,7 +1158,7 @@ impl DocumentUi {
     }
 }
 
-const FONT_SIZE: f32 = 15.0;
+const FONT_SIZE: f32 = 16.0;
 fn text(x: f32, y: f32, value: &str, style: Style) -> Op {
     Op::Text {
         x,

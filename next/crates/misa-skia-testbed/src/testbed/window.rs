@@ -58,21 +58,26 @@ impl Host {
     }
 
     fn paint(&mut self) -> Result<(), String> {
-        let size = self.window.as_ref().ok_or("No window")?.inner_size();
-        if size.width == 0 || size.height == 0 {
+        let window = self.window.as_ref().ok_or("No window")?;
+        let device = window.inner_size();
+        let scale = window.scale_factor() as f32;
+        if device.width == 0 || device.height == 0 {
             self.fixtures.deadline = None;
             self.redraw_pending = false;
             return Ok(());
         }
         let elapsed = self.clock.elapsed();
-        let scene = self
-            .fixtures
-            .frame_at(size.width, size.height, Some(elapsed));
+        let scene = self.fixtures.frame_at(
+            (device.width as f32 / scale).floor().max(1.0) as u32,
+            (device.height as f32 / scale).floor().max(1.0) as u32,
+            Some(elapsed),
+        );
         let outcome = self.surface.as_mut().ok_or("No window surface")?.present(
             &scene,
             Color::Rgb(20, 22, 26),
-            size.width,
-            size.height,
+            device.width,
+            device.height,
+            scale,
         )?;
         if retry_once(outcome.needs_redraw(), &mut self.wsi_retry_pending) {
             // Bypass redraw(): this retry must not replenish its own budget.

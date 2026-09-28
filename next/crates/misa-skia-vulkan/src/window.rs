@@ -2,7 +2,7 @@
 use super::{Renderer, error, instance_lifetime, loader_entry};
 use ash::{vk, vk::Handle};
 use misa_pixel_ui::Scene;
-use misa_skia_paint::draw_scene;
+use misa_skia_paint::draw_scene_scaled;
 use misa_style::Color;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use skia_safe::{ColorType, gpu};
@@ -316,6 +316,7 @@ impl WindowRenderer {
         background: Color,
         width: u32,
         height: u32,
+        scale: f32,
     ) -> Result<PresentOutcome, String> {
         if matches!(self.state, ChainState::Poisoned(_)) {
             return Err("swapchain is unusable after an acquired-frame failure".into());
@@ -346,7 +347,7 @@ impl WindowRenderer {
             Err(e) => return Err(error("acquire image", e)),
         };
         // Only queue_present OUT_OF_DATE is recoverable after acquisition.
-        let result = self.present_acquired(scene, background, index as usize);
+        let result = self.present_acquired(scene, background, index as usize, scale);
         let outcome = self.state.after_acquired(result, suboptimal)?;
         if outcome.needs_redraw() {
             self.configure(width, height)?;
@@ -359,6 +360,7 @@ impl WindowRenderer {
         scene: &Scene,
         background: Color,
         index: usize,
+        scale: f32,
     ) -> Result<bool, PresentFailure> {
         unsafe {
             self.renderer
@@ -421,7 +423,8 @@ impl WindowRenderer {
             None,
         )
         .ok_or("Ganesh cannot wrap the swapchain image")?;
-        draw_scene(surface.canvas(), scene, background)?;
+        draw_scene_scaled(surface.canvas(), scene, background, scale)
+            .map_err(|error| PresentFailure::Fatal(error))?;
         let present_state = gpu::vk::mutable_texture_states::new_vulkan(
             gpu::vk::ImageLayout::PRESENT_SRC_KHR,
             self.renderer.queue_family,

@@ -333,3 +333,35 @@ fn font_line_metrics_scale_with_the_paint_size() {
     assert!(metrics.measure("W i é", 24.0) > metrics.measure("W i é", 12.0));
     assert_eq!(metrics.measure("", 12.0), 0.0);
 }
+
+#[test]
+fn device_scale_maps_logical_layout_onto_device_pixels() {
+    use misa_pixel_ui::Scene;
+    use misa_style::Style;
+    // Layout stays in logical units at every density; presentation converts.
+    let scene = Scene {
+        width: 100.0,
+        height: 100.0,
+        ops: vec![Op::Rect {
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 20.0,
+            style: Style::fg(Color::Rgb(255, 0, 0)),
+        }],
+    };
+    let mut surface = skia_safe::surfaces::raster_n32_premul((200, 200)).unwrap();
+    misa_skia_paint::draw_scene_scaled(surface.canvas(), &scene, BACKGROUND, 2.0).unwrap();
+    let pixmap = surface.peek_pixels().unwrap();
+    let bytes = pixmap.bytes().unwrap();
+    let pixel = |x: usize, y: usize| {
+        let at = (y * 200 + x) * 4;
+        // N32 premultiplied is BGRA on a little-endian machine.
+        [bytes[at + 2], bytes[at + 1], bytes[at], bytes[at + 3]]
+    };
+    // The logical rect (10..30) must land on device pixels (20..60).
+    assert_eq!(pixel(5, 5), [20, 22, 26, 255]);
+    assert_eq!(pixel(25, 25), [255, 0, 0, 255]);
+    assert_eq!(pixel(59, 59), [255, 0, 0, 255]);
+    assert_eq!(pixel(65, 65), [20, 22, 26, 255]);
+}
