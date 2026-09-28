@@ -3,13 +3,14 @@
 //! measurements. Heights always land in the viewport's measurement index,
 //! display lists only for owners adjacent to the visible flow, and no result
 //! ever requires a host to paint another frame.
+use super::layout::LayoutBuilder;
 use super::{
     DocumentUi,
     flow::FlowId,
     measurement::{self, OwnerSnapshot, SnapshotError},
     retained::RetainedScenes,
 };
-use misa_pixel_ui::{FlowPosition, TextMetrics};
+use misa_pixel_ui::{FlowPosition, FlowSide, FlowSource, TextMetrics};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
@@ -39,6 +40,7 @@ struct Job {
     epoch: u64,
     width: f32,
     style_generation: u64,
+    side: FlowSide,
     keep_scene: bool,
     snapshot: OwnerSnapshot,
 }
@@ -48,6 +50,7 @@ struct ResultOwner {
     epoch: u64,
     width: f32,
     style_generation: u64,
+    side: FlowSide,
     height: f32,
     retained: Option<RetainedScenes>,
 }
@@ -65,6 +68,7 @@ fn step(job: Job, epoch: &AtomicU64, metrics: &Arc<dyn TextMetrics>) -> ResultOw
         epoch: job.epoch,
         width: job.width,
         style_generation: job.style_generation,
+        side: job.side,
         height,
         retained,
     }
@@ -116,12 +120,15 @@ pub(super) struct Background {
     active: bool,
     pending: HashSet<FlowId>,
     outstanding: usize,
-    /// Last visited flow, including spacers and rejected owners.
-    cursor: Option<FlowId>,
+    /// Sweep cursors per direction (up, down), kept across edits so a keystroke
+    /// cannot restart a whole-document walk.
+    cursors: [Option<FlowId>; 2],
     /// Detects a changed viewport without walking a cached prefix.
-    origin: Option<FlowId>,
+    origins: [Option<FlowId>; 2],
+    /// The direction the sweep walks now. Both directions must finish before
+    /// the height index covers the source.
     backwards: bool,
-    exhausted: bool,
+    exhausted: [bool; 2],
     scene_slots: usize,
     /// Width and style generation the sweep is walking for.
     layout_key: Option<(u32, u64)>,
@@ -164,10 +171,10 @@ impl Background {
             active: true,
             pending: HashSet::new(),
             outstanding: 0,
-            cursor: None,
-            origin: None,
+            cursors: [None, None],
+            origins: [None, None],
             backwards: false,
-            exhausted: false,
+            exhausted: [false; 2],
             scene_slots: 0,
             layout_key: None,
             #[cfg(test)]
@@ -199,16 +206,24 @@ impl Background {
     pub(super) fn cancel(&mut self, restart: bool) {
         self.epoch.fetch_add(1, Ordering::AcqRel);
         self.pending.clear();
-        self.exhausted = false;
+        self.exhausted = [false; 2];
         if restart {
-            self.cursor = None;
-            self.origin = None;
+            self.cursors = [None, None];
+            self.origins = [None, None];
         }
     }
 
     /// Whether another poll can do work, or the worker still owes a result.
     pub(super) fn work_pending(&self) -> bool {
-        self.active && !self.failed && (self.outstanding > 0 || !self.exhausted)
+        self.active
+            && !self.failed
+            && (self.outstanding > 0 || self.exhausted.iter().any(|done| !done))
+    }
+
+    /// Both sweeps finished and every result landed: the height index covers
+    /// the source, and its totals are exact.
+    pub(super) fn sweep_complete(&self) -> bool {
+        !self.failed && self.outstanding == 0 && self.exhausted.iter().all(|done| *done)
     }
 
     /// Drop the wake and let the worker drain; no thread is joined on the UI.
@@ -255,6 +270,7 @@ pub(super) fn poll(background: &mut Background, ui: &mut DocumentUi) -> usize {
                     result.width,
                     result.style_generation,
                     result.height,
+                    result.side,
                 ) {
                     installed += 1;
                     if let Some(retained) = result.retained {
@@ -273,118 +289,213 @@ pub(super) fn poll(background: &mut Background, ui: &mut DocumentUi) -> usize {
     let constraints = ui.viewport.constraints();
     let width = constraints.width;
     if width <= 0.0 {
-        background.exhausted = true;
+        background.exhausted = [true; 2];
         return installed;
     }
     // A new layout key cleared every height with it: this is a new sweep.
     let layout_key = (width.to_bits(), constraints.style_generation);
     if background.layout_key != Some(layout_key) {
         background.layout_key = Some(layout_key);
-        background.cursor = None;
-        background.origin = None;
-        background.exhausted = false;
+        background.cursors = [None, None];
+        background.origins = [None, None];
+        background.exhausted = [false; 2];
     }
-    let backwards = matches!(ui.viewport.position, FlowPosition::FollowTail);
-    let origin = if backwards {
-        ui.viewport.visible().first()
-    } else {
-        ui.viewport.visible().last()
+    let mut capture_budget = CAPTURE_BUDGET;
+    // A fresh sweep starts on the mode's side of the window; once it finishes
+    // the flip covers the other.
+    if background.origins == [None, None] {
+        background.backwards = matches!(ui.viewport.position, FlowPosition::FollowTail);
     }
-    .map(|placement| placement.id.clone());
-    let Some(origin) = origin else {
-        background.exhausted = true;
-        return installed;
-    };
-    if background.origin.as_ref() != Some(&origin) || background.backwards != backwards {
-        background.cursor = Some(origin.clone());
-        background.origin = Some(origin.clone());
-        background.backwards = backwards;
-        background.exhausted = false;
-        background.scene_slots = SCENE_PREWARM;
+    // Heights invalidated by an edit come before the sweep: the scroll totals
+    // need them, and which side of the window they sit on is not yet known.
+    while background.outstanding < CAPACITY {
+        let Some(id) = ui.viewport.take_missing(1).pop() else {
+            break;
+        };
+        if background.pending.contains(&id) {
+            continue;
+        }
+        match capture_job(
+            ui,
+            background,
+            id.clone(),
+            FlowSide::Unknown,
+            epoch,
+            width,
+            constraints.style_generation,
+            &mut capture_budget,
+        ) {
+            Queued::Done => {}
+            Queued::Retry => {
+                ui.viewport.invalidate(&id);
+                break;
+            }
+        }
     }
-    // An edit can remove the cursor's owner; restart from the visible origin.
-    if let Some(cursor) = &background.cursor
-        && !ui.document.contains_flow(cursor, &theme)
-    {
-        background.cursor = Some(origin);
-    }
+    // Both sides of the window must be swept before the height index covers
+    // the source. The mode's side goes first; the other fills in behind it.
     let mut steps = 0;
     let mut attempts = 0;
-    let mut capture_budget = CAPTURE_BUDGET;
+    let mut flips = 0;
     while background.outstanding < CAPACITY
         && steps < SKIP_BUDGET
         && attempts < WALK_BUDGET
-        && !background.exhausted
+        && flips < 2
     {
-        let cursor = background.cursor.clone().expect("cursor starts at origin");
+        let backwards = background.backwards;
+        let index = usize::from(backwards);
+        if background.exhausted[index] {
+            background.backwards = !backwards;
+            flips += 1;
+            continue;
+        }
+        let origin = if backwards {
+            ui.viewport.visible().first()
+        } else {
+            ui.viewport.visible().last()
+        }
+        .map(|placement| placement.id.clone());
+        let Some(origin) = origin else {
+            background.exhausted = [true; 2];
+            break;
+        };
+        if background.origins[index].as_ref() != Some(&origin) {
+            background.cursors[index] = Some(origin.clone());
+            background.origins[index] = Some(origin.clone());
+            background.exhausted[index] = false;
+            background.scene_slots = SCENE_PREWARM;
+        }
+        // An edit can remove the cursor's owner; restart from the visible origin.
+        if let Some(cursor) = &background.cursors[index]
+            && !ui.document.contains_flow(cursor, &theme)
+        {
+            background.cursors[index] = Some(origin);
+        }
+        let cursor = background.cursors[index]
+            .clone()
+            .expect("cursor starts at origin");
         let next = if backwards {
             ui.document.previous_flow(&cursor, &theme)
         } else {
             ui.document.next_flow(&cursor, &theme)
         };
         let Some(id) = next else {
-            background.exhausted = true;
-            break;
+            background.exhausted[index] = true;
+            background.backwards = !backwards;
+            flips += 1;
+            continue;
         };
         steps += 1;
-        background.cursor = Some(id.clone());
-        if !matches!(
-            id,
-            FlowId::Node(_) | FlowId::Row(_, _) | FlowId::End(_) | FlowId::Stream(_)
-        ) {
-            continue;
-        }
+        background.cursors[index] = Some(id.clone());
         if background.pending.contains(&id) || ui.viewport.measured_height(&id).is_some() {
             continue;
         }
-        attempts += 1;
-        let snapshot = match OwnerSnapshot::capture(ui, &id, width, &mut capture_budget) {
-            Ok(snapshot) => snapshot,
-            Err(SnapshotError::Oversize) => {
-                background.skipped_oversize += 1;
-                continue;
-            }
-            Err(SnapshotError::Budget) => {
-                // Retry this owner on a later poll, not its successor.
-                background.cursor = Some(cursor);
-                break;
-            }
-            Err(_) => continue,
+        let owner = matches!(
+            id,
+            FlowId::Node(_) | FlowId::Row(_, _) | FlowId::End(_) | FlowId::Stream(_)
+        );
+        let side = if backwards {
+            FlowSide::Above
+        } else {
+            FlowSide::Below
         };
-        let keep_scene = background.scene_slots > 0;
-        if keep_scene {
-            background.scene_slots -= 1;
+        if !owner {
+            // Spacers carry constant heights: the source measures them
+            // directly, so the height index covers every flow id and its
+            // totals are exact.
+            let mut builder = LayoutBuilder::new(
+                &ui.document,
+                &mut ui.drafts,
+                &mut ui.interaction,
+                &mut ui.retained,
+                &mut ui.overlays,
+                ui.metrics.as_ref(),
+                ui.light,
+            );
+            let height = builder.measure(&id, width, constraints.style_generation);
+            ui.viewport
+                .install_measurement(id, width, constraints.style_generation, height, side);
+            continue;
         }
-        let job = Job {
-            id: id.clone(),
+        attempts += 1;
+        match capture_job(
+            ui,
+            background,
+            id,
+            side,
             epoch,
             width,
-            style_generation: constraints.style_generation,
-            keep_scene,
-            snapshot,
-        };
-        match background.jobs.try_send(job) {
-            Ok(()) => {
-                background.pending.insert(id);
-                background.outstanding += 1;
-            }
-            Err(TrySendError::Full(_)) => {
+            constraints.style_generation,
+            &mut capture_budget,
+        ) {
+            Queued::Done => {}
+            Queued::Retry => {
                 // Retry this owner on the next poll, not its successor.
-                background.cursor = Some(cursor);
-                break;
-            }
-            Err(TrySendError::Disconnected(_)) => {
-                background.failed = true;
+                background.cursors[index] = Some(cursor);
                 break;
             }
         }
     }
     // A sweep that spent its step budget continues on the next poll: one wake
-    // per slice, never one per skipped owner. Once exhausted, no wake at all.
-    if steps == SKIP_BUDGET && background.outstanding == 0 && !background.exhausted {
+    // per slice, never one per skipped owner. Once both sides finish, no wake.
+    if steps == SKIP_BUDGET && background.outstanding == 0 && !background.sweep_complete() {
         background.wake.notify();
     }
     installed
+}
+
+enum Queued {
+    /// Captured and sent, or refused outright: nothing more to do here.
+    Done,
+    /// The poll's capture budget or the worker's queue is full.
+    Retry,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_job(
+    ui: &mut DocumentUi,
+    background: &mut Background,
+    id: FlowId,
+    side: FlowSide,
+    epoch: u64,
+    width: f32,
+    style_generation: u64,
+    capture_budget: &mut usize,
+) -> Queued {
+    let snapshot = match OwnerSnapshot::capture(ui, &id, width, capture_budget) {
+        Ok(snapshot) => snapshot,
+        Err(SnapshotError::Oversize) => {
+            background.skipped_oversize += 1;
+            return Queued::Done;
+        }
+        Err(SnapshotError::Budget) => return Queued::Retry,
+        Err(_) => return Queued::Done,
+    };
+    let keep_scene = background.scene_slots > 0;
+    if keep_scene {
+        background.scene_slots -= 1;
+    }
+    let job = Job {
+        id: id.clone(),
+        epoch,
+        width,
+        style_generation,
+        side,
+        keep_scene,
+        snapshot,
+    };
+    match background.jobs.try_send(job) {
+        Ok(()) => {
+            background.pending.insert(id);
+            background.outstanding += 1;
+            Queued::Done
+        }
+        Err(TrySendError::Full(_)) => Queued::Retry,
+        Err(TrySendError::Disconnected(_)) => {
+            background.failed = true;
+            Queued::Done
+        }
+    }
 }
 
 #[cfg(test)]
@@ -401,10 +512,10 @@ impl Background {
             active: true,
             pending: HashSet::new(),
             outstanding: 0,
-            cursor: None,
-            origin: None,
+            cursors: [None, None],
+            origins: [None, None],
             backwards: false,
-            exhausted: false,
+            exhausted: [false; 2],
             scene_slots: 0,
             layout_key: None,
             test_worker: Some((inbox, outbox)),
@@ -423,7 +534,7 @@ impl Background {
         true
     }
     pub(super) fn cursor(&self) -> Option<&FlowId> {
-        self.cursor.as_ref()
+        self.cursors[usize::from(self.backwards)].as_ref()
     }
     pub(super) fn pending(&self) -> usize {
         self.pending.len()

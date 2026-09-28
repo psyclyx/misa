@@ -267,9 +267,43 @@ fn prewarm_never_changes_what_the_frame_paints() {
     let mut warm = app(20, 600, 200);
     pump(&mut warm, 12);
     let mut cold = app(20, 600, 200);
-    let painted = format!("{:?}", warm.frame_at(600, 200, Duration::ZERO));
-    let baseline = format!("{:?}", cold.frame_at(600, 200, Duration::ZERO));
-    assert_eq!(painted, baseline);
+    let painted = warm.frame_at(600, 200, Duration::ZERO);
+    let baseline = cold.frame_at(600, 200, Duration::ZERO);
+    // Prewarm never changes the content of a frame. The scrollbar is
+    // measurement chrome — it appears once the heights cover the source — so
+    // it is compared apart below.
+    fn content(scene: &misa_pixel_ui::Scene) -> Vec<String> {
+        scene
+            .ops
+            .iter()
+            .filter(|op| {
+                !matches!(op, misa_pixel_ui::Op::ClipRect { x, width, .. }
+                    if *x >= scene.width - 9.0 && *width <= 6.0)
+            })
+            .map(|op| format!("{op:?}"))
+            .collect()
+    }
+    assert_eq!(content(&painted), content(&baseline));
+}
+
+#[test]
+fn the_scrollbar_appears_only_when_the_heights_cover_the_source() {
+    let mut ui = app(200, 600, 200);
+    // Before the sweep completes there is no honest total: no thumb is drawn.
+    ui.frame_at(600, 200, Duration::ZERO);
+    assert!(ui.scrollbar().is_none());
+    pump(&mut ui, 200);
+    ui.frame_at(600, 200, Duration::ZERO);
+    let bar = ui.scrollbar().expect("heights cover the source");
+    assert!(bar.thumb.height > 0.0, "{:?}", bar.scroll);
+    // Dragging the thumb to the top of the track moves the reading position.
+    let before = ui.viewport.visible().first().unwrap().id.clone();
+    ui.scroll_drag(bar.bounds.y + 1.0);
+    let after = ui.viewport.visible().first().unwrap().id.clone();
+    assert_ne!(
+        after, before,
+        "dragging the thumb must move the reading position"
+    );
 }
 
 #[test]

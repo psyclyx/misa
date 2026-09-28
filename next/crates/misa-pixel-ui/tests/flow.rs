@@ -1,4 +1,4 @@
-use misa_pixel_ui::flow::{Constraints, FlowPosition, FlowSource, FlowViewport};
+use misa_pixel_ui::flow::{Constraints, FlowPosition, FlowSide, FlowSource, FlowViewport, Scroll};
 use misa_pixel_ui::{PlacedComponent, Rect};
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -311,15 +311,15 @@ fn installed_heights_are_exact_and_only_at_the_current_layout_key() {
     let mut src = Indexed::new(1_000);
     let mut view = FlowViewport::default();
     // Nothing is measured yet: an installation cannot guess the layout key.
-    assert!(!view.install_measurement(500, 100.0, 0, 33.0));
+    assert!(!view.install_measurement(500, 100.0, 0, 33.0, FlowSide::Below));
     view.layout(&mut src, size(100.0, 45.0));
     src.take();
     let baseline = view.measured_count();
-    assert!(view.install_measurement(500, 100.0, 0, 33.0));
+    assert!(view.install_measurement(500, 100.0, 0, 33.0, FlowSide::Below));
     assert_eq!(view.measured_height(&500), Some(33.0));
     // Another width or style generation is another layout, never reused.
-    assert!(!view.install_measurement(501, 40.0, 0, 33.0));
-    assert!(!view.install_measurement(502, 100.0, 7, 33.0));
+    assert!(!view.install_measurement(501, 40.0, 0, 33.0, FlowSide::Below));
+    assert!(!view.install_measurement(502, 100.0, 7, 33.0, FlowSide::Below));
     assert_eq!(view.measured_height(&501), None);
     assert_eq!(view.measured_height(&502), None);
     assert_eq!(view.measured_count(), baseline + 1);
@@ -331,7 +331,7 @@ fn prewarmed_heights_spare_the_source_a_measurement() {
     let mut view = FlowViewport::default();
     view.layout(&mut src, size(100.0, 45.0));
     src.take();
-    assert!(view.install_measurement(50, 100.0, 0, 20.0));
+    assert!(view.install_measurement(50, 100.0, 0, 20.0, FlowSide::Below));
     view.anchor(50, 0.0, 0.0);
     view.layout(&mut src, size(100.0, 45.0));
     let visited = src.take();
@@ -341,4 +341,56 @@ fn prewarmed_heights_spare_the_source_a_measurement() {
     );
     let row = view.visible().iter().find(|p| p.id == 50).unwrap();
     assert_eq!(row.height, 20.0);
+}
+
+#[test]
+fn scroll_totals_are_exact_and_invalidated_heights_refuse_a_thumb() {
+    let mut src = Indexed::new(10);
+    let mut view = FlowViewport::default();
+    view.layout(&mut src, size(100.0, 45.0));
+    src.take();
+    // Prewarm the rest the way a sweep would: above the window.
+    for id in 0..7 {
+        assert!(view.install_measurement(id, 100.0, 0, 20.0, FlowSide::Above));
+    }
+    let scroll = view.scroll(&mut src).expect("nothing is missing");
+    assert_eq!(
+        scroll,
+        Scroll {
+            content: 200.0,
+            window: 45.0,
+            offset: 155.0
+        }
+    );
+    // An invalidated height is a refusal to draw, never an estimate.
+    view.invalidate(&3);
+    assert!(view.scroll(&mut src).is_none());
+    assert!(view.take_missing(4).contains(&3));
+    assert!(view.install_measurement(3, 100.0, 0, 20.0, FlowSide::Above));
+    assert_eq!(view.scroll(&mut src).unwrap().offset, 155.0);
+}
+
+#[test]
+fn scrolling_to_an_offset_walks_only_its_budget() {
+    let mut src = Indexed::new(1000);
+    let mut view = FlowViewport::default();
+    view.layout(&mut src, size(100.0, 45.0));
+    src.take();
+    for id in 0..1000 {
+        assert!(view.install_measurement(id, 100.0, 0, 20.0, FlowSide::Below));
+    }
+    let scroll = view.scroll(&mut src).unwrap();
+    assert_eq!(scroll.content, 20_000.0);
+    assert_eq!(scroll.offset, 19_955.0);
+    // One bounded step cannot cross the document: it lands where it got to.
+    let step = view.scroll_to(&mut src, 10_000.0, 8).unwrap();
+    assert!(
+        step.offset > 19_000.0,
+        "a bounded walk must not jump the document: {:?}",
+        step
+    );
+    // Given room, the walk converges on the exact offset.
+    let landed = view.scroll_to(&mut src, 10_000.0, 10_000).unwrap();
+    assert_eq!(landed.offset, 10_000.0);
+    assert!(src.take().len() < 1000, "scrolling must stay sparse");
 }

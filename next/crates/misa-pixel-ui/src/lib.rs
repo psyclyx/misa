@@ -6,9 +6,12 @@ pub use component::PlacedComponent;
 pub mod fit;
 pub use fit::{Fit, Fitted, Insets, Size};
 pub mod flow;
+pub mod scrollbar;
 pub use flow::{
-    Constraints as FlowConstraints, FlowPlacement, FlowPosition, FlowSource, FlowViewport,
+    Constraints as FlowConstraints, FlowPlacement, FlowPosition, FlowSide, FlowSource,
+    FlowViewport, Scroll,
 };
+pub use scrollbar::{PlacedScrollbar, Scrollbar};
 mod combo_box;
 pub use combo_box::{ComboBox, ComboOption, ComboResult, ComboState, PlacedComboBox};
 mod context_menu;

@@ -74,6 +74,7 @@ pub enum Control {
     SaveConfirm,
     SaveCancel,
     Text(usize),
+    Scroll,
     LoadImage(misa_proto::view::BlobRef),
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -802,10 +803,72 @@ impl DocumentUi {
         match self.interaction.pointer(x, y, dragging) {
             PointerResult::None | PointerResult::SelectionChanged => vec![],
             PointerResult::Activate(control) => {
+                if matches!(control, Control::Scroll) {
+                    self.scroll_drag(y);
+                    return vec![];
+                }
                 self.anchor_action_at(y);
                 self.activate(control)
             }
         }
+    }
+
+    /// The transcript's scrollbar, once the measured heights cover the whole
+    /// source: a thumb that lies about where the reader is costs more than
+    /// none at all.
+    fn scrollbar(&mut self) -> Option<misa_pixel_ui::PlacedScrollbar<Control>> {
+        if !self
+            .background
+            .as_ref()
+            .is_some_and(background::Background::sweep_complete)
+        {
+            return None;
+        }
+        let mut builder = layout::LayoutBuilder::new(
+            &self.document,
+            &mut self.drafts,
+            &mut self.interaction,
+            &mut self.retained,
+            &mut self.overlays,
+            self.metrics.as_ref(),
+            self.light,
+        );
+        let scroll = self.viewport.scroll(&mut builder)?;
+        let colors = crate::appearance::Palette::new(self.light);
+        Some(
+            misa_pixel_ui::Scrollbar {
+                id: Control::Scroll,
+                bounds: misa_pixel_ui::Rect {
+                    x: self.size.width as f32 - 9.0,
+                    y: 0.0,
+                    width: 6.0,
+                    height: self.viewport.constraints().height,
+                },
+                scroll,
+                track: colors.border,
+                thumb_style: colors.muted,
+            }
+            .place(),
+        )
+    }
+
+    /// Dragging the thumb asks for the content offset under it. The walk is
+    /// bounded per event: a drag converges over its events, never in one.
+    fn scroll_drag(&mut self, y: f32) {
+        let Some(bar) = self.scrollbar() else {
+            return;
+        };
+        let target = bar.drag(y);
+        let mut builder = layout::LayoutBuilder::new(
+            &self.document,
+            &mut self.drafts,
+            &mut self.interaction,
+            &mut self.retained,
+            &mut self.overlays,
+            self.metrics.as_ref(),
+            self.light,
+        );
+        self.viewport.scroll_to(&mut builder, target, SCROLL_BUDGET);
     }
     fn anchor_action_at(&mut self, y: f32) {
         if matches!(
@@ -1170,6 +1233,8 @@ pub(super) const CARD_PADDING_Y: f32 = 6.0;
 pub(super) const CARD_TRAILING: f32 = 2.0 * CARD_PADDING_Y + 6.0;
 /// Undecorated blocks keep the tighter paragraph rhythm.
 pub(super) const PARAGRAPH_GAP: f32 = 5.0;
+/// Owners one drag step walks toward its target before the next event.
+pub(super) const SCROLL_BUDGET: usize = 256;
 pub(super) const GUTTER: f32 = 12.0;
 pub(super) const RAIL: f32 = 2.0;
 fn text(x: f32, y: f32, value: &str, style: Style) -> Op {

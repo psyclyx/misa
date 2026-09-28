@@ -362,30 +362,44 @@ impl DocumentUi {
     pub fn frame_at(&mut self, width: u32, height: u32, elapsed: Duration) -> Scene {
         self.size = misa_window_core::Size { width, height };
         self.retained.begin_frame(width, elapsed);
-        let mut builder = LayoutBuilder::new(
-            &self.document,
-            &mut self.drafts,
-            &mut self.interaction,
-            &mut self.retained,
-            &mut self.overlays,
-            self.metrics.as_ref(),
-            self.light,
-        );
-        let mut scene = builder.layout(&mut self.viewport, width, height);
-        // A pulse invalidates only moving owners that were actually placed.
-        if builder.retained.invalidate_stale_visible(builder.document) {
-            let ids: Vec<_> = self
-                .viewport
-                .visible()
-                .iter()
-                .map(|p| p.id.clone())
-                .collect();
-            for id in ids {
-                self.viewport.invalidate(&id);
+        let mut scene = {
+            let mut builder = LayoutBuilder::new(
+                &self.document,
+                &mut self.drafts,
+                &mut self.interaction,
+                &mut self.retained,
+                &mut self.overlays,
+                self.metrics.as_ref(),
+                self.light,
+            );
+            let mut scene = builder.layout(&mut self.viewport, width, height);
+            // A pulse invalidates only moving owners that were actually placed.
+            if builder.retained.invalidate_stale_visible(builder.document) {
+                let ids: Vec<_> = self
+                    .viewport
+                    .visible()
+                    .iter()
+                    .map(|p| p.id.clone())
+                    .collect();
+                for id in ids {
+                    self.viewport.invalidate(&id);
+                }
+                scene = builder.layout(&mut self.viewport, width, height);
             }
-            scene = builder.layout(&mut self.viewport, width, height);
+            builder.paint_report(&mut scene, width, height);
+            scene
+        };
+        // The scrollbar sits over the transcript: exact metrics or nothing.
+        if let Some(bar) = self.scrollbar() {
+            self.interaction.add_hit(super::Hit {
+                x: bar.bounds.x,
+                y: bar.bounds.y,
+                width: bar.bounds.width,
+                height: bar.bounds.height,
+                control: Control::Scroll,
+            });
+            scene.ops.extend(bar.ops);
         }
-        builder.paint_report(&mut scene, width, height);
         if let Some((control, mut state)) = self.choice.take() {
             if let Some(widget) = self.choice_widget(&control) {
                 scene
