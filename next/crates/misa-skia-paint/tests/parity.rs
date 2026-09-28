@@ -272,7 +272,8 @@ fn narrow_quote_table_selected_row_is_clipped_in_skia_pixels() {
     app.key(misa_pixel_document::ui::Key::SelectAll);
     let scene = app.frame_at(92, 500, Duration::ZERO);
     let cell_width = (92.0 - 40.0) / 2.0;
-    let left = 20.0 + cell_width + 5.0;
+    // The quote's drawn rail indents its content by one gutter (12px).
+    let left = 20.0 + cell_width + 5.0 + 12.0;
     let right = 20.0 + 2.0 * cell_width - 5.0;
     // Pull actual retained paint ops (including the selection overlay) from the
     // second cell, keeping their parent translations. This removes the table's

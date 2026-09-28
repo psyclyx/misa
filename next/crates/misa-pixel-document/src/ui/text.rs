@@ -1,4 +1,4 @@
-use super::{FONT_SIZE, layout::LayoutBuilder};
+use super::{FONT_SIZE, GUTTER, layout::LayoutBuilder};
 use misa_pixel_ui::{Rect, Scene, TextFlow};
 use misa_proto::view::{Node, Span};
 use misa_render::Theme;
@@ -9,20 +9,14 @@ impl LayoutBuilder<'_> {
         self.metrics.line_metrics(FONT_SIZE).line_height
     }
 
-    pub(super) fn measure(&self, value: &str) -> f32 {
-        self.metrics.measure(value, FONT_SIZE)
-    }
-
     /// Clip at a measured character boundary (also used for unwrapped code rows).
     pub(super) fn clip(&self, value: &str, budget: f32) -> String {
         TextFlow::new(self.metrics, FONT_SIZE).clip(value, budget).0
     }
 
-    pub(super) fn prefix_width(&self) -> f32 {
-        self.prefixes
-            .iter()
-            .map(|(_, value)| self.measure(value))
-            .sum()
+    /// Indent for the rails and disclosure marks drawn beside the content.
+    pub(super) fn gutter_width(&self) -> f32 {
+        self.gutters.len() as f32 * GUTTER
     }
 
     /// Retain the whole row for copying; only its ink and interaction are viewport-bound.
@@ -34,24 +28,21 @@ impl LayoutBuilder<'_> {
         width: f32,
         spans: Vec<(Style, String)>,
     ) {
-        let prefix = self
-            .prefixes
-            .iter()
-            .map(|(_, value)| value.chars().count())
-            .sum();
-        let spans = self.prefixes.iter().cloned().chain(spans).collect();
+        // Gutter bands hold rails and disclosure marks, drawn beside the text:
+        // a copied row carries content only, never chrome characters.
+        let gutter = self.gutter_width();
         let flow = TextFlow::new(self.metrics, FONT_SIZE);
         let bounds = Rect {
-            x,
+            x: x + gutter,
             y,
-            width: width.max(0.0),
+            width: (width - gutter).max(0.0),
             height: flow.line_height(),
         };
         let geometry = flow.place(bounds, spans, &mut scene.ops);
         // The entire bounded row is selectable, including blank lines and
         // the space after the last glyph (which maps to the final caret).
         self.interaction
-            .add_row(x, y, bounds.width, bounds.height, geometry, prefix);
+            .add_row(bounds.x, y, bounds.width, bounds.height, geometry, 0);
     }
 
     pub(super) fn wrapped(
@@ -64,14 +55,14 @@ impl LayoutBuilder<'_> {
         base: Style,
         theme: &Theme,
     ) {
-        let prefix = self.prefix_width();
+        let gutter = self.gutter_width();
         let runs = spans
             .iter()
             .map(|span| (crate::span_style(theme, span, base), span.text.clone()))
             .collect();
         let mut previous_end = 0;
         for (index, (line, start, end)) in TextFlow::new(self.metrics, FONT_SIZE)
-            .wrap_with_ranges(runs, (width - prefix).max(0.0))
+            .wrap_with_ranges(runs, (width - gutter).max(0.0))
             .into_iter()
             .enumerate()
         {
@@ -109,7 +100,7 @@ impl LayoutBuilder<'_> {
                 width,
                 vec![(
                     theme.role("markdown.code.label"),
-                    self.clip(lang, (width - self.prefix_width()).max(0.0)),
+                    self.clip(lang, (width - self.gutter_width()).max(0.0)),
                 )],
             );
             *y += self.line_height();
@@ -120,7 +111,7 @@ impl LayoutBuilder<'_> {
             lang.map(|language| misa_syntax::captures(language, text))
                 .unwrap_or_default()
         };
-        let budget = (width - self.prefix_width()).max(0.0);
+        let budget = (width - self.gutter_width()).max(0.0);
         let mut offset = 0;
         for raw in text.split('\n') {
             let line_style = if diff {

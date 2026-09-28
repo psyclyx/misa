@@ -1,5 +1,6 @@
 //! Indexed document order for the viewport. Undecorated sections contribute only
 //! their trailing 5px spacing; painted components remain indivisible owners.
+use super::PARAGRAPH_GAP;
 use super::document::DocumentStore;
 use super::layout::LayoutBuilder;
 use misa_pixel_ui::{FlowPlacement, FlowPosition, FlowSource, FlowViewport};
@@ -326,7 +327,7 @@ impl FlowSource for LayoutBuilder<'_> {
         match id {
             FlowId::Top => 20.0,
             FlowId::Bottom => 60.0, // bottom margin and transcript breathing room
-            FlowId::Close(_) | FlowId::StreamClose => 5.0,
+            FlowId::Close(_) | FlowId::StreamClose => PARAGRAPH_GAP,
             FlowId::Node(_) | FlowId::Row(_, _) | FlowId::End(_) | FlowId::Stream(_) => {
                 let theme = self.theme.clone();
                 self.measure_flow(id, width, &theme)

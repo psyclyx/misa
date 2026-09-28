@@ -331,7 +331,14 @@ fn consecutive_frames_drop_quote_prefix_and_stale_hits() {
         app.interaction
             .rows()
             .iter()
-            .any(|row| row.geometry.text.contains('▏'))
+            .any(|row| row.geometry.text.contains("inside"))
+    );
+    // A quote's rail is drawn beside the content; copied rows are content.
+    assert!(
+        app.interaction
+            .rows()
+            .iter()
+            .all(|row| !row.geometry.text.contains('▏'))
     );
     assert!(app.control_center(&control).is_some());
 
@@ -526,13 +533,15 @@ fn frame_renders_quote_rule_meter_and_fact() {
     let scene = DocumentUi::new(view, test_metrics()).frame_at(640, 480, Duration::ZERO);
     let mut texts = Vec::new();
     let mut rects = 0;
+    let mut rules = 0;
     walk_ops(&scene.ops, &mut |op| match op {
         Op::Text { text, .. } => texts.push(text.clone()),
+        Op::Rect { height, .. } if *height <= 1.0 => rules += 1,
         Op::Rect { .. } => rects += 1,
         _ => {}
     });
     assert!(texts.iter().any(|text| text.contains("quoted")));
-    assert!(texts.iter().any(|text| text.contains('─')));
+    assert!(rules > 0, "a rule is drawn, never spelled with dashes");
     assert!(texts.iter().any(|text| text.contains("budget")));
     assert!(texts.iter().any(|text| text.contains("12k")));
     assert!(rects > 0);
@@ -2071,7 +2080,7 @@ fn narrow_quote_table_rows_clip_without_losing_copy_or_hit_bounds() {
     let mut app = DocumentUi::new(view, test_metrics());
     let scene = app.frame(95, 500);
     let cell_width = 55.0 / 2.0;
-    let viewport = cell_width - 10.0;
+    let viewport = cell_width - 10.0 - GUTTER;
     assert!(app.interaction.rows().len() >= 4);
     let mut clips = Vec::new();
     walk_ops(&scene.ops, &mut |op| {
@@ -2087,6 +2096,7 @@ fn narrow_quote_table_rows_clip_without_losing_copy_or_hit_bounds() {
             let row = &app.interaction.rows()[index];
             assert_eq!(row.width, viewport);
             assert!(hit.x + hit.width <= row.x + viewport);
+            // The document content is inset 20px from the window edge.
             let cell_right = if row.x < 20.0 + cell_width {
                 20.0 + cell_width
             } else {
@@ -2118,17 +2128,18 @@ fn measured_wrap_handles_long_tokens_styled_runs_and_quote_prefixes() {
     assert!(app.interaction.rows().len() > 2);
     for row in app.interaction.rows() {
         assert!(
-            row.edge(row.geometry.text.chars().count()) <= 55.0 + 0.01,
+            row.edge(row.geometry.text.chars().count()) <= 55.0 - GUTTER + 0.01,
             "row exceeded available pixels: {:?}",
             row.geometry.text
         );
-        assert!(row.geometry.text.starts_with("▏ "));
+        // The rail is drawn beside the rows; a copied row carries content only.
+        assert!(!row.geometry.text.contains('▏'));
     }
     let copied = app
         .interaction
         .rows()
         .iter()
-        .map(|row| row.geometry.text.trim_start_matches("▏ "))
+        .map(|row| row.geometry.text.as_str())
         .collect::<String>();
     assert_eq!(copied, "WWiiiiiiiiiiiiii界界界");
 }

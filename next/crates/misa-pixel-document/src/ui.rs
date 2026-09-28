@@ -1159,6 +1159,19 @@ impl DocumentUi {
 }
 
 const FONT_SIZE: f32 = 16.0;
+
+/// Block chrome shared by every owner: how much room a card keeps off its
+/// content, the gap one carded block leaves for the next, and one level of
+/// quote/disclosure indent. These are drawn, never glyphs: a font can lack a
+/// box-drawing character, but not a rectangle.
+pub(super) const CARD_PADDING_X: f32 = 8.0;
+pub(super) const CARD_PADDING_Y: f32 = 6.0;
+/// Content to content across two cards: both paddings plus the gap between.
+pub(super) const CARD_TRAILING: f32 = 2.0 * CARD_PADDING_Y + 6.0;
+/// Undecorated blocks keep the tighter paragraph rhythm.
+pub(super) const PARAGRAPH_GAP: f32 = 5.0;
+pub(super) const GUTTER: f32 = 12.0;
+pub(super) const RAIL: f32 = 2.0;
 fn text(x: f32, y: f32, value: &str, style: Style) -> Op {
     Op::Text {
         x,

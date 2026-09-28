@@ -1,5 +1,8 @@
 use super::flow::FlowId;
-use super::{Control, DocumentUi, FONT_SIZE, FieldViewport, PULSE_PERIOD, text};
+use super::{
+    CARD_PADDING_X, CARD_PADDING_Y, CARD_TRAILING, Control, DocumentUi, FONT_SIZE, FieldViewport,
+    PARAGRAPH_GAP, PULSE_PERIOD, RAIL, text,
+};
 use misa_pixel_ui::{FieldMode, FlowConstraints, FlowViewport, Op, Scene};
 use misa_proto::view::{FieldKind, Kind, Node};
 use misa_render::Theme;
@@ -18,7 +21,7 @@ pub(super) struct LayoutBuilder<'a> {
     pub(super) colors: crate::appearance::Palette,
     light: bool,
     pub(super) theme: Arc<Theme>,
-    pub(super) prefixes: Vec<(Style, String)>,
+    pub(super) gutters: Vec<Style>,
     retain_only: bool,
     /// A private measurement store shrinks indexed containers to one row; this
     /// maps that row back to its original marker and content index.
@@ -47,7 +50,7 @@ impl<'a> LayoutBuilder<'a> {
             colors: crate::appearance::Palette::new(light),
             light,
             theme: Arc::new(if light { Theme::light() } else { Theme::dark() }),
-            prefixes: Vec::new(),
+            gutters: Vec::new(),
             retain_only: false,
             row_content_index: None,
             viewport_effects: Vec::new(),
@@ -94,6 +97,13 @@ impl<'a> LayoutBuilder<'a> {
             return Some(cached);
         }
         let node = self.document.node(owner)?;
+        // A carded owner leaves its paddings plus the gap between cards; an
+        // undecorated one keeps the paragraph rhythm.
+        let trailing = if theme.rail(&node.role).is_some() {
+            CARD_TRAILING
+        } else {
+            PARAGRAPH_GAP
+        };
         let outer = self.interaction.take_group();
         self.interaction.begin_owner(&key);
         self.retained.begin_group();
@@ -167,20 +177,20 @@ impl<'a> LayoutBuilder<'a> {
                     self.present("streams", 0.0, &mut height, width, theme, &mut scene);
                 }
                 self.paint_self_actions(node, 0.0, &mut height, width, &mut scene);
-                height += 5.0;
+                height += trailing;
             }
             _ => unreachable!(),
         }
         // Each visible slice carries the outer card; adjacent surfaces meet
         // without painting over content in the preceding fragment.
         let painted_height = if matches!(flow, FlowId::End(_)) {
-            height - 5.0
+            height - trailing
         } else {
             height
         };
         if painted_height > 0.0 {
             if let Some((_, rail)) = theme.rail(&node.role) {
-                let trailing = !node.actions.is_empty()
+                let follows = !node.actions.is_empty()
                     || self.document.tree.first_child(owner).is_some()
                     || !node.children.is_empty()
                     || (owner == self.document.stream_parent()
@@ -189,10 +199,10 @@ impl<'a> LayoutBuilder<'a> {
                     || matches!(flow, FlowId::Row(_, 0) if node.label.is_none())
                     || matches!(flow, FlowId::End(_) if node.label.is_none() && self.document.row_count(owner) == Some(0));
                 let last = matches!(flow, FlowId::End(_))
-                    || matches!(flow, FlowId::Node(_) if self.document.row_count(owner) == Some(0) && !trailing)
-                    || matches!(flow, FlowId::Row(_, index) if index + 1 == self.document.row_count(owner).unwrap_or(0) && !trailing);
-                let top = if first { 4.0 } else { 0.0 };
-                let bottom = if last { 4.0 } else { 0.0 };
+                    || matches!(flow, FlowId::Node(_) if self.document.row_count(owner) == Some(0) && !follows)
+                    || matches!(flow, FlowId::Row(_, index) if index + 1 == self.document.row_count(owner).unwrap_or(0) && !follows);
+                let top = if first { CARD_PADDING_Y } else { 0.0 };
+                let bottom = if last { CARD_PADDING_Y } else { 0.0 };
                 let mut at = 0;
                 if let Some(surface) = theme.surface(&node.role)
                     && surface.bg != misa_style::Color::Default
@@ -200,9 +210,9 @@ impl<'a> LayoutBuilder<'a> {
                     scene.ops.insert(
                         at,
                         Op::Rect {
-                            x: -6.0,
+                            x: -CARD_PADDING_X,
                             y: -top,
-                            width: width + 12.0,
+                            width: width + 2.0 * CARD_PADDING_X,
                             height: painted_height + top + bottom,
                             style: Style::fg(surface.bg),
                         },
@@ -212,9 +222,9 @@ impl<'a> LayoutBuilder<'a> {
                 scene.ops.insert(
                     at,
                     Op::Rect {
-                        x: -4.0,
+                        x: -CARD_PADDING_X + 4.0,
                         y: 0.0,
-                        width: 2.0,
+                        width: RAIL,
                         height: painted_height,
                         style: rail,
                     },

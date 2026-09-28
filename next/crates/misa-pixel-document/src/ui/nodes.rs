@@ -1,11 +1,45 @@
 //! Semantic node painting, inside the frame-scoped layout builder.
 use super::layout::LayoutBuilder;
 use super::retained::indicator_value;
-use super::{Control, FONT_SIZE, Hit};
+use super::{
+    CARD_PADDING_X, CARD_PADDING_Y, CARD_TRAILING, Control, FONT_SIZE, GUTTER, Hit, PARAGRAPH_GAP,
+    RAIL,
+};
 use misa_pixel_ui::{Button, Checkbox, ComboBox, Op, ProgressBar, Rect, Scene, TextFlow};
 use misa_proto::view::{FieldKind, Kind, Node};
 use misa_render::Theme;
 use misa_style::Style;
+
+/// What a gutter band holds beside its block's content.
+enum GutterMark {
+    /// A quote's rail, spanning the quoted content.
+    Rail,
+    /// A disclosure mark; the bool is whether the block is open.
+    Disclosure(bool),
+}
+
+/// A disclosure mark drawn from rectangles: a triangle of bars. No glyph can be
+/// missing from a font when it is made of the same rectangles as everything
+/// else.
+fn chevron(scene: &mut Scene, x: f32, y: f32, open: bool, style: Style) {
+    const UNIT: f32 = 2.0;
+    for step in 0..3 {
+        let extent = (step + 1) as f32 * UNIT;
+        let offset = (2 - step) as f32 * UNIT;
+        let (x, y, width, height) = if open {
+            (x + offset, y + step as f32 * UNIT, extent, UNIT)
+        } else {
+            (x + step as f32 * UNIT, y + offset, UNIT, extent)
+        };
+        scene.ops.push(Op::Rect {
+            x,
+            y,
+            width,
+            height,
+            style,
+        });
+    }
+}
 
 impl LayoutBuilder<'_> {
     /// The status bar: one row of selected indicator facts.
@@ -145,7 +179,7 @@ impl LayoutBuilder<'_> {
                         theme.role("dim"),
                         self.clip(
                             &text.replace('\n', " ↵ "),
-                            (width - self.prefix_width()).max(0.0),
+                            (width - self.gutter_width()).max(0.0),
                         ),
                     )],
                 );
@@ -179,18 +213,24 @@ impl LayoutBuilder<'_> {
         let card = theme
             .rail(&node.role)
             .map(|(_, rail_style)| (scene.ops.len(), *y, rail_style));
-        let (children, quote_prefix) = self.paint_self(node, x, y, width, theme, scene);
+        let trailing = if card.is_some() {
+            CARD_TRAILING
+        } else {
+            PARAGRAPH_GAP
+        };
+        let mark_start = *y;
+        let (children, mark) = self.paint_self(node, x, y, width, theme, scene);
         if children {
             self.paint_children(node, x, y, width, theme, scene);
         }
-        if quote_prefix {
-            self.prefixes.pop();
+        if let Some(mark) = mark {
+            self.finish_gutter(mark, x, mark_start, y, scene, &node.id);
         }
         // Actions belong to this owner, but historically follow its children.
         self.paint_self_actions(node, x, y, width, scene);
-        *y += 5.0;
+        *y += trailing;
         if let Some((start, first, rail_style)) = card {
-            let last = *y - 5.0;
+            let last = *y - trailing;
             if last > first {
                 let height = last - first;
                 let mut at = start;
@@ -200,10 +240,11 @@ impl LayoutBuilder<'_> {
                     scene.ops.insert(
                         at,
                         Op::Rect {
-                            x: x - 6.0,
-                            y: first - 4.0,
-                            width: (width + 12.0).min((scene.width - x + 6.0).max(1.0)),
-                            height: height + 8.0,
+                            x: x - CARD_PADDING_X,
+                            y: first - CARD_PADDING_Y,
+                            width: (width + 2.0 * CARD_PADDING_X)
+                                .min((scene.width - x + CARD_PADDING_X).max(1.0)),
+                            height: height + 2.0 * CARD_PADDING_Y,
                             style: Style::fg(surface.bg),
                         },
                     );
@@ -212,9 +253,9 @@ impl LayoutBuilder<'_> {
                 scene.ops.insert(
                     at,
                     Op::Rect {
-                        x: x - 4.0,
+                        x: x - CARD_PADDING_X + 4.0,
                         y: first,
-                        width: 2.0,
+                        width: RAIL,
                         height,
                         style: rail_style,
                     },
@@ -223,8 +264,53 @@ impl LayoutBuilder<'_> {
         }
     }
 
+    /// Rails and disclosure marks live in the gutter band beside the content:
+    /// drawn geometry, so no font can be missing them.
+    fn finish_gutter(
+        &mut self,
+        mark: GutterMark,
+        x: f32,
+        start: f32,
+        y: &mut f32,
+        scene: &mut Scene,
+        id: &str,
+    ) {
+        let level = self.gutters.len();
+        let style = self.gutters.pop().expect("gutter style");
+        let band = x + (level - 1) as f32 * GUTTER;
+        match mark {
+            GutterMark::Rail => scene.ops.push(Op::Rect {
+                x: band + 4.0,
+                y: start,
+                width: RAIL,
+                height: (*y - start).max(0.0),
+                style,
+            }),
+            GutterMark::Disclosure(open) => {
+                chevron(
+                    scene,
+                    band + 3.0,
+                    start + (self.line_height() - 6.0) / 2.0,
+                    open,
+                    style,
+                );
+                if open {
+                    // The mark's band collapses the block; its body stays
+                    // selectable text everywhere else.
+                    self.interaction.add_hit(Hit {
+                        x: band,
+                        y: start,
+                        width: GUTTER,
+                        height: (*y - start).max(0.0),
+                        control: Control::Disclosure(id.to_owned()),
+                    });
+                }
+            }
+        }
+    }
+
     /// Paint the node's own label and kind. Children are a separate traversal;
-    /// quote state remains active through that traversal.
+    /// a gutter mark stays active through that traversal.
     fn paint_self(
         &mut self,
         node: &Node,
@@ -233,7 +319,7 @@ impl LayoutBuilder<'_> {
         width: f32,
         theme: &Theme,
         scene: &mut Scene,
-    ) -> (bool, bool) {
+    ) -> (bool, Option<GutterMark>) {
         if matches!(
             node.role.as_str(),
             "status.indicators" | "message.group.footer" | "queue"
@@ -251,9 +337,12 @@ impl LayoutBuilder<'_> {
                 "message.group.footer" => self.group_footer(&model, x, y, width, theme, scene),
                 _ => self.queue(&model, x, y, width, theme, scene),
             }
-            return (false, false);
+            return (false, None);
         }
-        if let Some(label) = &node.label {
+        // A disclosure names itself in its own title row, beside a mark.
+        if let Some(label) = &node.label
+            && !matches!(node.kind, Kind::Collapsible { .. })
+        {
             self.row(
                 scene,
                 x,
@@ -264,29 +353,54 @@ impl LayoutBuilder<'_> {
             *y += 25.0;
         }
         let mut children = true;
-        let mut quote_prefix = false;
+        let mut mark = None;
         match &node.kind {
             Kind::Section => {}
             Kind::Collapsible { summary } => {
                 let open = self.interaction.is_expanded(&node.id);
-                let label = format!(
-                    "{} {}",
-                    if open { "▾" } else { "▸" },
-                    summary
-                        .iter()
-                        .map(|span| span.text.as_str())
-                        .collect::<String>()
-                );
-                self.box_control(
-                    scene,
-                    x,
-                    *y,
-                    width,
-                    28.0,
-                    &label,
-                    Control::Disclosure(node.id.clone()),
-                );
-                *y += 34.0;
+                let control = Control::Disclosure(node.id.clone());
+                let style = theme.role(&node.role);
+                if let Some(label) = &node.label {
+                    // A labelled disclosure (a tool call) names itself in a
+                    // title row. Its summary is the short form: it never shows
+                    // beside the body it previews.
+                    chevron(scene, x + 4.0, *y + 9.0, open, style);
+                    self.row(
+                        scene,
+                        x + GUTTER,
+                        *y,
+                        (width - GUTTER).max(0.0),
+                        vec![(style, label.clone())],
+                    );
+                    self.interaction.add_hit(Hit {
+                        x,
+                        y: *y,
+                        width,
+                        height: 25.0,
+                        control: control.clone(),
+                    });
+                    *y += 25.0;
+                    if !open {
+                        self.wrapped(scene, x, y, width, summary, style, theme);
+                    }
+                } else {
+                    // A label-less short form is its own block: the preview is
+                    // its content, the long form replaces that content, and the
+                    // gutter holds the mark that opens and closes it.
+                    self.gutters.push(style);
+                    mark = Some(GutterMark::Disclosure(open));
+                    if !open {
+                        let start = *y;
+                        self.wrapped(scene, x, y, width, summary, style, theme);
+                        self.interaction.add_hit(Hit {
+                            x,
+                            y: start,
+                            width,
+                            height: (*y - start).max(0.0),
+                            control,
+                        });
+                    }
+                }
                 children = open;
             }
             Kind::Fields { fields } => {
@@ -575,24 +689,21 @@ impl LayoutBuilder<'_> {
                 self.wrapped(scene, x, y, width, spans, base, theme);
             }
             Kind::Quote => {
-                self.prefixes
-                    .push((theme.role(&node.role).dim(), "▏ ".to_string()));
-                quote_prefix = true;
+                // A quote is a quote, not a row of glyphs: its rail is drawn
+                // beside the content, and copied text stays content.
+                self.gutters.push(theme.role(&node.role).dim());
+                mark = Some(GutterMark::Rail);
             }
             Kind::Rule => {
-                let dash = self.measure("─");
-                let count = if dash > 0.0 {
-                    ((width - self.prefix_width()).max(0.0) / dash).floor() as usize
-                } else {
-                    0
-                };
-                self.row(
-                    scene,
-                    x,
-                    *y,
-                    width,
-                    vec![(theme.role(&node.role), "─".repeat(count))],
-                );
+                // A rule is a line, not a row of dashes.
+                let inset = self.gutter_width();
+                scene.ops.push(Op::Rect {
+                    x: x + inset,
+                    y: *y + (self.line_height() - 1.0) / 2.0,
+                    width: (width - inset).max(0.0),
+                    height: 1.0,
+                    style: theme.role(&node.role).dim(),
+                });
                 *y += self.line_height();
             }
             Kind::Code { lang, text } => {
@@ -622,7 +733,7 @@ impl LayoutBuilder<'_> {
                 *y += self.line_height();
             }
         }
-        (children, quote_prefix)
+        (children, mark)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -659,7 +770,7 @@ impl LayoutBuilder<'_> {
                 (
                     start,
                     TextFlow::new(self.metrics, FONT_SIZE)
-                        .wrap_with_ranges(runs, (cell_width - 10.0 - self.prefix_width()).max(0.0)),
+                        .wrap_with_ranges(runs, (cell_width - 10.0 - self.gutter_width()).max(0.0)),
                 )
             })
             .collect();

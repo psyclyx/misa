@@ -1,7 +1,7 @@
 use super::Command;
 use super::document::DocumentStore;
 use super::flow::FlowId;
-use super::{Control, DocumentUi, DocumentUpdate};
+use super::{CARD_PADDING_X, CARD_PADDING_Y, Control, DocumentUi, DocumentUpdate, RAIL};
 use misa_pixel_ui::{FlowPosition, Op};
 use misa_proto::sync::{Stream, StreamUpdate, ViewOp};
 use misa_proto::view::{Field, FieldKind, Kind, Node, Span};
@@ -252,14 +252,27 @@ fn clicking_disclosure_anchors_its_header_not_a_later_visible_message() {
         .find(|p| p.id == FlowId::Node("later".into()))
         .unwrap()
         .y;
+    // Opening a block replaces its preview with its body: the block's top is
+    // what must not move.
+    let before_top = app
+        .viewport
+        .visible()
+        .iter()
+        .find(|p| p.id == FlowId::Node("details".into()))
+        .unwrap()
+        .y;
     app.pointer(x, before_y, false);
     app.frame(320, 180);
-    let (_, after_y) = app
-        .control_center(&disclosure)
-        .expect("clicked header stays visible");
+    let after_top = app
+        .viewport
+        .visible()
+        .iter()
+        .find(|p| p.id == FlowId::Node("details".into()))
+        .expect("clicked block stays visible")
+        .y;
     assert!(
-        (after_y - before_y).abs() < 0.01,
-        "header moved from {before_y} to {after_y}"
+        (after_top - before_top).abs() < 0.01,
+        "header moved from {before_top} to {after_top}"
     );
     assert!(
         app.viewport
@@ -300,6 +313,13 @@ fn context_menu_disclosure_anchors_right_clicked_header_on_enter() {
     let (x, before_y) = app
         .control_center(&disclosure)
         .expect("header in followed tail");
+    let before_top = app
+        .viewport
+        .visible()
+        .iter()
+        .find(|p| p.id == FlowId::Node("details".into()))
+        .unwrap()
+        .y;
     assert!(matches!(app.viewport.position, FlowPosition::FollowTail));
     app.drive(
         misa_window_core::Event::ContextMenu { x, y: before_y },
@@ -316,12 +336,16 @@ fn context_menu_disclosure_anchors_right_clicked_header_on_enter() {
     );
     assert!(app.interaction.is_expanded("details"));
     app.frame(320, 180);
-    let (_, after_y) = app
-        .control_center(&disclosure)
-        .expect("header remains visible");
+    let after_top = app
+        .viewport
+        .visible()
+        .iter()
+        .find(|p| p.id == FlowId::Node("details".into()))
+        .expect("expanded block stays visible")
+        .y;
     assert!(
-        (after_y - before_y).abs() < 0.01,
-        "header moved from {before_y} to {after_y}"
+        (after_top - before_top).abs() < 0.01,
+        "header moved from {before_top} to {after_top}"
     );
 }
 
@@ -571,11 +595,11 @@ fn fragmented_list_preserves_the_outer_rail_and_surface_at_the_tail() {
         .retained
         .cached(&FlowId::Row("long".into(), 9_999).cache_key());
     assert!(
-        matches!(tail.ops.first(), Some(Op::Rect { x, .. }) if *x == -6.0),
+        matches!(tail.ops.first(), Some(Op::Rect { x, .. }) if *x == -CARD_PADDING_X),
         "outer surface"
     );
     assert!(
-        matches!(tail.ops.get(1), Some(Op::Rect { x, width, .. }) if *x == -4.0 && *width == 2.0),
+        matches!(tail.ops.get(1), Some(Op::Rect { x, width, .. }) if *x == -CARD_PADDING_X + 4.0 && *width == RAIL),
         "outer rail"
     );
     assert!(app.retained.owner_counts().0 < 32);
@@ -1235,9 +1259,13 @@ fn empty_labelled_fragment_keeps_card_bottom_surface() {
         let mut app = DocumentUi::new(root, super::tests::test_metrics());
         app.frame(640, 180);
         let group = app.retained.cached("long");
-        let extra = if kind == "list" { 8.0 } else { 4.0 };
+        let extra = if kind == "list" {
+            2.0 * CARD_PADDING_Y
+        } else {
+            CARD_PADDING_Y
+        };
         assert!(
-            matches!(group.ops.first(), Some(Op::Rect { y, height, .. }) if *y == -4.0 && *height == group.height + extra),
+            matches!(group.ops.first(), Some(Op::Rect { y, height, .. }) if *y == -CARD_PADDING_Y && *height == group.height + extra),
             "{kind}"
         );
         assert!(
@@ -1249,7 +1277,7 @@ fn empty_labelled_fragment_keeps_card_bottom_surface() {
                 .retained
                 .cached(&FlowId::Row("long".into(), 0).cache_key());
             assert!(
-                matches!(row.ops.first(), Some(Op::Rect { height, .. }) if *height == row.height + 4.0)
+                matches!(row.ops.first(), Some(Op::Rect { height, .. }) if *height == row.height + CARD_PADDING_Y)
             );
         }
     }

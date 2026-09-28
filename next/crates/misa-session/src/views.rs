@@ -1138,16 +1138,18 @@ fn clip(text: &str, limit: usize) -> String {
 ///
 /// One line of a long block tells the reader nothing about how much more there is. A
 /// bounded preview plus an explicit count makes the disclosure worth opening, while the
-/// client still decides whether to show this short form or the whole body.
+/// client still decides whether to show this short form or the whole body. No kind
+/// label sits in front of it: the block's rail and surface already name what it is,
+/// and every other short form is content too.
 fn thinking_summary(text: &str) -> Vec<Span> {
     const PREVIEW_LINES: usize = 3;
-    let mut spans = vec![Span::strong("thinking".to_string())];
+    let mut spans = Vec::new();
     // One pass, and no Vec of every line: a settled block can be thousands of lines
     // long, and this runs whenever the message that owns it is rebuilt.
     let mut total = 0usize;
     for line in text.lines() {
         if total < PREVIEW_LINES {
-            let separator = if total == 0 { " · " } else { "\n" };
+            let separator = if total == 0 { "" } else { "\n" };
             spans.push(Span::plain(format!("{separator}{}", line.trim_end())));
         }
         total += 1;
@@ -1345,13 +1347,13 @@ mod tests {
     fn a_thinking_summary_previews_a_few_lines_and_counts_the_rest() {
         let text = super::thinking_summary("one\ntwo\nthree\nfour\nfive");
         let rendered: String = text.iter().map(|span| span.text.as_str()).collect();
-        assert_eq!(rendered, "thinking · one\ntwo\nthree\n… 2 lines hidden");
+        assert_eq!(rendered, "one\ntwo\nthree\n… 2 lines hidden");
         // A block short enough to read in full is not told that anything is hidden.
         let rendered: String = super::thinking_summary("one\ntwo")
             .iter()
             .map(|span| span.text.as_str())
             .collect();
-        assert_eq!(rendered, "thinking · one\ntwo");
+        assert_eq!(rendered, "one\ntwo");
     }
 
     #[test]

@@ -362,8 +362,8 @@ mod tests {
         fixtures.key(Key::Enter { newline: false });
         assert!(has_text(&fixtures.frame(500, 320).ops, "Selected"));
         fixtures.select("2");
-        let semantic = fixtures.frame(340, 280);
-        assert_eq!((semantic.width, semantic.height), (340.0, 280.0));
+        let semantic = fixtures.frame(340, 480);
+        assert_eq!((semantic.width, semantic.height), (340.0, 480.0));
         assert!(has_text(&semantic.ops, "Semantic fixture"));
         fixtures
             .semantic
