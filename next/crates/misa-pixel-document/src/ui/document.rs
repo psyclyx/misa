@@ -36,6 +36,15 @@ pub(super) struct DocumentStore {
     #[cfg(test)]
     visibility_checks: Cell<usize>,
     images: BTreeMap<String, Arc<image::RgbaImage>>,
+    // Owners that are the reader's input rather than content: they pin to the
+    // bottom of the screen and never scroll with the transcript.
+    pinned: BTreeSet<String>,
+}
+
+/// A composer is what the reader types into. It stays at the bottom of the
+/// screen; a document that grows around it never pushes it away.
+pub(super) fn pinned_role(role: &str) -> bool {
+    role == "composer"
 }
 
 impl DocumentStore {
@@ -59,6 +68,7 @@ impl DocumentStore {
             #[cfg(test)]
             visibility_checks: Cell::new(0),
             images: BTreeMap::new(),
+            pinned: BTreeSet::new(),
         };
         let ids: Vec<_> = store.tree.nodes().map(|node| node.id.clone()).collect();
         for id in ids {
@@ -84,6 +94,14 @@ impl DocumentStore {
             .get(id)
             .map(|(owner, row)| (owner.as_str(), *row))
     }
+    /// Pinned owners paint at the bottom of the screen and never take flow
+    /// space: they are input, not content.
+    pub(super) fn pinned(&self, id: &str) -> bool {
+        self.pinned.contains(id)
+    }
+    pub(super) fn pinned_owners(&self) -> impl Iterator<Item = &str> {
+        self.pinned.iter().map(String::as_str)
+    }
     fn unindex_owner(&mut self, id: &str) {
         if let Some(ids) = self.embedded_by_owner.remove(id) {
             for child in ids {
@@ -91,11 +109,17 @@ impl DocumentStore {
             }
         }
         self.table_columns.remove(id);
+        self.pinned.remove(id);
     }
     fn index_owner(&mut self, id: &str) {
         let Some(node) = self.tree.node(id) else {
             return;
         };
+        if pinned_role(&node.role) {
+            self.pinned.insert(id.to_owned());
+        } else {
+            self.pinned.remove(id);
+        }
         #[cfg(test)]
         self.indexed_nodes_visited
             .set(self.indexed_nodes_visited.get() + 1);

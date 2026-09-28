@@ -100,7 +100,19 @@ impl DocumentStore {
             FlowId::Node(parent.to_owned())
         }
     }
+    /// The reading owner before `id`. Pinned input is not reading content:
+    /// the walk never lands on it.
     pub(super) fn previous_flow(&self, id: &FlowId, theme: &Theme) -> Option<FlowId> {
+        let mut previous = self.previous_flow_inner(id, theme)?;
+        while self.pinned_flow(&previous) {
+            previous = self.previous_flow_inner(&previous, theme)?;
+        }
+        Some(previous)
+    }
+    fn pinned_flow(&self, id: &FlowId) -> bool {
+        matches!(id, FlowId::Node(id) if self.pinned(id))
+    }
+    fn previous_flow_inner(&self, id: &FlowId, theme: &Theme) -> Option<FlowId> {
         match id {
             FlowId::Top => None,
             FlowId::Bottom => Some(self.last_flow(self.root(), theme)),
@@ -133,7 +145,16 @@ impl DocumentStore {
             }),
         }
     }
+    /// The reading owner after `id`. Pinned input is not reading content:
+    /// the walk never lands on it.
     pub(super) fn next_flow(&self, id: &FlowId, theme: &Theme) -> Option<FlowId> {
+        let mut next = self.next_flow_inner(id, theme)?;
+        while self.pinned_flow(&next) {
+            next = self.next_flow_inner(&next, theme)?;
+        }
+        Some(next)
+    }
+    fn next_flow_inner(&self, id: &FlowId, theme: &Theme) -> Option<FlowId> {
         match id {
             FlowId::Top => Some(self.first_flow(self.root(), theme)),
             FlowId::Bottom => None,
@@ -208,7 +229,9 @@ impl DocumentStore {
     pub(super) fn contains_flow(&self, id: &FlowId, theme: &Theme) -> bool {
         match id {
             FlowId::Top | FlowId::Bottom => true,
-            FlowId::Node(id) => self.contains(id) && !self.structural(id, theme),
+            FlowId::Node(id) => {
+                self.contains(id) && !self.structural(id, theme) && !self.pinned(id)
+            }
             FlowId::Row(id, index) => {
                 self.row_count(id).is_some_and(|count| *index < count)
                     && !self.structural(id, theme)

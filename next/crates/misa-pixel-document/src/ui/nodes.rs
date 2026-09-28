@@ -846,7 +846,10 @@ impl LayoutBuilder<'_> {
             }
         }
         for id in self.document.children(&node.id) {
-            self.present(&id, x, y, width, theme, scene);
+            // Pinned input paints where the frame puts it, never inside a parent.
+            if !self.document.pinned(&id) {
+                self.present(&id, x, y, width, theme, scene);
+            }
         }
         for child in &node.children {
             self.node_uncached(child, x, y, width, theme, scene);

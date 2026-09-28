@@ -3157,3 +3157,70 @@ fn unrelated_tree_change_keeps_choice_open_but_owner_change_closes_it() {
         |op| matches!(op, Op::Text { text, .. } if text == "Second")
     ));
 }
+
+#[test]
+fn the_composer_pins_to_the_bottom_and_never_scrolls() {
+    fn composer() -> Node {
+        Node::new(
+            "composer",
+            Kind::Fields {
+                fields: vec![Field {
+                    id: "prompt".into(),
+                    label: "Message".into(),
+                    value: String::new(),
+                    hint: None,
+                    read_only: false,
+                    secret: false,
+                    kind: FieldKind::Block,
+                }],
+            },
+        )
+        .id("composer")
+    }
+    let mut view = Node::section("session").id("session");
+    view.children = (0..30)
+        .map(|i| {
+            Node::text("message.user", [Span::plain(format!("message {i}"))]).id(format!("msg.{i}"))
+        })
+        .collect();
+    view.children.push(composer());
+    let mut app = DocumentUi::new(view, test_metrics());
+    let prompt = Control::Field {
+        node: "composer".into(),
+        field: "prompt".into(),
+    };
+    app.frame(400, 200);
+    let (_, at_tail) = app
+        .control_center(&prompt)
+        .expect("the composer paints at the tail");
+    // Reading history must not carry the input away with it.
+    app.scroll(-3_000.0);
+    app.frame(400, 200);
+    let (_, reading) = app
+        .control_center(&prompt)
+        .expect("the composer stays painted");
+    assert_eq!(
+        reading, at_tail,
+        "the composer must not scroll with the transcript"
+    );
+    assert!(at_tail < 200.0);
+    // Input takes no flow space: the reading flow never lands on it.
+    assert!(
+        app.viewport
+            .visible()
+            .iter()
+            .all(|p| p.id != super::flow::FlowId::Node("composer".into()))
+    );
+    let theme = misa_render::Theme::dark();
+    let mut cursor = super::flow::FlowId::Top;
+    for _ in 0..200 {
+        let Some(next) = app.document.next_flow(&cursor, &theme) else {
+            break;
+        };
+        assert!(
+            !matches!(&next, super::flow::FlowId::Node(id) if id == "composer"),
+            "the reading flow must skip input"
+        );
+        cursor = next;
+    }
+}

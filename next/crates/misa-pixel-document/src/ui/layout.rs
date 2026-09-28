@@ -166,7 +166,9 @@ impl<'a> LayoutBuilder<'a> {
             FlowId::End(_) => {
                 // Non-indexed children and actions still follow the rows.
                 for child in self.document.children(owner) {
-                    self.present(&child, 0.0, &mut height, width, theme, &mut scene);
+                    if !self.document.pinned(&child) {
+                        self.present(&child, 0.0, &mut height, width, theme, &mut scene);
+                    }
                 }
                 for child in &node.children {
                     self.node_uncached(child, 0.0, &mut height, width, theme, &mut scene);
@@ -461,15 +463,24 @@ impl LayoutBuilder<'_> {
             ops: vec![],
         };
         let content_width = (width as f32 - 40.0).max(40.0);
+        let theme = Arc::clone(&self.theme);
+        // A composer pins to the bottom of the screen: it is what the reader
+        // types into, not content that scrolls. Its height is reserved out of
+        // the flow, and it paints below the transcript at every scroll
+        // position — at the tail and while reading history alike.
+        let pinned: Vec<String> = self.document.pinned_owners().map(str::to_owned).collect();
+        let mut pinned_height = 0.0;
+        for id in &pinned {
+            pinned_height += self.measure_owner(id, content_width, &theme).unwrap_or(0.0);
+        }
         viewport.layout(
             self,
             FlowConstraints {
                 width: content_width,
-                height: height as f32,
+                height: (height as f32 - pinned_height).max(0.0),
                 style_generation: u64::from(self.light),
             },
         );
-        let theme = Arc::clone(&self.theme);
         for placement in viewport.visible() {
             match &placement.id {
                 FlowId::Node(_) | FlowId::Row(_, _) | FlowId::End(_) | FlowId::Stream(_) => {
@@ -486,6 +497,11 @@ impl LayoutBuilder<'_> {
                 }
                 FlowId::Top | FlowId::Close(_) | FlowId::StreamClose | FlowId::Bottom => {}
             }
+        }
+        // Pinned input paints along the bottom edge, below the transcript.
+        let mut pin = height as f32 - pinned_height;
+        for id in &pinned {
+            self.present(id, 20.0, &mut pin, content_width, &theme, &mut scene);
         }
         self.interaction.finish_frame();
         self.interaction
