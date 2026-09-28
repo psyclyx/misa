@@ -54,12 +54,14 @@ Diagnoses below come from rendering the real session view to PNG (the probe in
       carries a cursor kind; the host maps it to the platform cursor.
 - [ ] **Link target shown on hover** — a hint near the status bar or a tooltip,
       not painted into the document.
-- [ ] **`![]()` images parse at all.** Today `![alt](hash)` arrives as literal
-      text (`!alt text`). Parse inline images in `misa-markdown` and reach
-      `Kind::Image`.
-- [ ] **Image chrome is minimal.** No metadata row, no big button under the
-      image: metadata on hover (tooltip), save/copy in a context menu. Deletes
-      the current image action block where it can.
+- [ ] **`![]()` images parse at all.** They do now — a picture is a block, a
+      paragraph splits around it, and only a 64-hex content hash is a picture
+      (anything else stays a link). Rendered through `Kind::Image`.
+- [ ] **Image chrome is minimal.** The metadata row and the load button are
+      gone: a loaded picture is the block, its dimensions appear on hover, and
+      an unloaded one is a compact placeholder. Still to do: save/copy in the
+      picture's context menu (the destination dialog and `Command::Save`
+      already exist; the hit control must carry the image node's id).
 
 ## Tool calls
 

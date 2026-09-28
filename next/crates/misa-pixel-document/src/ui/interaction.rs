@@ -113,6 +113,14 @@ pub(super) enum PointerResult {
     /// Text was clicked without dragging and it promised a link.
     Open(String),
 }
+
+/// What the pointer is over when it promises something.
+pub(super) enum Hover {
+    /// A link's target.
+    Link(String),
+    /// A control the pointer promises something about: an image, say.
+    Control(Control),
+}
 impl InteractionMap {
     pub(super) fn is_expanded(&self, id: &str) -> bool {
         self.expanded.contains(id)
@@ -445,8 +453,8 @@ impl InteractionMap {
             .map(|(_, _, href)| href.clone())
     }
 
-    /// What the pointer is over: the cursor it deserves and the link it promises.
-    pub(super) fn hover(&self, x: f32, y: f32) -> (CursorIcon, Option<String>) {
+    /// What the pointer is over: the cursor it deserves and what it promises.
+    pub(super) fn hover(&self, x: f32, y: f32) -> (CursorIcon, Option<Hover>) {
         let Some(hit) = self.hits.iter().rev().find(|hit| hit.contains(x, y)) else {
             return (CursorIcon::Default, None);
         };
@@ -459,10 +467,10 @@ impl InteractionMap {
                     } else {
                         CursorIcon::Text
                     },
-                    link,
+                    link.map(Hover::Link),
                 )
             }
-            _ => (CursorIcon::Pointer, None),
+            control => (CursorIcon::Pointer, Some(Hover::Control(control.clone()))),
         }
     }
     fn set_selection(&mut self, a: (usize, usize), b: (usize, usize)) {

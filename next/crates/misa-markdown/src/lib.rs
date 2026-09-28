@@ -38,7 +38,7 @@
 
 use std::collections::BTreeMap;
 
-use misa_proto::view::{Alignment, Definition, Kind, Node, Span, SpanKind};
+use misa_proto::view::{Alignment, BlobRef, Definition, Kind, Node, Span, SpanKind};
 
 /// Parse a message body into block nodes, each role under `prefix`.
 ///
@@ -146,7 +146,23 @@ pub fn document(prefix: &str, text: &str, previous: Option<&Document>) -> Docume
 /// Public because a producer that already knows its blocks — a tool result, a panel's
 /// field — may want the inline rules without the block ones.
 pub fn inline(text: &str) -> Vec<Span> {
-    inline_inner(text, false, &BTreeMap::new(), &BTreeMap::new())
+    spans_only(inline_inner(
+        text,
+        false,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    ))
+}
+
+/// Text-only view of inline parts: a picture becomes its alt text.
+fn spans_only(parts: Vec<InlinePart>) -> Vec<Span> {
+    parts
+        .into_iter()
+        .map(|part| match part {
+            InlinePart::Span(span) => span,
+            InlinePart::Image { alt, .. } => Span::plain(alt),
+        })
+        .collect()
 }
 
 /// Parse inline runs, treating an unclosed opener as if it closed at the end of
@@ -159,8 +175,8 @@ fn inline_inner(
     partial: bool,
     references: &BTreeMap<String, String>,
     footnotes: &BTreeMap<String, Footnote>,
-) -> Vec<Span> {
-    let mut out = Vec::new();
+) -> Vec<InlinePart> {
+    let mut out = Parts::default();
     let mut plain = String::new();
     let mut index = 0;
     while index < text.len() {
@@ -180,7 +196,7 @@ fn inline_inner(
         }
         if ch == '`' {
             if let Some((inner, next)) = code_span(text, index) {
-                flush(&mut out, &mut plain);
+                out.flush(&mut plain);
                 out.push(Span::code(inner));
                 index = next;
                 continue;
@@ -188,7 +204,7 @@ fn inline_inner(
             // A streaming parse styles the rest of an unclosed run; otherwise the
             // whole run is literal and a shorter run inside it is not an opener.
             if partial && let Some((inner, kind)) = presumptive(rest) {
-                flush(&mut out, &mut plain);
+                out.flush(&mut plain);
                 out.push(Span {
                     text: inner.to_string(),
                     kind,
@@ -205,7 +221,7 @@ fn inline_inner(
         if (rest.starts_with("***") || rest.starts_with("___"))
             && let Some((inner, next)) = delimited(text, index, &rest[..3])
         {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span {
                 text: inner,
                 kind: SpanKind::StrongEmphasis,
@@ -216,7 +232,7 @@ fn inline_inner(
         if (rest.starts_with("**") || rest.starts_with("__"))
             && let Some((inner, next)) = delimited(text, index, &rest[..2])
         {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span {
                 text: inner,
                 kind: SpanKind::Strong,
@@ -227,7 +243,7 @@ fn inline_inner(
         if rest.starts_with("~~")
             && let Some((inner, next)) = delimited(text, index, "~~")
         {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span {
                 text: inner,
                 kind: SpanKind::Strikethrough,
@@ -238,7 +254,7 @@ fn inline_inner(
         if rest.starts_with("==")
             && let Some((inner, next)) = delimited(text, index, "==")
         {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span {
                 text: inner,
                 kind: SpanKind::Highlight,
@@ -249,7 +265,7 @@ fn inline_inner(
         if (ch == '*' || ch == '_')
             && let Some((inner, next)) = delimited(text, index, &rest[..1])
         {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span {
                 text: inner,
                 kind: SpanKind::Emphasis,
@@ -263,7 +279,7 @@ fn inline_inner(
             && !rest.starts_with("~~")
             && let Some((inner, next)) = delimited(text, index, "~")
         {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span {
                 text: inner,
                 kind: SpanKind::Subscript,
@@ -274,7 +290,7 @@ fn inline_inner(
         if ch == '^'
             && let Some((inner, next)) = delimited(text, index, "^")
         {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span {
                 text: inner,
                 kind: SpanKind::Superscript,
@@ -289,15 +305,23 @@ fn inline_inner(
             // It rides the link vocabulary with a `footnote:` target so a client
             // can style it as a marker without a new span kind; the target is
             // never followed, only identified.
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span::link(number.to_string(), format!("footnote:{number}")));
+            index = next;
+            continue;
+        }
+        if ch == '!'
+            && let Some((alt, target, next)) = image(text, index)
+        {
+            out.flush(&mut plain);
+            out.image(alt, target);
             index = next;
             continue;
         }
         if ch == '['
             && let Some((label, href, next)) = link(text, index)
         {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span::link(label, href));
             index = next;
             continue;
@@ -305,7 +329,7 @@ fn inline_inner(
         if ch == '['
             && let Some((label, href, next)) = reference_link(text, index, references)
         {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span::link(label, href));
             index = next;
             continue;
@@ -313,7 +337,7 @@ fn inline_inner(
         if ch == '<'
             && let Some((piece, next)) = inline_html(text, index)
         {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             match piece {
                 InlineHtml::Break => plain.push('\n'),
                 InlineHtml::Span { inner, kind } => out.push(Span { text: inner, kind }),
@@ -324,7 +348,7 @@ fn inline_inner(
         if ch == '<'
             && let Some((label, href, next)) = autolink(text, index)
         {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span::link(label, href));
             index = next;
             continue;
@@ -337,14 +361,14 @@ fn inline_inner(
             continue;
         }
         if let Some((label, href, next)) = bare_url(text, index) {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span::link(label, href));
             index = next;
             continue;
         }
 
         if partial && let Some((inner, kind)) = presumptive(rest) {
-            flush(&mut out, &mut plain);
+            out.flush(&mut plain);
             out.push(Span {
                 text: inner.to_string(),
                 kind,
@@ -355,11 +379,11 @@ fn inline_inner(
         push(&mut plain, ch);
         index += ch.len_utf8();
     }
-    flush(&mut out, &mut plain);
-    if out.is_empty() {
+    out.flush(&mut plain);
+    if out.0.is_empty() {
         out.push(Span::plain(""));
     }
-    out
+    out.0
 }
 
 /// An opener at the start of `rest` that has no closer, and the run it styles.
@@ -648,8 +672,15 @@ impl Parser<'_> {
     }
 
     /// Parse inline runs for this document's mode (settled or streaming).
-    fn inline(&self, text: &str) -> Vec<Span> {
+    /// Inline parts: text spans and pictures in document order.
+    fn inline_parts(&self, text: &str) -> Vec<InlinePart> {
         inline_inner(text, self.partial, self.references, self.footnotes)
+    }
+
+    /// The spans of `text`, with pictures reduced to their alt text. Callers
+    /// that cannot host a block (table cells, markers) use this.
+    fn inline(&self, text: &str) -> Vec<Span> {
+        spans_only(self.inline_parts(text))
     }
 
     fn blocks(&self, lines: &[&str]) -> Vec<Node> {
@@ -1101,10 +1132,44 @@ impl Parser<'_> {
             body.push_str(line.trim_end());
             index += 1;
         }
-        (
-            Node::text(self.role("paragraph"), self.inline(&body)),
-            index,
-        )
+        // A picture is a block: a paragraph that contains one splits around it.
+        let mut blocks: Vec<Node> = Vec::new();
+        let mut spans: Vec<Span> = Vec::new();
+        for part in self.inline_parts(&body) {
+            match part {
+                InlinePart::Span(span) => spans.push(span),
+                InlinePart::Image { alt, target } => {
+                    if !spans.is_empty() {
+                        blocks.push(Node::text(
+                            self.role("paragraph"),
+                            std::mem::take(&mut spans),
+                        ));
+                    }
+                    blocks.push(Node::new(
+                        self.role("image"),
+                        Kind::Image {
+                            blob: BlobRef {
+                                hash: target,
+                                len: 0,
+                                media: None,
+                            },
+                            alt,
+                            width: 0,
+                            height: 0,
+                        },
+                    ));
+                }
+            }
+        }
+        if !spans.is_empty() {
+            blocks.push(Node::text(self.role("paragraph"), spans));
+        }
+        let node = match blocks.len() {
+            0 => Node::text(self.role("paragraph"), vec![Span::plain("")]),
+            1 => blocks.pop().expect("one block"),
+            _ => Node::new(self.role("paragraph"), Kind::Section).children(blocks),
+        };
+        (node, index)
     }
 
     /// A pipe table: a header row, a separator row, then body rows.
@@ -1441,7 +1506,12 @@ fn append_footnotes(
             ),
             Span::plain(" "),
         ];
-        spans.extend(inline_inner(&footnote.body, false, references, footnotes));
+        spans.extend(spans_only(inline_inner(
+            &footnote.body,
+            false,
+            references,
+            footnotes,
+        )));
         spans.push(Span::plain(" "));
         spans.push(Span::link(
             "↩",
@@ -1723,10 +1793,47 @@ fn push(plain: &mut String, ch: char) {
     }
 }
 
-fn flush(out: &mut Vec<Span>, plain: &mut String) {
-    if !plain.is_empty() {
-        out.push(Span::plain(std::mem::take(plain)));
+/// One inline part: a run of text, or a picture. A picture is a block where it
+/// lands, so the scanner reports it as itself instead of pretending it is
+/// text with a strange prefix.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InlinePart {
+    Span(Span),
+    Image { alt: String, target: String },
+}
+
+/// The scanner output: spans and pictures in document order.
+#[derive(Default)]
+struct Parts(Vec<InlinePart>);
+impl Parts {
+    fn push(&mut self, span: Span) {
+        self.0.push(InlinePart::Span(span));
     }
+    fn image(&mut self, alt: String, target: String) {
+        self.0.push(InlinePart::Image { alt, target });
+    }
+    fn flush(&mut self, plain: &mut String) {
+        if !plain.is_empty() {
+            self.push(Span::plain(std::mem::take(plain)));
+        }
+    }
+}
+
+/// `![alt](hash)`: a picture, which is a block wherever it lands. The target
+/// is a content hash — anything else is an ordinary link with a bang in front.
+fn image(text: &str, start: usize) -> Option<(String, String, usize)> {
+    let rest = text.get(start..)?;
+    rest.strip_prefix("![")?;
+    let (label, href, next) = link(text, start + 1)?;
+    is_blob_hash(&href).then_some((label, href, next))
+}
+
+/// A lowercase hex content hash: what a blob reference names.
+fn is_blob_hash(target: &str) -> bool {
+    target.len() == 64
+        && target
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn is_escapable(ch: char) -> bool {
@@ -1777,6 +1884,20 @@ fn link(text: &str, start: usize) -> Option<(String, String, usize)> {
 mod tests {
     use super::*;
     use misa_proto::view::validate;
+
+    #[test]
+    fn a_picture_is_a_block_and_the_paragraph_splits_around_it() {
+        let blocks = parse(
+            "before ![alt text](0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef) after",
+        );
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        let children = &blocks[0].children;
+        assert_eq!(children.len(), 3, "{children:?}");
+        assert!(matches!(&children[0].kind, Kind::Text { spans } if text_of(spans) == "before "));
+        assert!(matches!(&children[1].kind, Kind::Image { blob, alt, .. }
+                if blob.hash == "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" && alt == "alt text"));
+        assert!(matches!(&children[2].kind, Kind::Text { spans } if text_of(spans) == " after"));
+    }
 
     fn parse(text: &str) -> Vec<Node> {
         blocks("message.assistant", text)

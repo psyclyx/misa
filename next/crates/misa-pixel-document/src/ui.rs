@@ -33,6 +33,7 @@ mod nodes;
 mod overlays;
 mod retained;
 use interaction::Hit;
+use interaction::Hover;
 use interaction::{InteractionMap, PointerResult};
 use overlays::{Decision, LocalOverlays, OverlayAction};
 #[cfg(test)]
@@ -819,7 +820,16 @@ impl DocumentUi {
         if phase == PointerPhase::Hover {
             let (cursor, hover) = self.interaction.hover(x, y);
             self.cursor_icon = cursor;
-            self.hover = hover.map(|href| (href, x, y));
+            let hint = match hover {
+                Some(Hover::Link(url)) => Some(url),
+                // The picture's metadata, where the pointer is.
+                Some(Hover::Control(Control::LoadImage(blob))) => self
+                    .document
+                    .image_ref(&blob.hash)
+                    .map(|image| format!("{}×{}", image.width(), image.height())),
+                Some(Hover::Control(_)) | None => None,
+            };
+            self.hover = hint.map(|hint| (hint, x, y));
             return vec![];
         }
         match self.interaction.pointer(x, y, phase) {

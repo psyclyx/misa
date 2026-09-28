@@ -401,7 +401,7 @@ fn render_ui_probe() {
             (
                 "text",
                 Value::str(
-                    "here is a reply:\n\n# A heading\n\n> quoted material that wraps onto a second line of the quotation\n\n```rust\nlet x = 1;\n```\n\n![alt text](picture)\n\n[link text](https://example.com)\n\ndone",
+                    "here is a reply:\n\n# A heading\n\n> quoted material that wraps onto a second line of the quotation\n\n```rust\nlet x = 1;\n```\n\n![alt text](0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef)\n\n[link text](https://example.com)\n\ndone",
                 ),
             ),
             ("state", Value::str("done")),
@@ -454,13 +454,13 @@ fn render_ui_probe() {
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
     std::fs::write(
-        "/tmp/ui-tail2.png",
+        "/tmp/ui-tail3.png",
         png(&app.frame_at(1200, 560, Duration::ZERO), BACKGROUND).unwrap(),
     )
     .unwrap();
     app.pin_to_top();
     std::fs::write(
-        "/tmp/ui-blocks.png",
+        "/tmp/ui-images.png",
         png(&app.frame_at(1200, 560, Duration::ZERO), BACKGROUND).unwrap(),
     )
     .unwrap();

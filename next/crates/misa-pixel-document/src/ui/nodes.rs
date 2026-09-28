@@ -3,7 +3,7 @@ use super::layout::LayoutBuilder;
 use super::retained::indicator_value;
 use super::{
     CARD_PADDING_X, CARD_PADDING_Y, CARD_TRAILING, Control, FONT_SIZE, GUTTER, Hit, PARAGRAPH_GAP,
-    RAIL,
+    RAIL, text,
 };
 use misa_pixel_ui::{Button, Checkbox, ComboBox, Op, ProgressBar, Rect, Scene, TextFlow};
 use misa_proto::view::{FieldKind, Kind, Node};
@@ -643,27 +643,47 @@ impl LayoutBuilder<'_> {
                         height: h,
                         image: image.clone(),
                     });
+                    // The picture is the block: its metadata is a hint on
+                    // hover and its actions live in a context menu, never
+                    // beneath it as chrome.
+                    self.interaction.add_hit(Hit {
+                        x,
+                        y: *y,
+                        width: w,
+                        height: h,
+                        control: Control::LoadImage(blob.clone()),
+                    });
                     *y += h + 6.0;
                 } else {
-                    self.box_control(
-                        scene,
+                    // Not loaded: a compact placeholder that loads on click.
+                    let placeholder = if alt.is_empty() {
+                        "image".to_string()
+                    } else {
+                        alt.clone()
+                    };
+                    let height = 28.0;
+                    scene.ops.push(Op::Rect {
                         x,
-                        *y,
-                        width.min(180.0),
-                        30.0,
-                        "Load image",
-                        Control::LoadImage(blob.clone()),
-                    );
-                    *y += 36.0;
+                        y: *y,
+                        width,
+                        height,
+                        style: self.colors.surface,
+                    });
+                    scene.ops.push(text(
+                        x + 8.0,
+                        *y + 4.0,
+                        &self.clip(&placeholder, (width - 16.0).max(1.0)),
+                        self.colors.muted,
+                    ));
+                    self.interaction.add_hit(Hit {
+                        x,
+                        y: *y,
+                        width,
+                        height,
+                        control: Control::LoadImage(blob.clone()),
+                    });
+                    *y += height + 6.0;
                 }
-                self.row(
-                    scene,
-                    x,
-                    *y,
-                    width,
-                    vec![(theme.role(&node.role), alt.clone())],
-                );
-                *y += 25.0;
             }
             Kind::Text { spans } => {
                 let base = theme.role(&node.role);
