@@ -1,45 +1,13 @@
 //! Measured, protocol-free standard controls. Callers own values and focus;
 //! placed controls share their paint, clip and hit geometry.
+use crate::fit::{self, Fit, Fitted, Insets};
 use crate::{Op, Rect, TextMetrics};
 use misa_style::Style;
-use std::sync::Arc;
-
-fn clip(bounds: Rect, ops: Vec<Op>) -> Vec<Op> {
-    vec![Op::ClipRect {
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width.max(0.0),
-        height: bounds.height.max(0.0),
-        ops: Arc::new(ops),
-    }]
-}
-
-fn text(
-    bounds: Rect,
-    label: String,
-    size: f32,
-    metrics: &dyn TextMetrics,
-    color: Style,
-) -> (f32, Op) {
-    let width = metrics.measure(&label, size);
-    let height = metrics.line_metrics(size).line_height;
-    assert!(height > 0.0, "widget requires positive line spacing");
-    (
-        width,
-        Op::Text {
-            x: bounds.x,
-            y: bounds.y + ((bounds.height - height) / 2.0).max(0.0),
-            size,
-            style: color,
-            text: label,
-        },
-    )
-}
 
 pub struct PlacedWidget<Id> {
     pub id: Id,
     pub bounds: Rect,
-    pub label_width: f32,
+    pub content_width: f32,
     pub ops: Vec<Op>,
 }
 impl<Id> PlacedWidget<Id> {
@@ -57,18 +25,20 @@ pub struct Label<Id> {
 }
 impl<Id> Label<Id> {
     pub fn place(self, metrics: &dyn TextMetrics) -> PlacedWidget<Id> {
-        let (label_width, op) = text(
-            self.bounds,
+        let content = fit::measure_line(&self.text, self.font_size, metrics);
+        let fitted = Fitted::new(self.bounds, Fit::Fill, Insets::ZERO, content);
+        let label = fit::text_line(
+            fitted.inner,
             self.text,
             self.font_size,
-            metrics,
             self.foreground,
+            metrics,
         );
         PlacedWidget {
             id: self.id,
-            bounds: self.bounds,
-            label_width,
-            ops: clip(self.bounds, vec![op]),
+            bounds: fitted.bounds,
+            content_width: content.width,
+            ops: vec![label],
         }
     }
 }
@@ -95,20 +65,10 @@ impl<Id> Checkbox<Id> {
             width: side,
             height: side,
         };
-        let label_bounds = Rect {
-            x: box_bounds.x + side + 8.0,
-            y: b.y,
-            width: (b.width - side - 12.0).max(0.0),
-            height: b.height,
-        };
         let has_label = !self.label.is_empty();
-        let (label_width, label) = text(
-            label_bounds,
-            self.label,
-            self.font_size,
-            metrics,
-            self.foreground,
-        );
+        let content = fit::measure_line(&self.label, self.font_size, metrics);
+        // The mark occupies the leading 12 + side pixels; the label gets the rest.
+        let label_fit = Fitted::new(b, Fit::Fill, Insets::horizontal(12.0 + side, 0.0), content);
         let mut ops = vec![
             Op::Rect {
                 x: b.x,
@@ -143,14 +103,20 @@ impl<Id> Checkbox<Id> {
             });
         }
         if has_label {
-            ops.push(label);
+            ops.push(fit::text_line(
+                label_fit.inner,
+                self.label,
+                self.font_size,
+                self.foreground,
+                metrics,
+            ));
         }
         PlacedCheckbox {
             widget: PlacedWidget {
                 id: self.id,
                 bounds: b,
-                label_width,
-                ops: clip(b, ops),
+                content_width: content.width,
+                ops: fit::clip(b, ops),
             },
             checked: self.checked,
         }
@@ -192,19 +158,9 @@ impl<Id, Value> RadioButton<Id, Value> {
         let side = (b.height - 8.0).max(0.0).min(18.0);
         let x = b.x + 4.0;
         let y = b.y + (b.height - side) / 2.0;
-        let label_bounds = Rect {
-            x: x + side + 8.0,
-            y: b.y,
-            width: (b.width - side - 12.0).max(0.0),
-            height: b.height,
-        };
-        let (label_width, label) = text(
-            label_bounds,
-            self.label,
-            self.font_size,
-            metrics,
-            self.foreground,
-        );
+        let content = fit::measure_line(&self.label, self.font_size, metrics);
+        // The mark occupies the leading 12 + side pixels; the label gets the rest.
+        let label_fit = Fitted::new(b, Fit::Fill, Insets::horizontal(12.0 + side, 0.0), content);
         let mut ops = vec![Op::Rect {
             x: b.x,
             y: b.y,
@@ -247,13 +203,19 @@ impl<Id, Value> RadioButton<Id, Value> {
                 style: self.accent,
             });
         }
-        ops.push(label);
+        ops.push(fit::text_line(
+            label_fit.inner,
+            self.label,
+            self.font_size,
+            self.foreground,
+            metrics,
+        ));
         PlacedRadioButton {
             widget: PlacedWidget {
                 id: self.id,
                 bounds: b,
-                label_width,
-                ops: clip(b, ops),
+                content_width: content.width,
+                ops: fit::clip(b, ops),
             },
             value: self.value,
         }
@@ -303,8 +265,8 @@ impl<Id> ProgressBar<Id> {
         PlacedWidget {
             id: self.id,
             bounds: b,
-            label_width: 0.0,
-            ops: clip(b, ops),
+            content_width: 0.0,
+            ops: fit::clip(b, ops),
         }
     }
 }
@@ -368,7 +330,7 @@ impl<Id, Label: Fn(usize) -> String> ListBox<Id, Label> {
             height: b.height,
             style: self.background,
         }];
-        let mut label_width: f32 = 0.0;
+        let mut content_width: f32 = 0.0;
         // The viewport intersects [floor(scroll / row_height),
         // ceil((scroll + height) / row_height)); never traverse the model.
         let start = ((state.scroll / self.row_height).floor() as usize).min(count);
@@ -395,29 +357,25 @@ impl<Id, Label: Fn(usize) -> String> ListBox<Id, Label> {
                     style: self.highlight,
                 });
             }
-            let label_rect = Rect {
-                x: b.x + 4.0,
-                y,
-                width: (b.width - 8.0).max(0.0),
-                height: self.row_height,
-            };
-            let (width, label) = text(
-                label_rect,
-                (self.label)(index),
+            let label = (self.label)(index);
+            let content = fit::measure_line(&label, self.font_size, metrics);
+            let label_fit = Fitted::new(row, Fit::Fill, Insets::horizontal(4.0, 4.0), content);
+            content_width = content_width.max(content.width);
+            row_ops.push(fit::text_line(
+                label_fit.inner,
+                label,
                 self.font_size,
-                metrics,
                 self.foreground,
-            );
-            label_width = label_width.max(width);
-            row_ops.push(label);
-            ops.extend(clip(row, row_ops));
+                metrics,
+            ));
+            ops.extend(fit::clip(row, row_ops));
         }
         PlacedListBox {
             widget: PlacedWidget {
                 id: self.id,
                 bounds: b,
-                label_width,
-                ops: clip(b, ops),
+                content_width,
+                ops: fit::clip(b, ops),
             },
             row_height: self.row_height,
             count,
@@ -519,7 +477,7 @@ mod tests {
                 accent: Style::default(),
             }
             .place(&Metrics);
-            assert_eq!(c.widget.label_width, 90.0);
+            assert_eq!(c.widget.content_width, 90.0);
             assert_eq!(c.click(10.0, 25.0), Some(("check", true)));
             assert_eq!(c.click(10.0 + width, 25.0), None);
             assert!(matches!(&c.widget.ops[0], Op::ClipRect { width: w, .. } if *w == width));
@@ -546,7 +504,7 @@ mod tests {
                 foreground: Style::default(),
             }
             .place(&Metrics);
-            assert_eq!(label.label_width, 30.0);
+            assert_eq!(label.content_width, 30.0);
             assert!(matches!(label.ops[0], Op::ClipRect { .. }));
             let bar = ProgressBar {
                 id: 4,
@@ -663,7 +621,8 @@ mod tests {
         let p = list(40.0).place(&Metrics, &mut state);
         assert!(matches!(&p.widget.ops[0], Op::ClipRect { ops, .. }
             if matches!(&ops[1], Op::ClipRect { y: 20.0, height: 20.0, ops, .. }
-                if matches!(&ops[0], Op::Text { text, .. } if text == "item 0"))));
+                if matches!(&ops[0], Op::ClipRect { ops, .. }
+                    if matches!(&ops[0], Op::Text { text, .. } if text == "item 0")))));
         assert_eq!(p.click(&mut state, 45.0, 25.0), None);
         assert_eq!(p.click(&mut state, 11.0, 25.0), Some((7, 0)));
         assert_eq!(p.key(&mut state, ListKey::End), None);

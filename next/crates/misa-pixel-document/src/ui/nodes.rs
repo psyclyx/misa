@@ -798,32 +798,33 @@ impl LayoutBuilder<'_> {
                 node: node.id.clone(),
                 action: action.id.clone(),
             };
-            let bounds = Rect {
-                x,
-                y: *y,
-                width: width.min(260.0),
-                height: 32.0,
-            };
-            scene.ops.push(Op::Rect {
-                x: x - 1.0,
-                y: *y - 1.0,
-                width: bounds.width + 2.0,
-                height: 34.0,
-                style: if self.interaction.focused(&control) {
-                    self.colors.accent
-                } else {
-                    self.colors.border
-                },
-            });
+            let focused = self.interaction.focused(&control);
             let button = Button {
                 id: control,
-                bounds,
+                bounds: Rect {
+                    x,
+                    y: *y,
+                    width,
+                    height: 32.0,
+                },
                 label: action.label.as_deref().unwrap_or(&action.id).into(),
                 font_size: FONT_SIZE,
                 background: self.colors.field,
                 foreground: self.colors.text,
             }
             .place(self.metrics);
+            // The outline follows the button, which grows with its label.
+            scene.ops.push(Op::Rect {
+                x: x - 1.0,
+                y: *y - 1.0,
+                width: button.bounds.width + 2.0,
+                height: 34.0,
+                style: if focused {
+                    self.colors.accent
+                } else {
+                    self.colors.border
+                },
+            });
             scene.ops.extend(button.ops);
             self.interaction.add_hit(Hit {
                 x: button.bounds.x,

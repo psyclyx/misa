@@ -3,6 +3,8 @@ use misa_style::Style;
 
 pub mod component;
 pub use component::PlacedComponent;
+pub mod fit;
+pub use fit::{Fit, Fitted, Insets, Size};
 pub mod flow;
 pub use flow::{
     Constraints as FlowConstraints, FlowPlacement, FlowPosition, FlowSource, FlowViewport,
@@ -114,8 +116,10 @@ impl Rect {
     }
 }
 
-/// A fixed-bound button. The label is measured with the painter's own font metrics;
-/// its ink is clipped to the same bounds that receive pointer hits.
+/// A label-sized button within the width the caller allows. The button grows
+/// with its text and clips the label only when it genuinely does not fit; the
+/// label is measured with the painter's own font metrics and its ink is
+/// clipped to the same bounds that receive pointer hits.
 pub struct Button<Id> {
     pub id: Id,
     pub bounds: Rect,
@@ -128,45 +132,39 @@ pub struct Button<Id> {
 pub struct PlacedButton<Id> {
     pub id: Id,
     pub bounds: Rect,
-    pub label_width: f32,
+    pub content_width: f32,
     pub ops: Vec<Op>,
 }
 
 impl<Id> Button<Id> {
     pub fn place(self, metrics: &dyn TextMetrics) -> PlacedButton<Id> {
-        let bounds = self.bounds;
-        let label_width = metrics.measure(&self.label, self.font_size);
-        let line_height = metrics.line_metrics(self.font_size).line_height;
-        let padding = 12.0_f32.min(bounds.width.max(0.0));
-        // The advance is not an ink bound: clip to the available button area,
-        // not precisely to the measured advance of the last glyph.
-        let text_width = (bounds.width - padding).max(0.0);
-        let text_y = bounds.y + ((bounds.height - line_height) / 2.0).max(0.0);
+        let content = fit::measure_line(&self.label, self.font_size, metrics);
+        let fitted = Fitted::new(
+            self.bounds,
+            Fit::HugWidth,
+            Insets::horizontal(12.0, 12.0),
+            content,
+        );
+        let label = fit::text_line(
+            fitted.inner,
+            self.label,
+            self.font_size,
+            self.foreground,
+            metrics,
+        );
         PlacedButton {
             id: self.id,
-            bounds,
-            label_width,
+            bounds: fitted.bounds,
+            content_width: content.width,
             ops: vec![
                 Op::Rect {
-                    x: bounds.x,
-                    y: bounds.y,
-                    width: bounds.width,
-                    height: bounds.height,
+                    x: fitted.bounds.x,
+                    y: fitted.bounds.y,
+                    width: fitted.bounds.width,
+                    height: fitted.bounds.height,
                     style: self.background,
                 },
-                Op::ClipRect {
-                    x: bounds.x + padding,
-                    y: bounds.y,
-                    width: text_width,
-                    height: bounds.height,
-                    ops: std::sync::Arc::new(vec![Op::Text {
-                        x: bounds.x + padding,
-                        y: text_y,
-                        size: self.font_size,
-                        style: self.foreground,
-                        text: self.label,
-                    }]),
-                },
+                label,
             ],
         }
     }
@@ -197,12 +195,14 @@ mod tests {
     }
 
     #[test]
-    fn measured_label_resize_paint_and_hit_agree() {
-        for width in [30.0, 90.0] {
+    fn measured_label_growth_paint_and_hit_agree() {
+        // The label measures 50.0; with 12.0 padding on each side the button
+        // wants 74.0 and grows into it when the caller allows.
+        for (allowance, expected) in [(30.0, 30.0), (90.0, 74.0)] {
             let bounds = Rect {
                 x: 5.0,
                 y: 7.0,
-                width,
+                width: allowance,
                 height: 20.0,
             };
             let placed = Button {
@@ -215,15 +215,17 @@ mod tests {
             }
             .place(&Metrics);
             assert_eq!(placed.id, 42);
-            assert_eq!(placed.label_width, 50.0);
-            assert!(bounds.contains(5.0 + width - 1.0, 8.0));
-            assert!(!bounds.contains(5.0 + width, 8.0));
+            assert_eq!(placed.content_width, 50.0);
+            assert_eq!(placed.bounds.width, expected);
+            assert_eq!(placed.bounds.height, 20.0);
+            assert!(placed.bounds.contains(5.0 + expected - 1.0, 8.0));
+            assert!(!placed.bounds.contains(5.0 + expected, 8.0));
             assert!(
-                matches!(placed.ops[0], Op::Rect { x: 5.0, y: 7.0, width: w, height: 20.0, .. } if w == width)
+                matches!(placed.ops[0], Op::Rect { x: 5.0, y: 7.0, width: w, height: 20.0, .. } if w == expected)
             );
             assert!(
                 matches!(&placed.ops[1], Op::ClipRect { x: 17.0, width: w, ops, .. }
-                if *w == width - 12.0 && matches!(&ops[0], Op::Text { text, .. } if text == "hello"))
+                if *w == (expected - 24.0).max(0.0) && matches!(&ops[0], Op::Text { text, .. } if text == "hello"))
             );
         }
     }

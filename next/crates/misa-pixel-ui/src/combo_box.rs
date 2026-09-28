@@ -1,7 +1,7 @@
 //! Non-editable, protocol-free combo box. The caller owns the selected value and popup state.
+use crate::fit::{self, Fit, Fitted, Insets};
 use crate::{ContextMenu, MenuEntries, MenuEntry, MenuKey, MenuState, Op, Rect, TextMetrics};
 use misa_style::Style;
-use std::sync::Arc;
 
 pub struct ComboOption<Id> {
     pub value: Id,
@@ -61,7 +61,7 @@ pub struct ComboBox<'a, 'b, Id> {
 
 pub struct PlacedComboBox<'a, Id> {
     pub bounds: Rect,
-    pub label_width: f32,
+    pub content_width: f32,
     pub ops: Vec<Op>,
     options: &'a dyn MenuEntries<Id>,
     viewport: Rect,
@@ -86,9 +86,20 @@ impl<'a, Id: Clone + PartialEq> ComboBox<'a, '_, Id> {
             })
             .or_else(|| self.selected.map(|_| "Unavailable selection"))
             .unwrap_or("");
-        let label_width = metrics.measure(label, self.font_size);
-        let text_y = bounds.y
-            + ((bounds.height - metrics.line_metrics(self.font_size).line_height) / 2.0).max(0.0);
+        // The label shares its box with a reserved 29px arrow affordance.
+        let content = fit::measure_line(label, self.font_size, metrics);
+        let fitted = Fitted::new(bounds, Fit::Fill, Insets::horizontal(7.0, 29.0), content);
+        let arrow = Fitted::new(
+            Rect {
+                x: (bounds.x + bounds.width - 20.0).max(bounds.x),
+                y: bounds.y,
+                width: bounds.width.min(20.0).max(0.0),
+                height: bounds.height,
+            },
+            Fit::Fill,
+            Insets::ZERO,
+            content,
+        );
         let ops = vec![
             Op::Rect {
                 x: bounds.x - 1.0,
@@ -108,40 +119,28 @@ impl<'a, Id: Clone + PartialEq> ComboBox<'a, '_, Id> {
                 height: bounds.height,
                 style: self.background,
             },
-            Op::ClipRect {
-                x: bounds.x + 7.0,
-                y: bounds.y,
-                width: (bounds.width - 29.0).max(0.0),
-                height: bounds.height,
-                ops: Arc::new(vec![Op::Text {
-                    x: bounds.x + 7.0,
-                    y: text_y,
-                    size: self.font_size,
-                    style: if self.enabled {
-                        self.foreground
-                    } else {
-                        self.muted
-                    },
-                    text: label.into(),
-                }]),
-            },
-            Op::ClipRect {
-                x: (bounds.x + bounds.width - 20.0).max(bounds.x),
-                y: bounds.y,
-                width: bounds.width.min(20.0).max(0.0),
-                height: bounds.height,
-                ops: Arc::new(vec![Op::Text {
-                    x: (bounds.x + bounds.width - 18.0).max(bounds.x),
-                    y: text_y,
-                    size: self.font_size,
-                    style: self.foreground,
-                    text: "▾".into(),
-                }]),
-            },
+            fit::text_line(
+                fitted.inner,
+                label.into(),
+                self.font_size,
+                if self.enabled {
+                    self.foreground
+                } else {
+                    self.muted
+                },
+                metrics,
+            ),
+            fit::text_line(
+                arrow.inner,
+                "▾".into(),
+                self.font_size,
+                self.foreground,
+                metrics,
+            ),
         ];
         PlacedComboBox {
             bounds,
-            label_width,
+            content_width: content.width,
             ops,
             options: self.options,
             viewport: self.viewport,
@@ -439,7 +438,7 @@ mod tests {
         }
         .place(&Metrics);
         let mut state = ComboState::default();
-        assert_eq!(combo.label_width, 8.0 * 12.0);
+        assert_eq!(combo.content_width, 8.0 * 12.0);
         assert_eq!(
             combo.click(&Metrics, &mut state, 90.0, 20.0),
             ComboResult::Handled

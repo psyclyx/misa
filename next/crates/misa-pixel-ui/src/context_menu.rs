@@ -1,6 +1,10 @@
 //! Local context menu: caller owns the items, focus and lifetime of the overlay.
+use crate::fit::{self, Fit, Fitted, Insets, Size};
 use crate::{Op, Rect, TextMetrics};
 use misa_style::Style;
+/// Menu entries keep their labels away from the menu edges.
+const MENU_INSETS: Insets = Insets::horizontal(12.0, 12.0);
+
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -86,15 +90,24 @@ pub struct PlacedMenu<'a, Id> {
 impl<Id> ContextMenu<'_, Id> {
     /// Measure only when items change; callers with stable content can reuse this width.
     pub fn measured_width(&self, metrics: &dyn TextMetrics) -> f32 {
-        (0..self.items.len())
+        let content = (0..self.items.len())
             .filter_map(|i| match self.items.entry(i) {
                 Some(MenuEntry::Action { label, .. }) => {
-                    Some(metrics.measure(label, self.font_size))
+                    Some(fit::measure_line(label, self.font_size, metrics).width)
                 }
                 _ => None,
             })
-            .fold(0.0_f32, f32::max)
-            + 24.0
+            .fold(0.0_f32, f32::max);
+        // The natural width, before the viewport ever caps it: callers measure
+        // with placeholder geometry and reuse the number at placement time.
+        fit::natural(
+            Size {
+                width: content,
+                height: 0.0,
+            },
+            MENU_INSETS,
+        )
+        .width
     }
     pub fn place<'a>(
         &'a self,
@@ -155,22 +168,28 @@ impl<Id> ContextMenu<'_, Id> {
                     height: 1.0,
                     style: self.muted,
                 }),
-                MenuEntry::Action { label, enabled, .. } => ops.push(Op::ClipRect {
-                    x: bounds.x + 12.0,
-                    y,
-                    width: (width - 24.0).max(0.0),
-                    height: self.row_height,
-                    ops: Arc::new(vec![Op::Text {
-                        x: bounds.x + 12.0,
-                        y: y + ((self.row_height
-                            - metrics.line_metrics(self.font_size).line_height)
-                            / 2.0)
-                            .max(0.0),
-                        size: self.font_size,
-                        style: if enabled { self.foreground } else { self.muted },
-                        text: label.into(),
-                    }]),
-                }),
+                MenuEntry::Action { label, enabled, .. } => {
+                    // The menu precomputed its width from its entries; rows
+                    // never re-measure, steady-state redraws included.
+                    let fitted = Fitted::new(
+                        Rect {
+                            x: bounds.x,
+                            y,
+                            width,
+                            height: self.row_height,
+                        },
+                        Fit::Fill,
+                        MENU_INSETS,
+                        Size::ZERO,
+                    );
+                    ops.push(fit::text_line(
+                        fitted.inner,
+                        label.into(),
+                        self.font_size,
+                        if enabled { self.foreground } else { self.muted },
+                        metrics,
+                    ))
+                }
             }
         }
         PlacedMenu {

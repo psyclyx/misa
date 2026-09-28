@@ -1045,14 +1045,27 @@ fn status_footer_and_queue_components_render_natively() {
 }
 
 #[test]
-fn semantic_action_uses_measured_button_paint_and_hit_bounds() {
+fn semantic_action_button_grows_with_its_label_and_clips_only_without_room() {
+    let label = "Run the whole thing";
     let view = Node::section("root").id("root").action(Action {
         id: "go".into(),
         on: ActionOn::Submit,
-        label: Some("Run".into()),
+        label: Some(label.into()),
         args: Value::Null,
     });
     let mut app = DocumentUi::new(view, test_metrics());
+    let measured = test_metrics().measure(label, FONT_SIZE);
+    fn label_clip(ops: &[Op], label: &str) -> Option<f32> {
+        ops.iter().find_map(|op| match op {
+            Op::Group { ops, .. } => label_clip(ops, label),
+            Op::ClipRect { width, ops, .. } => match &ops[0] {
+                Op::Text { text, .. } if text == label => Some(*width),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+    // With room the button grows to its label: nothing is cut.
     let scene = app.frame_at(400, 200, Duration::ZERO);
     let hit = app
         .interaction
@@ -1060,24 +1073,21 @@ fn semantic_action_uses_measured_button_paint_and_hit_bounds() {
         .iter()
         .find(|hit| matches!(&hit.control, Control::Action { action, .. } if action == "go"))
         .unwrap();
-    let bounds = misa_pixel_ui::Rect {
-        x: hit.x,
-        y: hit.y,
-        width: hit.width,
-        height: hit.height,
-    };
-    assert!(bounds.contains(hit.x + 1.0, hit.y + 1.0));
-    assert!(!bounds.contains(hit.x + hit.width, hit.y + 1.0));
-    fn button_clip(ops: &[Op]) -> bool {
-        ops.iter().any(|op| match op {
-            Op::Group { ops, .. } => button_clip(ops),
-            Op::ClipRect { width, ops, .. } => {
-                *width == 248.0 && matches!(&ops[0], Op::Text { text, .. } if text == "Run")
-            }
-            _ => false,
-        })
-    }
-    assert!(button_clip(&scene.ops));
+    assert_eq!(hit.width, measured + 24.0);
+    assert_eq!(label_clip(&scene.ops, label), Some(measured));
+    assert!(hit.contains(hit.x + hit.width - 1.0, hit.y + 1.0));
+    assert!(!hit.contains(hit.x + hit.width, hit.y + 1.0));
+
+    // Out of room the allowance wins, and the hit bounds follow it.
+    let scene = app.frame_at(60, 200, Duration::ZERO);
+    let hit = app
+        .interaction
+        .hits()
+        .iter()
+        .find(|hit| matches!(&hit.control, Control::Action { action, .. } if action == "go"))
+        .unwrap();
+    assert_eq!(hit.width, 40.0);
+    assert_eq!(label_clip(&scene.ops, label), Some(16.0));
 }
 
 fn form(id: &str, kind: FieldKind) -> Node {
