@@ -37,6 +37,8 @@ pub(super) struct SessionViews {
     panel: String,
     panel_focus: bool,
     panel_top: f32,
+    /// The panel's last known content height; panels are bar-sized documents.
+    panel_height: f32,
     background_waker: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 impl SessionViews {
@@ -62,6 +64,7 @@ impl SessionViews {
             panel: "status".into(),
             panel_focus: false,
             panel_top: f32::MAX,
+            panel_height: 0.0,
             background_waker: None,
         }
     }
@@ -429,10 +432,20 @@ impl SessionViews {
         {
             (scene, deadline)
         } else {
+            // The panel is a bar-sized document: it takes the height it needs,
+            // not a third of the window. Unknown measurements keep the last
+            // known height rather than flickering the panel away.
+            let wanted = self
+                .panels
+                .get_mut(&self.panel)
+                .and_then(misa_pixel_document::ui::DocumentUi::content_height);
             let panel_height = if self.panels.is_empty() || size.height < 6 {
                 0
             } else {
-                (size.height / 3).min(220)
+                if let Some(height) = wanted {
+                    self.panel_height = height;
+                }
+                self.panel_height.clamp(0.0, (size.height / 3) as f32) as u32
             };
             self.panel_top = (size.height - panel_height) as f32;
             let main = self.app.drive(

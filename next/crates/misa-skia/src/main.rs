@@ -277,8 +277,17 @@ mod snapshot_tests {
         );
         for rows in [1, 4] {
             let scene = snapshot_scene(&view, 40, rows, metrics.clone());
+            // The transcript paints inside its region clip; the first placed
+            // group must still start at the top.
+            fn first_group(ops: &[Op]) -> Option<f32> {
+                ops.iter().find_map(|op| match op {
+                    Op::Group { y, .. } => Some(*y),
+                    Op::ClipRect { ops, .. } => first_group(ops),
+                    _ => None,
+                })
+            }
             assert!(
-                matches!(scene.ops.first(), Some(Op::Group { y, .. }) if (*y - 20.0).abs() < 0.01),
+                first_group(&scene.ops).is_some_and(|y| (y - 20.0).abs() < 0.01),
                 "snapshot must start at the top for {rows} rows"
             );
             let pixels = renderer
@@ -297,6 +306,16 @@ mod snapshot_tests {
         // The same DocumentUi without the offline choice still follows a long view.
         let mut window = misa_pixel_document::ui::DocumentUi::new(view, metrics);
         let followed = window.frame_at(380, 70, Duration::ZERO);
-        assert!(matches!(followed.ops.first(), Some(Op::Group { y, .. }) if *y < 0.0));
+        fn first_group(ops: &[Op]) -> Option<f32> {
+            ops.iter().find_map(|op| match op {
+                Op::Group { y, .. } => Some(*y),
+                Op::ClipRect { ops, .. } => first_group(ops),
+                _ => None,
+            })
+        }
+        assert!(
+            first_group(&followed.ops).is_some_and(|y| y < 0.0),
+            "a followed long view starts above the window"
+        );
     }
 }

@@ -852,6 +852,23 @@ impl DocumentUi {
         )
     }
 
+    /// The exact height this document wants, or `None` while its measurements
+    /// are incomplete. Hosts size panels to their content; nothing estimates.
+    pub fn content_height(&mut self) -> Option<f32> {
+        let mut builder = layout::LayoutBuilder::new(
+            &self.document,
+            &mut self.drafts,
+            &mut self.interaction,
+            &mut self.retained,
+            &mut self.overlays,
+            self.metrics.as_ref(),
+            self.light,
+        );
+        let scroll = self.viewport.scroll(&mut builder)?;
+        let pinned = (self.size.height as f32 - self.viewport.constraints().height).max(0.0);
+        Some(scroll.content + pinned)
+    }
+
     /// Dragging the thumb asks for the content offset under it. The walk is
     /// bounded per event: a drag converges over its events, never in one.
     fn scroll_drag(&mut self, y: f32) {

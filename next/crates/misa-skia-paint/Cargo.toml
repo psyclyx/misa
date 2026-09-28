@@ -13,5 +13,7 @@ misa-style.workspace = true
 skia-safe.workspace = true
 
 [dev-dependencies]
+misa-session = { path = "../misa-session" }
+misa-value.workspace = true
 misa-pixel-document = { path = "../misa-pixel-document" }
 misa-proto.workspace = true

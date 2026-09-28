@@ -2963,7 +2963,9 @@ dependencies = [
  "misa-pixel-document",
  "misa-pixel-ui",
  "misa-proto",
+ "misa-session",
  "misa-style",
+ "misa-value",
  "skia-safe",
 ]
 

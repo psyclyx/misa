@@ -398,11 +398,15 @@ impl InteractionMap {
         scene: &mut Scene,
         line_height: f32,
         selection_style: Style,
+        included: &dyn Fn(&str) -> bool,
     ) {
         let Some(selection) = &self.selection else {
             return;
         };
         for row in &self.rows {
+            if !included(&row.owner) {
+                continue;
+            }
             let Some(part) = selection.parts.iter().find(|p| {
                 p.owner == row.owner
                     && p.end > row.source_start

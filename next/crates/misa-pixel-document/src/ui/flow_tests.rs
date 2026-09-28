@@ -23,6 +23,37 @@ fn select(app: &mut DocumentUi, first: &str, first_column: usize, last: &str, la
     app.pointer(end_x, end_y, true);
 }
 
+fn walk_ops(ops: &[Op], visit: &mut impl FnMut(&Op)) {
+    for op in ops {
+        visit(op);
+        match op {
+            Op::Group { ops, .. } | Op::ClipRect { ops, .. } => walk_ops(ops, visit),
+            _ => {}
+        }
+    }
+}
+
+fn painted_text(ops: &[Op], wanted: &str) -> bool {
+    let mut found = false;
+    walk_ops(ops, &mut |op| {
+        if matches!(op, Op::Text { text, .. } if text == wanted) {
+            found = true;
+        }
+    });
+    found
+}
+
+fn selection_rects(ops: &[Op]) -> usize {
+    let mut found = 0;
+    let selection = crate::appearance::Palette::new(false).selection;
+    walk_ops(ops, &mut |op| {
+        if matches!(op, Op::Rect { style, .. } if *style == selection) {
+            found += 1;
+        }
+    });
+    found
+}
+
 #[test]
 fn selection_is_not_a_frame_row_index_after_scroll() {
     let mut app = DocumentUi::new(
@@ -41,8 +72,9 @@ fn selection_is_not_a_frame_row_index_after_scroll() {
         .anchor(FlowId::Node("item.75".into()), 0.0, 0.0);
     let scene = app.frame(320, 90);
     assert_eq!(app.key(Key::Copy), vec![Command::Copy("item".into())]);
-    assert!(
-        !scene.ops.iter().any(|op| matches!(op, Op::ClipRect { .. })),
+    assert_eq!(
+        selection_rects(&scene.ops),
+        0,
         "unrelated owners must not be highlighted"
     );
 }
@@ -58,7 +90,7 @@ fn soft_wrap_selection_uses_source_offsets_not_line_numbers() {
     assert_eq!(app.selected_text(), "alpha beta");
     let scene = app.frame(320, 200);
     assert_eq!(app.key(Key::Copy), vec![Command::Copy("alpha beta".into())]);
-    assert!(scene.ops.iter().any(|op| matches!(op, Op::ClipRect { ops, .. } if ops.iter().any(|op| matches!(op, Op::Text { text, .. } if text == "alpha beta")))));
+    assert!(painted_text(&scene.ops, "alpha beta"));
 }
 
 #[test]
@@ -81,7 +113,7 @@ fn table_cell_selection_tracks_source_across_interleaved_reflow() {
     assert_eq!(app.selected_text(), "beta");
     let scene = app.frame(400, 240);
     assert_eq!(app.key(Key::Copy), vec![Command::Copy("beta".into())]);
-    assert!(scene.ops.iter().any(|op| matches!(op, Op::ClipRect { ops, .. } if ops.iter().any(|op| matches!(op, Op::Text { text, .. } if text == "beta")))));
+    assert!(painted_text(&scene.ops, "beta"));
 }
 
 #[test]

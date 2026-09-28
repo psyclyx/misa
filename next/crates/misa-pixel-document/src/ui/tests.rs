@@ -712,7 +712,13 @@ fn elapsed_pulse_skips_wraps_and_preserves_unrelated_owners() {
     assert_eq!(app.retained.phase(), 0);
     assert!(Arc::ptr_eq(&status, &app.retained.cached("status").ops));
     assert_eq!(app.retained.rendered_nodes(), 0);
-    assert!(scene.ops.iter().any(|op| matches!(op, Op::Group { .. })));
+    let mut groups = 0;
+    walk_ops(&scene.ops, &mut |op| {
+        if matches!(op, Op::Group { .. }) {
+            groups += 1;
+        }
+    });
+    assert!(groups > 0);
 
     app.frame_at(640, 480, ms(320)); // Skip phase 1.
     assert_eq!(app.retained.phase(), 2);
@@ -1069,7 +1075,7 @@ fn semantic_action_button_grows_with_its_label_and_clips_only_without_room() {
             Op::Group { ops, .. } => label_clip(ops, label),
             Op::ClipRect { width, ops, .. } => match &ops[0] {
                 Op::Text { text, .. } if text == label => Some(*width),
-                _ => None,
+                _ => label_clip(ops, label),
             },
             _ => None,
         })
@@ -1140,6 +1146,10 @@ fn field_paint(scene: &Scene) -> (f32, f32, f32, f32, String, f32, f32, f32) {
                     height,
                     ops,
                 } => {
+                    // Clip children keep the outer coordinate space.
+                    if let Some(result) = find(ops, dx, dy) {
+                        return Some(result);
+                    }
                     if let Some((cx, cy)) = ops.iter().find_map(|op| match op {
                         Op::Rect {
                             x, y, width: 1.5, ..
@@ -2088,8 +2098,17 @@ fn narrow_quote_table_rows_clip_without_losing_copy_or_hit_bounds() {
             clips.push((*x, *width, ops.clone()));
         }
     });
-    assert_eq!(clips.len(), app.interaction.rows().len());
-    assert!(clips.iter().all(|(_, width, _)| *width == viewport));
+    // Row clips are cell-sized; the transcript region clip is window-sized.
+    let rows_clipped = clips
+        .iter()
+        .filter(|(_, width, _)| *width == viewport)
+        .count();
+    assert_eq!(rows_clipped, app.interaction.rows().len());
+    assert!(
+        clips
+            .iter()
+            .all(|(_, width, _)| *width == viewport || *width == 95.0)
+    );
     assert!(clips.iter().any(|(left, width, ops)| ops.iter().any(|op| matches!(op, Op::Text { x, text, .. } if text.contains('界') && x + app.metrics.measure(text, FONT_SIZE) > left + width))));
     for hit in app.interaction.hits() {
         if let Control::Text(index) = hit.control {
@@ -2110,7 +2129,14 @@ fn narrow_quote_table_rows_clip_without_losing_copy_or_hit_bounds() {
     let copied = app.selected_text();
     assert!(copied.contains('W') && copied.contains('界'));
     let selected = app.frame(95, 500);
-    assert!(selected.ops.iter().any(|op| matches!(op, Op::ClipRect { ops, .. } if ops.iter().any(|op| matches!(op, Op::Rect { style, .. } if *style == crate::appearance::Palette::new(app.light).selection)))));
+    let selection = crate::appearance::Palette::new(app.light).selection;
+    let mut painted = false;
+    walk_ops(&selected.ops, &mut |op| {
+        if matches!(op, Op::Rect { style, .. } if *style == selection) {
+            painted = true;
+        }
+    });
+    assert!(painted, "the selection paints inside its region");
 }
 
 #[test]

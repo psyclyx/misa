@@ -282,6 +282,13 @@ fn narrow_quote_table_selected_row_is_clipped_in_skia_pixels() {
         for op in ops {
             match op {
                 Op::Group { x, y, ops } => cell_ops(ops, dx + x, dy + y, left, right, out),
+                // Clip children keep the outer coordinate space.
+                Op::ClipRect { ops, .. }
+                    if !matches!(op, Op::ClipRect { x, width, .. }
+                        if (dx + x - left).abs() < 0.01 && (dx + x + width - right).abs() < 0.01) =>
+                {
+                    cell_ops(ops, dx, dy, left, right, out);
+                }
                 Op::ClipRect { x, width, .. }
                     if (dx + x - left).abs() < 0.01 && (dx + x + width - right).abs() < 0.01 =>
                 {
@@ -365,4 +372,149 @@ fn device_scale_maps_logical_layout_onto_device_pixels() {
     assert_eq!(pixel(25, 25), [255, 0, 0, 255]);
     assert_eq!(pixel(59, 59), [255, 0, 0, 255]);
     assert_eq!(pixel(65, 65), [20, 22, 26, 255]);
+}
+
+#[test]
+/// Visual aid: renders the real session document to /tmp for eyeballing. Not a
+/// regression test — assertions below cover the geometry it exposed.
+#[test]
+#[ignore]
+fn render_ui_probe() {
+    use misa_value::Value;
+    let base = misa_session::views::initial_state("demo", "scripted", "scripted-1", 0);
+    let mut session = base.get("session").unwrap().as_map().unwrap().clone();
+    session.insert("turn".into(), Value::Int(2));
+    let mut messages = vec![
+        Value::map([
+            ("seq", Value::Int(1)),
+            ("role", Value::str("user")),
+            (
+                "text",
+                Value::str("hello — could you look at this and summarize?"),
+            ),
+            ("state", Value::str("done")),
+            ("at_ms", Value::Int(1_758_067_200_000)),
+        ]),
+        Value::map([
+            ("seq", Value::Int(2)),
+            ("role", Value::str("assistant")),
+            (
+                "text",
+                Value::str(
+                    "here is a reply:\n\n# A heading\n\n> quoted material that wraps onto a second line of the quotation\n\n```rust\nlet x = 1;\n```\n\n![alt text](picture)\n\n[link text](https://example.com)\n\ndone",
+                ),
+            ),
+            ("state", Value::str("done")),
+            (
+                "thinking",
+                Value::str(
+                    "The user wants me to summarize. Let me think about the structure.\nSecond thought line.\nThird thought line.\nFourth.",
+                ),
+            ),
+            ("attempt", Value::map([("status", Value::str("done"))])),
+            (
+                "calls",
+                Value::list([Value::map([
+                    ("id", Value::str("call.1")),
+                    ("name", Value::str("echo")),
+                    ("args", Value::str("hi")),
+                    ("status", Value::str("ok")),
+                    ("result", Value::str("hi")),
+                ])]),
+            ),
+        ]),
+    ];
+    for seq in 3..12 {
+        messages.push(Value::map([
+            ("seq", Value::Int(seq)),
+            ("role", Value::str("user")),
+            ("text", Value::str("and another message")),
+            ("state", Value::str("done")),
+        ]));
+        messages.push(Value::map([
+            ("seq", Value::Int(seq + 100)),
+            ("role", Value::str("assistant")),
+            ("text", Value::str("and another reply")),
+            ("state", Value::str("done")),
+        ]));
+    }
+    let state = Value::map([
+        ("session", Value::Map(std::sync::Arc::new(session))),
+        ("attempts", Value::list([])),
+        ("notices", Value::list([])),
+        ("messages", Value::list(messages)),
+    ]);
+    let view = misa_session::views::document(&state, &[]);
+    misa_proto::view::validate(&view).expect("the shipped view is valid");
+    let mut app = DocumentUi::new(view, text_metrics().unwrap());
+    app.enable_background(Arc::new(|| {}));
+    for _ in 0..40 {
+        app.frame_at(1200, 560, Duration::ZERO);
+        app.poll_background();
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    std::fs::write(
+        "/tmp/ui-tail.png",
+        png(&app.frame_at(1200, 560, Duration::ZERO), BACKGROUND).unwrap(),
+    )
+    .unwrap();
+    app.pin_to_top();
+    std::fs::write(
+        "/tmp/ui-top.png",
+        png(&app.frame_at(1200, 560, Duration::ZERO), BACKGROUND).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_transcript_clips_to_the_area_above_pinned_input() {
+    use misa_proto::view::{Field, FieldKind, Kind, Node, Span};
+    fn composer() -> Node {
+        Node::new(
+            "composer",
+            Kind::Fields {
+                fields: vec![Field {
+                    id: "prompt".into(),
+                    label: "Message".into(),
+                    value: String::new(),
+                    hint: None,
+                    read_only: false,
+                    secret: false,
+                    kind: FieldKind::Block,
+                }],
+            },
+        )
+        .id("composer")
+    }
+    let mut view = Node::section("session").id("session");
+    view.children = (0..30)
+        .map(|i| {
+            Node::text("message.user", [Span::plain(format!("message {i}"))]).id(format!("msg.{i}"))
+        })
+        .collect();
+    view.children.push(composer());
+    let mut app = DocumentUi::new(view, text_metrics().unwrap());
+    let scene = app.frame_at(600, 200, Duration::ZERO);
+    // The transcript paints inside one region clip ending where the pinned
+    // input begins; nothing else may leak across that boundary.
+    let mut region = None;
+    let mut pinned_top = None;
+    for op in &scene.ops {
+        match op {
+            Op::ClipRect {
+                y, height, width, ..
+            } if *width == 600.0 => {
+                region = Some((*y, *height));
+            }
+            Op::Group { y, .. } => pinned_top = Some(*y),
+            _ => {}
+        }
+    }
+    let (clip_y, clip_height) = region.expect("the transcript region clips");
+    assert_eq!(clip_y, 0.0);
+    assert_eq!(
+        Some(clip_y + clip_height),
+        pinned_top,
+        "the transcript must end exactly where the pinned input begins"
+    );
 }

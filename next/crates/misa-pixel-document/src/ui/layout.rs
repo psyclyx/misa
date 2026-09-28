@@ -495,6 +495,10 @@ impl LayoutBuilder<'_> {
                 style_generation: u64::from(self.light),
             },
         );
+        // The transcript clips to its area: a row that straddles the boundary
+        // must never paint over the input pinned beneath it.
+        let flow_height = (height as f32 - pinned_height).max(0.0);
+        let transcript = scene.ops.len();
         for placement in viewport.visible() {
             match &placement.id {
                 FlowId::Node(_) | FlowId::Row(_, _) | FlowId::End(_) | FlowId::Stream(_) => {
@@ -512,14 +516,46 @@ impl LayoutBuilder<'_> {
                 FlowId::Top | FlowId::Close(_) | FlowId::StreamClose | FlowId::Bottom => {}
             }
         }
-        // Pinned input paints along the bottom edge, below the transcript.
+        self.interaction.finish_frame();
+        let pinned_set: std::collections::BTreeSet<&str> =
+            pinned.iter().map(String::as_str).collect();
+        self.interaction.paint_selection(
+            &mut scene,
+            self.line_height(),
+            self.colors.selection,
+            &|owner| !pinned_set.contains(owner),
+        );
+        let inner = scene.ops.drain(transcript..).collect::<Vec<_>>();
+        scene.ops.push(Op::ClipRect {
+            x: 0.0,
+            y: 0.0,
+            width: width as f32,
+            height: flow_height,
+            ops: Arc::new(inner),
+        });
+        // Pinned input paints along the bottom edge, below the transcript, and
+        // its selection paints inside its own region.
         let mut pin = height as f32 - pinned_height;
         for id in &pinned {
             self.present(id, 20.0, &mut pin, content_width, &theme, &mut scene);
         }
-        self.interaction.finish_frame();
-        self.interaction
-            .paint_selection(&mut scene, self.line_height(), self.colors.selection);
+        let pinned_start = scene.ops.len();
+        self.interaction.paint_selection(
+            &mut scene,
+            self.line_height(),
+            self.colors.selection,
+            &|owner| pinned_set.contains(owner),
+        );
+        let inner = scene.ops.drain(pinned_start..).collect::<Vec<_>>();
+        if !inner.is_empty() {
+            scene.ops.push(Op::ClipRect {
+                x: 0.0,
+                y: flow_height,
+                width: width as f32,
+                height: (height as f32 - flow_height).max(0.0),
+                ops: Arc::new(inner),
+            });
+        }
         if !self.overlays.notice_text().is_empty() {
             scene.ops.push(Op::Rect {
                 x: 0.0,
