@@ -105,6 +105,10 @@ impl Retained {
     fn viewport_start(&mut self, screen: &Screen, room: usize) -> usize {
         let request = screen.viewport_request(room);
         let document = &self.document;
+        misa_terminal_ui::trace::log(&format!(
+            "frame room={room} total_rows={}",
+            document.total_rows()
+        ));
         self.viewport.resolve(
             request,
             document.total_rows(),
@@ -113,6 +117,10 @@ impl Retained {
         )
     }
     fn apply_mutation(&mut self, mutation: Mutation) {
+        misa_terminal_ui::trace::log(&format!(
+            "mutation rebuilt={} layout_changed={}",
+            mutation.rebuilt, mutation.layout_changed
+        ));
         if mutation.rebuilt {
             self.work = mutation.work;
         } else {
@@ -146,6 +154,7 @@ impl Retained {
         Ok(())
     }
     pub fn reset(&mut self, tree: Node, streams: &[Stream], screen: &Screen) {
+        misa_terminal_ui::trace::log("retained reset (document re-derived)");
         let mutation = self.document.reset(tree, streams, screen);
         self.work = mutation.work;
         self.selection_body = None;
@@ -156,6 +165,7 @@ impl Retained {
         self.viewport.layout_changed();
     }
     pub fn local(&mut self, screen: &Screen) {
+        misa_terminal_ui::trace::log("retained local");
         let mutation = self.document.local(screen);
         self.apply_mutation(mutation);
         self.selection_body = None;
@@ -1766,5 +1776,64 @@ mod review_tests {
             Some("wrapped"),
             "the anchor escaped into a later node"
         );
+    }
+}
+
+#[cfg(test)]
+mod long_document_probe {
+    use super::super::*;
+    use misa_proto::view::Span;
+
+    fn run(label: &str, root: Node) {
+        let result = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                let mut screen = Screen::new(80, 24);
+                let mut retained = Retained::new(root, &screen);
+                let total = retained.document.total_rows();
+                // Scroll the whole document, top to bottom and back.
+                for row in (0..total).step_by(97) {
+                    screen.reader.fixture(row, false, 1);
+                    retained.frame_with(&screen, None, &[], &[]);
+                    screen.viewport_resolved(retained.resolved_scroll(), retained.following());
+                }
+                screen.reader.fixture(total / 2, false, 2);
+                retained.frame_with(&screen, None, &[], &[]);
+                total
+            })
+            .unwrap()
+            .join();
+        let total = result.unwrap_or_else(|_| panic!("{label} overflowed"));
+        eprintln!("{label}: rows={total}");
+    }
+
+    #[test]
+    fn a_flat_document_with_tens_of_thousands_of_rows_does_not_overflow() {
+        let mut root = Node::section("session").id("session");
+        for index in 0..50_000 {
+            root.children.push(
+                Node::text("assistant", [Span::plain(format!("line {index}"))])
+                    .id(format!("t{index}")),
+            );
+        }
+        run("flat 50k", root);
+    }
+
+    #[test]
+    fn a_document_with_huge_single_line_blocks_does_not_overflow() {
+        let mut root = Node::section("session").id("session");
+        for index in 0..20 {
+            root.children.push(
+                Node::new(
+                    "assistant",
+                    Kind::Code {
+                        lang: None,
+                        text: "x".repeat(200_000),
+                    },
+                )
+                .id(format!("c{index}")),
+            );
+        }
+        run("huge lines", root);
     }
 }

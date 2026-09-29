@@ -3,6 +3,7 @@ pub mod clipboard;
 pub mod graphics;
 pub mod output;
 pub mod terminal_style;
+pub mod trace;
 pub mod viewport;
 
 use misa_style::Style;

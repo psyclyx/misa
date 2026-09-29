@@ -7,8 +7,22 @@ pub fn observed(
 ) -> Result<(), String> {
     use misa_client::document::Update;
     use misa_protocol::observation::{Applied, MemberChange};
+    let kind = match update {
+        Update::Reset(_) => "reset",
+        Update::Changed { .. } => "changed",
+        Update::Unavailable(_) => "unavailable",
+        Update::Status(_) => "status",
+    };
+    misa_terminal_ui::trace::log(&format!("document update kind={kind}"));
     match update {
-        Update::Reset(document) => retained.reset(document.tree.clone(), &document.streams, screen),
+        Update::Reset(document) => {
+            misa_terminal_ui::trace::log(&format!(
+                "reset rows={} streams={}",
+                document.tree.children.len(),
+                document.streams.len()
+            ));
+            retained.reset(document.tree.clone(), &document.streams, screen)
+        }
         Update::Changed { member, applied } => {
             let Applied::Changed(members) = applied.as_ref() else {
                 return Err("Expected document transaction".into());

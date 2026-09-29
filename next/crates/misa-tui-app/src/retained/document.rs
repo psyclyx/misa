@@ -554,14 +554,24 @@ impl DocumentIndex {
         for update in live {
             match update {
                 StreamUpdate::Current { stream } => {
+                    misa_terminal_ui::trace::log(&format!(
+                        "stream current id={} bytes={}",
+                        stream.id,
+                        stream.text.len()
+                    ));
                     self.current(stream.clone(), screen);
                     structural = true;
                 }
                 StreamUpdate::End { id } => {
+                    misa_terminal_ui::trace::log(&format!("stream end id={id}"));
                     self.live.remove(id);
                     structural = true;
                 }
                 StreamUpdate::Append { id, offset, text } => {
+                    misa_terminal_ui::trace::log(&format!(
+                        "stream append id={id} offset={offset} bytes={}",
+                        text.len()
+                    ));
                     let role = self
                         .live
                         .get(id)
@@ -752,7 +762,11 @@ impl DocumentIndex {
                 // larger offset would land in the rows of whatever follows —
                 // which is how a reader ended up glued to the streaming
                 // message below the content they were reading.
-                return Some(start + offset.min(count.saturating_sub(1)));
+                let row = start + offset.min(count.saturating_sub(1));
+                misa_terminal_ui::trace::log(&format!(
+                    "node_row key={key} offset={offset} rows={count} start={start} -> row={row}"
+                ));
+                return Some(row);
             }
         }
         None

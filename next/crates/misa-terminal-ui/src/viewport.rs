@@ -97,12 +97,23 @@ impl<K: Eq, H: Copy + Eq> Viewport<K, H> {
             head,
         } = request;
         let bottom = total.saturating_sub(room);
+        crate::trace::log(&format!(
+            "resolve scroll={scroll} follow={follow} intent={intent} room={room} total={total} \
+             bottom={bottom} anchor_key={:?} anchor_row={} revealed_head={}",
+            self.anchor.as_ref().map(|anchor| anchor.key.is_some()),
+            self.anchor_row,
+            self.revealed_head.is_some(),
+        ));
         if follow {
             self.following = true;
         }
         let user_scrolled = self.last_intent != intent;
         if user_scrolled {
             self.following = scroll >= bottom;
+            crate::trace::log(&format!(
+                "gesture intent={intent} scroll={scroll} bottom={bottom} following={}",
+                self.following
+            ));
         }
         if self.following {
             self.anchor = None;
@@ -110,6 +121,7 @@ impl<K: Eq, H: Copy + Eq> Viewport<K, H> {
             self.anchor_row = bottom;
             self.anchor_epoch = self.layout_epoch;
             self.resolved_scroll = bottom;
+            crate::trace::log(&format!("follow-tail resolved={bottom}"));
             return bottom;
         }
         let requested = scroll.min(bottom);
@@ -118,6 +130,14 @@ impl<K: Eq, H: Copy + Eq> Viewport<K, H> {
             self.anchor = Some(self.anchor_at(requested, &mut key_at));
             self.anchor_row = requested;
             self.anchor_epoch = self.layout_epoch;
+            crate::trace::log(&format!(
+                "take-anchor row={requested} key={:?} offset={}",
+                self.anchor.as_ref().map(|anchor| anchor.key.is_some()),
+                self.anchor
+                    .as_ref()
+                    .map(|anchor| anchor.offset)
+                    .unwrap_or(0),
+            ));
         } else if self.anchor_epoch != self.layout_epoch {
             self.anchor_row = self
                 .anchor
@@ -130,6 +150,14 @@ impl<K: Eq, H: Copy + Eq> Viewport<K, H> {
                 })
                 .unwrap_or(requested);
             self.anchor_epoch = self.layout_epoch;
+            crate::trace::log(&format!(
+                "re-find-anchor row={} offset={} fallback={requested}",
+                self.anchor_row,
+                self.anchor
+                    .as_ref()
+                    .map(|anchor| anchor.offset)
+                    .unwrap_or(0),
+            ));
         }
         if let Some(head) = head {
             if self.revealed_head != Some(head.identity) {
@@ -141,11 +169,21 @@ impl<K: Eq, H: Copy + Eq> Viewport<K, H> {
                 }
                 self.anchor = Some(self.anchor_at(self.anchor_row, &mut key_at));
                 self.anchor_epoch = self.layout_epoch;
+                crate::trace::log(&format!(
+                    "reveal-head row={} anchor_row={}",
+                    head.row, self.anchor_row
+                ));
             }
         } else {
             self.revealed_head = None;
         }
         self.resolved_scroll = self.anchor_row.min(bottom);
+        crate::trace::log(&format!(
+            "resolved={} anchor_row={} clamped={}",
+            self.resolved_scroll,
+            self.anchor_row,
+            self.resolved_scroll != self.anchor_row,
+        ));
         self.resolved_scroll
     }
 }

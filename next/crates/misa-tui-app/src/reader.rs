@@ -58,11 +58,16 @@ impl Reader {
     /// Read back the physically resolved viewport after a frame. This is not a
     /// reader command: it must not advance the scroll intent epoch.
     pub fn resolved(&mut self, scroll: usize, follow: bool) {
+        misa_terminal_ui::trace::log(&format!(
+            "writeback scroll={scroll} follow={follow} (was scroll={} follow={})",
+            self.scroll, self.follow
+        ));
         self.scroll = scroll;
         self.follow = follow;
     }
 
     pub fn reset_viewport(&mut self) {
+        misa_terminal_ui::trace::log("reader reset_viewport -> follow tail");
         self.scroll = 0;
         self.follow = true;
     }
@@ -72,6 +77,10 @@ impl Reader {
         self.scroll = next.max(0) as usize;
         self.follow = false;
         self.scroll_intent = self.scroll_intent.wrapping_add(1);
+        misa_terminal_ui::trace::log(&format!(
+            "scroll_by delta={delta} -> scroll={} intent={}",
+            self.scroll, self.scroll_intent
+        ));
     }
 
     pub fn action(&mut self, action: Action) -> bool {
@@ -79,11 +88,13 @@ impl Reader {
             Action::ScrollUp => self.scroll_by(-10),
             Action::ScrollDown => self.scroll_by(10),
             Action::ScrollTop => {
+                misa_terminal_ui::trace::log("gesture scroll-top");
                 self.follow = false;
                 self.scroll = 0;
                 self.scroll_intent = self.scroll_intent.wrapping_add(1);
             }
             Action::ScrollBottom => {
+                misa_terminal_ui::trace::log("gesture scroll-bottom -> follow tail");
                 self.follow = true;
                 self.scroll_intent = self.scroll_intent.wrapping_add(1);
             }
