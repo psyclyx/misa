@@ -737,11 +737,22 @@ impl DocumentIndex {
     pub(super) fn node_row(&self, key: &str, offset: usize) -> Option<usize> {
         let mut row = 0;
         for (index, segment) in self.segments.iter().enumerate() {
+            let mut start = None;
+            let mut count = 0usize;
             for line in &self.lines(segment)[..self.lengths[index]] {
                 if line.node.as_deref() == Some(key) {
-                    return Some(row + offset);
+                    start.get_or_insert(row);
+                    count += 1;
                 }
                 row += 1;
+            }
+            if let Some(start) = start {
+                // The offset names a row of this node, so it resolves back into
+                // this node even when a re-render made the node shorter. A
+                // larger offset would land in the rows of whatever follows —
+                // which is how a reader ended up glued to the streaming
+                // message below the content they were reading.
+                return Some(start + offset.min(count.saturating_sub(1)));
             }
         }
         None

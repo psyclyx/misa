@@ -149,14 +149,14 @@ impl Retained {
         let mutation = self.document.reset(tree, streams, screen);
         self.work = mutation.work;
         self.selection_body = None;
-        self.viewport = Viewport::new(screen.viewport_following());
+        // A re-derived document is a layout change, not navigation: the reader's
+        // anchor survives it (the same rule as streaming). Recreating the
+        // viewport here made every snapshot look like a scroll gesture and
+        // dragged a scrolled-up reader back to the tail.
         self.viewport.layout_changed();
     }
     pub fn local(&mut self, screen: &Screen) {
         let mutation = self.document.local(screen);
-        if mutation.rebuilt {
-            self.viewport = Viewport::new(screen.viewport_following());
-        }
         self.apply_mutation(mutation);
         self.selection_body = None;
     }
@@ -563,6 +563,115 @@ mod tests {
                 .any(|line| line.text().contains("[image: a wide chart]"))
         );
     }
+    #[test]
+    fn streaming_never_moves_a_scrolled_up_reader_and_scrolling_still_works() {
+        let mut screen = Screen::new(40, 6);
+        let mut root = Node::section("session").id("session");
+        for index in 0..10 {
+            root.children
+                .push(text(&format!("t{index}"), &format!("line {index}")));
+        }
+        let mut retained = Retained::new(root, &screen);
+        retained.current(
+            Stream {
+                id: "reply".into(),
+                role: "assistant".into(),
+                text: "stream ".repeat(30),
+            },
+            &screen,
+        );
+        // The reader leaves the tail for a settled line.
+        screen.reader.fixture(2, false, 1);
+        let start = retained.viewport_start(&screen, 3);
+        assert_eq!(start, 2);
+        let seen = retained.document.row_line(start).unwrap().node.clone();
+        // The event loop runs the local projection after every input event.
+        retained.local(&screen);
+        // The reply keeps streaming below. The reading position is not the
+        // stream's problem: the same content stays under the same row.
+        for tail in [
+            " more words",
+            " and more words",
+            " and a great many more words",
+        ] {
+            retained
+                .changed(
+                    &[],
+                    &[StreamUpdate::Current {
+                        stream: Stream {
+                            id: "reply".into(),
+                            role: "assistant".into(),
+                            text: format!("{}{tail}", "stream ".repeat(30)),
+                        },
+                    }],
+                    false,
+                    &screen,
+                )
+                .unwrap();
+            retained.local(&screen);
+            let again = retained.viewport_start(&screen, 3);
+            assert_eq!(again, start, "streaming moved the reader");
+            assert_eq!(retained.document.row_line(again).unwrap().node, seen);
+        }
+        // A further scroll is a new command and lands exactly one delta away.
+        screen.reader.fixture(1, false, 2);
+        assert_eq!(retained.viewport_start(&screen, 3), 1);
+    }
+
+    #[test]
+    fn appends_during_streaming_keep_an_anchor_inside_the_streaming_message() {
+        let mut screen = Screen::new(24, 6);
+        let mut root = Node::section("session").id("session");
+        for index in 0..6 {
+            root.children
+                .push(text(&format!("t{index}"), &format!("line {index}")));
+        }
+        let mut retained = Retained::new(root, &screen);
+        let mut streamed = "alpha beta gamma ".repeat(12);
+        retained.current(
+            Stream {
+                id: "reply".into(),
+                role: "assistant".into(),
+                text: streamed.clone(),
+            },
+            &screen,
+        );
+        // The reader parks inside the streaming message itself.
+        let inside = retained
+            .document
+            .selection_lines()
+            .iter()
+            .position(|line| line.node.as_deref() == Some("reply"))
+            .unwrap()
+            + 2;
+        screen.reader.fixture(inside, false, 1);
+        let start = retained.viewport_start(&screen, 3);
+        assert_eq!(start, inside);
+        // Production streaming is a sequence of byte appends. Each one lands on
+        // the same rule: the visible content stays, the delta applies once.
+        for words in ["delta one ", "delta two ", "delta three four five "] {
+            streamed.push_str(words);
+            retained
+                .changed(
+                    &[],
+                    &[StreamUpdate::Append {
+                        id: "reply".into(),
+                        offset: streamed.len() - words.len(),
+                        text: words.into(),
+                    }],
+                    false,
+                    &screen,
+                )
+                .unwrap();
+            retained.local(&screen);
+            let again = retained.viewport_start(&screen, 3);
+            assert_eq!(again, start, "an append moved the reader");
+        }
+        // Scrolling mid-stream still moves exactly one delta.
+        screen.reader.fixture(start - 2, false, 2);
+        assert_eq!(retained.viewport_start(&screen, 3), start - 2);
+    }
+
     #[test]
     fn a_scrolled_viewport_keeps_its_node_when_content_arrives_above() {
         use misa_proto::sync::ViewOp;
@@ -1580,6 +1689,82 @@ mod review_tests {
         assert_eq!(
             frame.lines.len(),
             expected.len() + top.len() + 1 + crate::chrome::composer(&screen).lines.len()
+        );
+    }
+
+    fn paint(retained: &mut Retained, screen: &mut Screen, room: usize) -> usize {
+        let start = retained.viewport_start(screen, room);
+        screen.viewport_resolved(start, retained.following());
+        start
+    }
+
+    fn line_text(id: &str, value: &str) -> Node {
+        Node::text("assistant", [Span::plain(value)]).id(id)
+    }
+
+    #[test]
+    fn a_snapshot_never_drags_a_scrolled_reader_back_to_the_tail() {
+        let document = |count: usize| {
+            let mut root = Node::section("session").id("session");
+            for index in 0..count {
+                root.children
+                    .push(line_text(&format!("t{index}"), &format!("line {index}")));
+            }
+            root
+        };
+        let mut screen = Screen::new(40, 8);
+        let mut retained = Retained::new(document(30), &screen);
+        // The reader has scrolled up mid-stream and owns their row.
+        screen.reader.fixture(20, false, 1);
+        assert_eq!(paint(&mut retained, &mut screen, 4), 20);
+        let seen = retained.document.row_line(20).unwrap().node.clone();
+        // A missed notification re-derives the document shorter than where the
+        // reader sits — a thinking body settles into its summary, a member is
+        // replaced. That is layout, not navigation: the reader stays put and
+        // tail-follow stays off.
+        retained.reset(document(22), &[], &screen);
+        paint(&mut retained, &mut screen, 4);
+        assert!(
+            !retained.following(),
+            "a snapshot dragged the reader into tail-follow"
+        );
+        // The replacements continue; the anchored content is still on screen.
+        retained.reset(document(30), &[], &screen);
+        let now = paint(&mut retained, &mut screen, 4);
+        assert_eq!(now, 20);
+        assert_eq!(retained.document.row_line(now).unwrap().node, seen);
+    }
+
+    #[test]
+    fn an_anchor_stays_inside_its_own_node_when_the_node_shrinks() {
+        let document = |wrapped: &str| {
+            let mut root = Node::section("session").id("session");
+            root.children.push(line_text("wrapped", wrapped));
+            root.children.push(line_text("after", "after"));
+            for index in 0..5 {
+                root.children
+                    .push(line_text(&format!("f{index}"), &format!("filler {index}")));
+            }
+            root
+        };
+        let mut screen = Screen::new(20, 8);
+        let mut retained = Retained::new(document(&"word ".repeat(20)), &screen);
+        // The wrapped node spans several rows; the reader parks on its last.
+        let rows = retained.document.selection_lines();
+        let last = rows
+            .iter()
+            .rposition(|line| line.node.as_deref() == Some("wrapped"))
+            .unwrap();
+        screen.reader.fixture(last, false, 1);
+        assert_eq!(paint(&mut retained, &mut screen, 2), last);
+        // A re-render makes the node shorter. The anchor names content, so it
+        // resolves back into that node — never into the rows after it.
+        retained.reset(document("short"), &[], &screen);
+        let now = paint(&mut retained, &mut screen, 2);
+        assert_eq!(
+            retained.document.row_line(now).unwrap().node.as_deref(),
+            Some("wrapped"),
+            "the anchor escaped into a later node"
         );
     }
 }

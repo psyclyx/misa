@@ -91,7 +91,9 @@ pub(super) fn handle_update(
             truncated,
         })) => screen.ui.candidates(&source, items, truncated),
         Some(Update::View(crate::Presentation::Snapshot(next))) => {
-            scopes.active.retained = crate::retained::Retained::new(next, &screen.ui);
+            // A snapshot re-derives the same document; the reader's anchor and
+            // follow mode survive it exactly as they survive streaming.
+            scopes.active.retained.reset(next.clone(), &[], &screen.ui);
             change = Change::Documents;
         }
         Some(Update::View(crate::Presentation::Document(update))) => {
