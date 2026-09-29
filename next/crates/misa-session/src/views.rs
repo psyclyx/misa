@@ -1086,6 +1086,10 @@ pub(crate) fn cancel(db: &Value) -> Option<Node> {
 /// Markdown is parsed here, in the middle layer, so that no frontend has to parse it and
 /// every frontend agrees on what a quote is. The first text block keeps `{id}.text`;
 /// in-flight content with that identity lives in the separate stream channel.
+///
+/// Every block carries an identity, derived from its position under the body: a
+/// reader's anchor names content, and a body of anonymous blocks is one blob an
+/// anchor cannot point into (the reader was thrown to the blob's first row).
 fn body(prefix: &str, id: &str, text: &str) -> Vec<Node> {
     let mut blocks = misa_markdown::blocks(prefix, text);
     if blocks.is_empty() {
@@ -1097,7 +1101,24 @@ fn body(prefix: &str, id: &str, text: &str) -> Vec<Node> {
     {
         first.id = format!("{id}.text");
     }
+    name_blocks(&mut blocks, id);
     blocks
+}
+
+/// Give every anonymous node an identity derived from its position, so the
+/// same content parses to the same identities and an anchor can name it.
+fn name_blocks(nodes: &mut [Node], base: &str) {
+    for (index, node) in nodes.iter_mut().enumerate() {
+        if node.id.is_empty() {
+            node.id = format!("{base}.{index}");
+        }
+        name_blocks(&mut node.children, &node.id);
+        if let Kind::List { items, .. } = &mut node.kind {
+            for (row, item) in items.iter_mut().enumerate() {
+                name_blocks(item, &format!("{}.{row}", node.id));
+            }
+        }
+    }
 }
 
 /// Provider failures often arrive as an HTTP prefix followed by a JSON envelope.
@@ -1731,5 +1752,89 @@ mod tests {
                 "the session wrote `{id}`, which is a plugin's namespace"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod overflow_probe {
+    use super::*;
+    use misa_value::Value;
+
+    fn depth(node: &Node) -> usize {
+        1 + node.children.iter().map(depth).max().unwrap_or(0)
+    }
+
+    #[test]
+    fn a_long_message_does_not_build_a_deep_view() {
+        let base = initial_state("demo", "scripted", "scripted-1", 0);
+        let mut session = base.get("session").unwrap().as_map().unwrap().clone();
+        session.insert("turn".into(), Value::Int(1));
+        let long = "word ".repeat(20_000);
+        let state = Value::map([
+            ("session", Value::Map(std::sync::Arc::new(session))),
+            ("attempts", Value::list([])),
+            ("notices", Value::list([])),
+            (
+                "messages",
+                Value::list([Value::map([
+                    ("seq", Value::Int(1)),
+                    ("role", Value::str("assistant")),
+                    ("text", Value::str(long)),
+                    ("state", Value::str("done")),
+                ])]),
+            ),
+        ]);
+        let view = document(&state, &[]);
+        let depth = depth(&view);
+        assert!(depth < 20, "a long message built a {depth}-deep view");
+    }
+}
+
+#[cfg(test)]
+mod identity_probe {
+    use super::*;
+    use misa_value::Value;
+
+    fn ids_of(node: &Node, out: &mut Vec<String>) {
+        out.push(node.id.clone());
+        for child in &node.children {
+            ids_of(child, out);
+        }
+        if let Kind::List { items, .. } = &node.kind {
+            for item in items.iter().flatten() {
+                ids_of(item, out);
+            }
+        }
+    }
+
+    #[test]
+    fn every_settled_block_carries_an_identity() {
+        let base = initial_state("demo", "scripted", "scripted-1", 0);
+        let mut session = base.get("session").unwrap().as_map().unwrap().clone();
+        session.insert("turn".into(), Value::Int(1));
+        let markdown = "# Title\n\n> quoted\n\n- one\n- two\n\n```\ncode\n```\n\ntail";
+        let state = Value::map([
+            ("session", Value::Map(std::sync::Arc::new(session))),
+            ("attempts", Value::list([])),
+            ("notices", Value::list([])),
+            (
+                "messages",
+                Value::list([Value::map([
+                    ("seq", Value::Int(1)),
+                    ("role", Value::str("assistant")),
+                    ("text", Value::str(markdown)),
+                    ("state", Value::str("done")),
+                ])]),
+            ),
+        ]);
+        let view = document(&state, &[]);
+        let mut ids = Vec::new();
+        ids_of(&view, &mut ids);
+        let mut seen = std::collections::HashSet::new();
+        for id in &ids {
+            assert!(!id.is_empty(), "an anonymous node reached the wire");
+            assert!(seen.insert(id.clone()), "duplicate node id {id}");
+        }
+        assert!(ids.len() > 4, "the markdown body did not produce blocks");
     }
 }

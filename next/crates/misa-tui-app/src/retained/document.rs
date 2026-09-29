@@ -742,7 +742,11 @@ impl DocumentIndex {
         self.rows.total()
     }
     pub(super) fn row_node(&self, row: usize) -> Option<String> {
-        self.row_line(row).and_then(|line| line.node.clone())
+        // An anonymous row is not anchorable content: binding to it would make
+        // every anonymous row one blob and throw the reader to its first row.
+        self.row_line(row)
+            .and_then(|line| line.node.clone())
+            .filter(|id| !id.is_empty())
     }
     pub(super) fn node_row(&self, key: &str, offset: usize) -> Option<usize> {
         let mut row = 0;
