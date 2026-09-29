@@ -6,6 +6,18 @@ to stay simple, do the refactor; if the honest fix is deletion, delete.
 Diagnoses below come from rendering the real session view to PNG (the probe in
 `misa-skia-paint/tests/parity.rs`, currently ignored).
 
+## Stored conversations
+
+- [ ] **A tab in a stored node blocks mounting the conversation.**
+      `misa-session/src/canonical.rs` rejects `\t` in view text
+      ("database owner emitted an applicable view op: … contains the control
+      character \t") and the session panics on the scope, so
+      `session-1789265562472` cannot be opened at all. A tab is content —
+      code indentation, terminal logs — not a fault. The validator should
+      accept the control characters text legitimately carries (or the store
+      should normalise on write), and mounting a stored conversation should
+      never panic.
+
 ## Scroll bars
 
 - [ ] **Wrong space accounting.** The bar is painted over the transcript at
