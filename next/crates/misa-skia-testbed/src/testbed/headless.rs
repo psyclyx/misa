@@ -5,7 +5,7 @@ use super::Fixtures;
 use misa_pixel_document::ui::Control;
 use misa_skia_vulkan::Renderer;
 use misa_style::Color;
-use misa_window_core::{Clock, Event, Key, PointerPhase, Size};
+use misa_window_core::{Clock, Event, Key, Size};
 use std::time::Duration;
 
 const BACKGROUND: Color = Color::Rgb(20, 22, 26);
