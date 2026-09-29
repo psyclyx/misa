@@ -40,6 +40,16 @@ use std::collections::BTreeMap;
 
 use misa_proto::view::{Alignment, BlobRef, Definition, Kind, Node, Span, SpanKind};
 
+/// How deeply nested a block construct may nest before its content is kept flat.
+///
+/// Quote, list, and details parse their bodies as blocks, so the parser recurses
+/// once per nesting level. A document may nest as deeply as it likes, and a
+/// hostile one must not spend a client's stack to say so: past this bound the
+/// nesting stops and the content is kept as text. The number is half the view
+/// contract's own depth bound (`misa_proto::view::MAX_DEPTH`), leaving room for
+/// the owners a caller wraps the blocks in.
+pub const MAX_NESTING: usize = 32;
+
 /// Parse a message body into block nodes, each role under `prefix`.
 ///
 /// The result is empty when the text has nothing in it, and every node it does return
@@ -54,7 +64,7 @@ pub fn blocks(prefix: &str, text: &str) -> Vec<Node> {
         references: &references,
         footnotes: &footnotes,
     }
-    .blocks_tracked(&lines)
+    .blocks_tracked(&lines, 0)
     .0;
     append_footnotes(&mut out, &references, &footnotes);
     out
@@ -123,7 +133,7 @@ pub fn document(prefix: &str, text: &str, previous: Option<&Document>) -> Docume
         references: &references,
         footnotes: &footnotes,
     }
-    .blocks_tracked(&suffix_lines);
+    .blocks_tracked(&suffix_lines, 0);
     blocks.extend(suffix);
     starts.extend(suffix_starts.into_iter().map(|offset| from + offset));
     // The footnote section is rebuilt from the whole document every time, so a
@@ -683,8 +693,8 @@ impl Parser<'_> {
         spans_only(self.inline_parts(text))
     }
 
-    fn blocks(&self, lines: &[&str]) -> Vec<Node> {
-        self.blocks_tracked(lines).0
+    fn blocks(&self, lines: &[&str], depth: usize) -> Vec<Node> {
+        self.blocks_tracked(lines, depth).0
     }
 
     /// Parse blocks and record each one's byte start within `lines`.
@@ -692,7 +702,7 @@ impl Parser<'_> {
     /// The bytes are counted as if `lines` were `'\n'`-joined, so an offset is a
     /// valid position in the text a caller split. The incremental entry point uses
     /// them to find where the retained prefix ends.
-    fn blocks_tracked(&self, lines: &[&str]) -> (Vec<Node>, Vec<usize>) {
+    fn blocks_tracked(&self, lines: &[&str], depth: usize) -> (Vec<Node>, Vec<usize>) {
         let mut line_starts = Vec::with_capacity(lines.len());
         let mut offset = 0;
         for line in lines {
@@ -748,18 +758,18 @@ impl Parser<'_> {
                 (Node::new(self.role("rule"), Kind::Rule), index + 1)
             } else if is_table(lines, index) {
                 self.table(lines, index)
-            } else if is_details(line) {
-                self.details(lines, index)
+            } else if is_details(line) && depth < MAX_NESTING {
+                self.details(lines, index, depth)
             } else if is_definition_list_html(line) {
                 self.html_definition_list(lines, index)
             } else if is_html_block(line) {
                 self.html_block(lines, index)
             } else if indent_of(line) >= 4 {
                 self.indented_code(lines, index)
-            } else if quote_line(line).is_some() {
-                self.quote(lines, index)
-            } else if list_marker(line).is_some() {
-                self.list(lines, index)
+            } else if quote_line(line).is_some() && depth < MAX_NESTING {
+                self.quote(lines, index, depth)
+            } else if list_marker(line).is_some() && depth < MAX_NESTING {
+                self.list(lines, index, depth)
             } else if starts_definition_list(lines, index) {
                 self.definition_list(lines, index)
             } else {
@@ -799,7 +809,7 @@ impl Parser<'_> {
         )
     }
 
-    fn quote(&self, lines: &[&str], start: usize) -> (Node, usize) {
+    fn quote(&self, lines: &[&str], start: usize, depth: usize) -> (Node, usize) {
         let mut inner = Vec::new();
         let mut index = start;
         while index < lines.len() {
@@ -823,7 +833,7 @@ impl Parser<'_> {
             None => self.role("quote"),
         };
         (
-            Node::new(role, Kind::Quote).children(self.blocks(&inner)),
+            Node::new(role, Kind::Quote).children(self.blocks(&inner, depth + 1)),
             index,
         )
     }
@@ -854,7 +864,7 @@ impl Parser<'_> {
     }
 
     /// A `<details>` block: a summary and the blocks it hides.
-    fn details(&self, lines: &[&str], start: usize) -> (Node, usize) {
+    fn details(&self, lines: &[&str], start: usize, depth: usize) -> (Node, usize) {
         let mut raw = String::new();
         let mut index = start;
         while index < lines.len() {
@@ -890,7 +900,7 @@ impl Parser<'_> {
             .max(body_start);
         let body_lines: Vec<&str> = raw[body_start..body_end].split('\n').collect();
         let spans = summary.map_or_else(Vec::new, |summary| self.inline(&summary));
-        let children = self.blocks(&body_lines);
+        let children = self.blocks(&body_lines, depth + 1);
         (
             Node::new(self.role("details"), Kind::Collapsible { summary: spans })
                 .children(children),
@@ -1054,7 +1064,7 @@ impl Parser<'_> {
         entries
     }
 
-    fn list(&self, lines: &[&str], start: usize) -> (Node, usize) {
+    fn list(&self, lines: &[&str], start: usize, depth: usize) -> (Node, usize) {
         let ordered = list_marker(lines[start]).expect("called on a marker").0;
         let mut items: Vec<Vec<Node>> = Vec::new();
         let mut markers: Vec<Option<bool>> = Vec::new();
@@ -1097,7 +1107,7 @@ impl Parser<'_> {
                 index += 1;
             }
             let borrowed: Vec<&str> = body.iter().map(String::as_str).collect();
-            items.push(self.blocks(&borrowed));
+            items.push(self.blocks(&borrowed, depth + 1));
         }
         (
             Node::new(
@@ -2899,5 +2909,23 @@ mod tests {
             Kind::Text { spans } => assert_eq!(text_of(spans), "p1\np2\np3\np4"),
             other => panic!("expected text, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod overflow_probe {
+    use super::*;
+
+    #[test]
+    fn parsing_a_very_long_document_does_not_recurse() {
+        // 200k characters across many blocks and one enormous paragraph.
+        let mut text = String::new();
+        for i in 0..500 {
+            text.push_str(&format!("paragraph {i} with some words in it.\n\n"));
+        }
+        text.push_str(&"a long line ".repeat(12_000));
+        text.push_str("\n\n> quoted\n\n> > deeper\n\n");
+        let doc = document("", &text, None);
+        assert!(!doc.blocks.is_empty());
     }
 }
