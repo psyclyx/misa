@@ -3291,3 +3291,16 @@ fn clicking_a_link_opens_it_and_dragging_across_it_selects() {
     assert_eq!(plain.cursor, misa_window_core::CursorIcon::Text);
     assert!(plain.hover.is_none());
 }
+
+#[test]
+fn scrolling_after_a_long_message_does_not_recurse() {
+    let long = "word ".repeat(20_000);
+    let view = Node::section("session")
+        .id("session")
+        .child(Node::text("message.user", [Span::plain(long)]).id("msg"));
+    let mut app = DocumentUi::new(view, test_metrics());
+    app.frame(600, 400);
+    app.scroll(-120.0);
+    let scene = app.frame(600, 400);
+    assert!(!scene.ops.is_empty());
+}

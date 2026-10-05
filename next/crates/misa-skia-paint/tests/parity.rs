@@ -518,3 +518,36 @@ fn the_transcript_clips_to_the_area_above_pinned_input() {
         "the transcript must end exactly where the pinned input begins"
     );
 }
+
+#[test]
+fn rendering_a_long_markdown_message_survives_a_small_stack() {
+    use misa_proto::view::Node;
+    let mut body = String::new();
+    for i in 0..30 {
+        body.push_str(&format!(
+            "## Section {i}\n\nSome prose for this section with **bold** and `code`.\n\n> quoted material {i}\n\n| a | b |\n| - | - |\n| {i} | row |\n\n- item one\n- item two\n\n```rust\nlet x = {i};\n```\n\n"
+        ));
+    }
+    body.push_str(&"long line ".repeat(20_000));
+    let doc = misa_markdown::document("markdown", &body, None);
+    let metrics = text_metrics().unwrap();
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(move || {
+            let view = Node::section("session")
+                .id("session")
+                .children(doc.blocks.clone());
+            misa_proto::view::validate(&view).expect("valid");
+            let mut app = DocumentUi::new(view, metrics);
+            app.enable_background(std::sync::Arc::new(|| {}));
+            for _ in 0..200 {
+                let scene = app.frame_at(1200, 560, Duration::ZERO);
+                assert!(!scene.ops.is_empty());
+                app.scroll(-240.0);
+                app.poll_background();
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

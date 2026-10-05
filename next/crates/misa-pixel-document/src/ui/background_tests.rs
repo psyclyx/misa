@@ -6,6 +6,7 @@ use super::super::flow::FlowId;
 use super::super::tests as ui_tests;
 use super::*;
 use misa_proto::view::{Node, Span};
+use misa_window_core::PointerPhase;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -318,4 +319,20 @@ fn scrolling_after_prewarm_reuses_instead_of_remeasuring() {
     assert!(ui.viewport.measured_count() >= measured);
     pump(&mut ui, 2);
     assert!(ui.background_work_pending() || ui.viewport.measured_count() >= measured);
+}
+
+#[test]
+fn dragging_the_thumb_over_a_long_transcript_walks_bounded() {
+    let mut ui = app(400, 600, 400);
+    pump(&mut ui, 420);
+    let bar = ui.scrollbar().expect("overflowing transcript has a thumb");
+    // Drag the thumb from top to bottom and back: the walk converges over
+    // events and no single gesture may recurse or walk the document at once.
+    for step in 0..=40 {
+        let y = step as f32 * 10.0;
+        ui.pointer(bar.bounds.x + 2.0, y, PointerPhase::Press);
+        ui.pointer(bar.bounds.x + 2.0, y, PointerPhase::Move);
+        ui.pointer(bar.bounds.x + 2.0, y, PointerPhase::Release);
+        ui.frame_at(600, 400, Duration::ZERO);
+    }
 }

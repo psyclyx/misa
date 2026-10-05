@@ -2960,6 +2960,7 @@ name = "misa-skia-paint"
 version = "0.1.0"
 dependencies = [
  "image",
+ "misa-markdown",
  "misa-pixel-document",
  "misa-pixel-ui",
  "misa-proto",
