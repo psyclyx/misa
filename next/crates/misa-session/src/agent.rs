@@ -2597,28 +2597,48 @@ fn tools() -> Value {
 }
 
 fn normalise_calls(calls: &Value) -> Vec<Value> {
-    calls
-        .as_list()
-        .unwrap_or(&[])
-        .iter()
-        .enumerate()
-        .map(|(index, call)| {
-            Value::map([
-                (
-                    "id",
-                    Value::str(
-                        call.get("id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                            .unwrap_or_else(|| format!("call.{index}")),
-                    ),
-                ),
-                ("name", call.get("name").cloned().unwrap_or(Value::Null)),
-                ("args", call.get("args").cloned().unwrap_or(Value::Null)),
-                ("status", Value::str("pending")),
-            ])
-        })
-        .collect()
+    // One call per id. Some providers (the agent SDK) deliver a tool's use and
+    // its result as two entries carrying the same id; a call is one thing, and
+    // the view names its node after that id. A use contributes the name and the
+    // arguments, a result how it went — together they are the one call.
+    let mut merged: Vec<Value> = Vec::new();
+    let mut positions: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for (index, call) in calls.as_list().unwrap_or(&[]).iter().enumerate() {
+        let id = call
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("call.{index}"));
+        let at = match positions.get(&id).copied() {
+            Some(at) => at,
+            None => {
+                positions.insert(id.clone(), merged.len());
+                merged.push(Value::map([
+                    ("id", Value::str(id)),
+                    ("name", Value::Null),
+                    ("args", Value::Null),
+                    ("status", Value::str("pending")),
+                ]));
+                merged.len() - 1
+            }
+        };
+        let mut entry = merged[at].as_map().cloned().unwrap_or_default();
+        for (key, value) in [
+            ("name", call.get("name")),
+            ("args", call.get("args")),
+            ("status", call.get("status")),
+            ("result", call.get("result")),
+        ] {
+            if let Some(value) = value
+                && !value.is_null()
+            {
+                entry.insert(key.into(), value.clone());
+            }
+        }
+        merged[at] = Value::Map(std::sync::Arc::new(entry));
+    }
+    merged
 }
 
 fn log_effect(tx: &Tx<'_>, kind: &str, data: Value) -> Effect {
@@ -2773,4 +2793,52 @@ fn status_panel(tx: &mut Tx<'_>, provider: &str) -> Result<(), Fault> {
         Vec::new(),
         vec![("panel.close".into(), "Close".into())],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalise_calls;
+    use misa_value::Value;
+
+    #[test]
+    fn one_tool_call_survives_a_provider_that_sends_it_twice() {
+        // The agent SDK delivers a tool's use and its result as two entries
+        // carrying the same id. They are one call — a view node named after
+        // that id appears once.
+        let calls = Value::list([
+            Value::map([
+                ("id", Value::str("toolu_01ABC")),
+                ("name", Value::str("shell")),
+                ("args", Value::str("ls")),
+            ]),
+            Value::map([
+                ("id", Value::str("toolu_01ABC")),
+                ("status", Value::str("ok")),
+                ("result", Value::str("done")),
+            ]),
+        ]);
+        let normalised = normalise_calls(&calls);
+        assert_eq!(normalised.len(), 1, "{normalised:?}");
+        let call = &normalised[0];
+        assert_eq!(call.get("name").and_then(Value::as_str), Some("shell"));
+        assert_eq!(call.get("args").and_then(Value::as_str), Some("ls"));
+        assert_eq!(call.get("status").and_then(Value::as_str), Some("ok"));
+        assert_eq!(call.get("result").and_then(Value::as_str), Some("done"));
+    }
+
+    #[test]
+    fn distinct_tool_calls_stay_distinct() {
+        let calls = Value::list([
+            Value::map([
+                ("id", Value::str("toolu_01A")),
+                ("name", Value::str("shell")),
+            ]),
+            Value::map([
+                ("id", Value::str("toolu_01B")),
+                ("name", Value::str("read_file")),
+            ]),
+        ]);
+        let normalised = normalise_calls(&calls);
+        assert_eq!(normalised.len(), 2, "{normalised:?}");
+    }
 }
