@@ -212,7 +212,7 @@ impl Runtime {
             .unwrap_or_default();
         let mut retry = None;
         let deferred = {
-            let mut state = self.state.lock().expect("session state is never poisoned");
+            let mut state = self.state();
             let Some(mut deferred) = state.deferred.pending.remove(token) else {
                 return Some(vec![]);
             };

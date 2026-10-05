@@ -320,10 +320,7 @@ pub fn builtins() -> Vec<CommandRegistration> {
                 ]),
             },
             |runtime, _, invocation| {
-                let state = runtime
-                    .state
-                    .lock()
-                    .expect("session state is never poisoned");
+                let state = runtime.state();
                 let node = text(&invocation.input, "node");
                 let Some(target) = state.view.tree.node(&node).filter(|node| {
                     node.actions

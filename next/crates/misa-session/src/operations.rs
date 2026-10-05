@@ -891,7 +891,7 @@ fn cancel(runtime: &Runtime, context: &CallContext, invocation: &Invocation) -> 
 impl Runtime {
     /// Logical parent work for host-composed child operations, independent of UI.
     pub fn work_context(&self) -> (Option<String>, Option<String>) {
-        let state = self.state.lock().expect("session state is never poisoned");
+        let state = self.state();
         let db = state.state.db();
         let operation = db
             .get("session")
@@ -928,7 +928,7 @@ impl Runtime {
             return rejected(Fault::new("closed_scope", "Session owner is closed"));
         }
         let (result, request, outcome, revision) = {
-            let mut state = self.state.lock().expect("session state is never poisoned");
+            let mut state = self.state();
             let mut candidate = state.operations.clone();
             if state.deferred.len() >= MAX_RECORDS {
                 return rejected(Fault::new("busy", "Operation persistence is busy"));

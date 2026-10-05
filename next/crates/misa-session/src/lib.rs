@@ -143,6 +143,21 @@ struct State {
     publications: publication::Publications,
 }
 
+impl Runtime {
+    /// The session state guard.
+    ///
+    /// A panic while the lock is held poisons it. Taking the guard anyway is
+    /// deliberate: one broken operation must not make this session — and every
+    /// future connection to it — permanently unreachable. What a panic left
+    /// behind is visible in the session's views and recoverable; a dead scope
+    /// is not.
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+}
+
 /// The composition a session runs. Named so a client can display it and a
 /// diagnostic can print it.
 pub const POLICY: &[&str] = &["agent.loop", "agent.tools"];
@@ -572,7 +587,7 @@ impl Runtime {
             .lock()
             .expect("tool correlations poisoned")
             .clear();
-        let mut state = self.state.lock().expect("session state is never poisoned");
+        let mut state = self.state();
         self.interrupt_operation_checkpoints(&mut state);
         state.publications.commit(vec![]);
         self.rev.send_replace(state.state.rev());
@@ -622,7 +637,7 @@ impl Runtime {
     }
 
     pub fn status(&self) -> String {
-        let state = self.state.lock().expect("session state is never poisoned");
+        let state = self.state();
         state
             .state
             .db()
@@ -718,7 +733,7 @@ impl Runtime {
             return Vec::new();
         }
         let outcome = {
-            let mut state = self.state.lock().expect("session state is never poisoned");
+            let mut state = self.state();
             let (event, restored) = operations::restore_event(event);
             let mut outcome = self.dispatch_locked(&mut state, event);
             if outcome.committed() {
@@ -734,7 +749,7 @@ impl Runtime {
         self.perform(&outcome);
         if outcome.committed() {
             let rev = {
-                let state = self.state.lock().expect("session state is never poisoned");
+                let state = self.state();
                 state.state.rev()
             };
             self.rev.send_replace(rev);
@@ -828,7 +843,7 @@ impl Runtime {
     }
 
     fn append_stream(&self, event: &Event) {
-        let mut state = self.state.lock().expect("session state is never poisoned");
+        let mut state = self.state();
         let pending = state
             .state
             .db()
@@ -870,13 +885,7 @@ impl Runtime {
     }
 
     pub fn streams(&self) -> Vec<misa_proto::sync::Stream> {
-        self.state
-            .lock()
-            .expect("session state is never poisoned")
-            .streams
-            .values()
-            .cloned()
-            .collect()
+        self.state().streams.values().cloned().collect()
     }
 
     fn perform(&self, outcome: &Outcome) {
@@ -1075,7 +1084,7 @@ impl Runtime {
 
     /// Every query this session answers.
     pub fn queries(&self) -> Vec<String> {
-        let state = self.state.lock().expect("session state is never poisoned");
+        let state = self.state();
         let mut queries: Vec<String> = state
             .state
             .registry()
@@ -1107,7 +1116,7 @@ impl Runtime {
         prefix: &str,
         limit: Option<u32>,
     ) -> Result<(Vec<misa_proto::view::Choice>, bool), Fault> {
-        let state = self.state.lock().expect("session state is never poisoned");
+        let state = self.state();
         completions::on_demand(
             state.state.db(),
             source,
@@ -1119,7 +1128,7 @@ impl Runtime {
     /// Read a query. The view is answered here; every other query goes through the
     /// loop's own scope.
     pub fn read(&self, query: &Query) -> Result<Reading, Fault> {
-        let mut state = self.state.lock().expect("session state is never poisoned");
+        let mut state = self.state();
         if query.id == misa_proto::VIEW_QUERY {
             return Ok(Reading::View(state.view.tree.snapshot()));
         }

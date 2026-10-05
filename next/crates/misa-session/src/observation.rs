@@ -179,7 +179,7 @@ impl Runtime {
             ));
         }
         let changed = {
-            let state = self.state.lock().expect("session state is never poisoned");
+            let state = self.state();
             if resume
                 .as_ref()
                 .and_then(|resume| resume.publication)
@@ -220,7 +220,7 @@ impl Runtime {
         selection: &Selection,
     ) -> Result<Snapshot, Fault> {
         self.validate_selection(selection)?;
-        let mut state = self.state.lock().expect("session state is never poisoned");
+        let mut state = self.state();
         snapshot(self, &mut state, selection, context)
     }
 
@@ -289,10 +289,7 @@ impl Observation {
             });
         }
         let runtime = self.runtime.clone();
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("session state is never poisoned");
+        let mut state = runtime.state();
         // Closure may have won while this capture waited for the owner lock.
         // Never evaluate private state interrupted by shutdown as current data.
         if runtime.is_closed() {
